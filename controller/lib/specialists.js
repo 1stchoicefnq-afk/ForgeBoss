@@ -12,6 +12,10 @@ const GOVERNANCE=Object.freeze([
  'If required context or authority is missing, return an exact blocker; do not guess or silently truncate required context.'
 ]);
 
+function assertMode(mode){
+ if(mode!=='builder'&&mode!=='reviewer')throw new Error(`Unsupported specialist mode: ${mode}`);
+ return mode;
+}
 function loadRegistry(root){
  const base=path.join(root,'controller','specialists');
  const registry=JSON.parse(fs.readFileSync(path.join(base,'registry.json'),'utf8'));
@@ -45,6 +49,7 @@ function scoreProfile(profile,text){
  return {score,matched:[...new Set(matched)]};
 }
 function routeSpecialists(root,packet,{mode='builder',builderSpecialists=[]}={}){
+ assertMode(mode);
  const {registry,profiles}=loadRegistry(root),text=packetText(packet),candidates=[];
  const dbTransactionCritical=/postgres|postgresql|serializable|40001|40p01|deadlock|transaction|statement_timeout|lock_timeout|idle_in_transaction_session_timeout/.test(text);
  const identityCentral=/oidc|oauth|authentication|authorization|session token|rbac|permission denied/.test(text);
@@ -104,6 +109,7 @@ function routeSpecialists(root,packet,{mode='builder',builderSpecialists=[]}={})
  };
 }
 function composePrompt(root,packet,routing,{mode='builder'}={}){
+ assertMode(mode);
  const boundaries={allowed_files:packet.allowed_files||[],context_files:packet.context_files||[],
   merge_authority:false,deploy_authority:false,secret_authority:false,scope_widening:false};
  const sections=[
