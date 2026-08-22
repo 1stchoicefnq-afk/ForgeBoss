@@ -1,0 +1,128 @@
+name: C3-001 exact ForgeBoss v2.2.7 import
+
+on:
+  push:
+    branches: [forgeboss/builder]
+    paths:
+      - '.github/workflows/c3-001-import-v227.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import_exact_source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact uploaded package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip
+          echo 'b0d67af38d0a3a1c4970e4d474901a837337d5ee988e7c083fee5db6f5523b4c  ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip' | sha256sum -c -
+
+      - name: Replace branch tree with exact 367-file internal source
+        shell: python
+        run: |
+          import hashlib
+          import pathlib
+          import shutil
+          import zipfile
+
+          repo = pathlib.Path('.').resolve()
+          archive = repo / 'ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip'
+          wrapper = 'ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE/'
+          internal = wrapper + 'ForgeBoss-Internal/'
+
+          with zipfile.ZipFile(archive) as z:
+              expected = {}
+              for info in z.infolist():
+                  name = info.filename
+                  if info.is_dir() or '__pycache__/' in name or name.endswith('.pyc'):
+                      continue
+                  if not name.startswith(internal):
+                      continue
+                  rel = name[len(internal):]
+                  if not rel:
+                      continue
+                  data = z.read(info)
+                  expected[rel] = hashlib.sha256(data).hexdigest()
+
+              if len(expected) != 367:
+                  raise SystemExit(f'Expected 367 clean internal files, archive has {len(expected)}')
+
+              # Remove every tracked/untracked repository payload except .git while the
+              # archive is still open. This prevents legacy/import-helper extras from
+              # contaminating the source-truth commit.
+              for p in list(repo.iterdir()):
+                  if p.name == '.git':
+                      continue
+                  if p.is_dir():
+                      shutil.rmtree(p)
+                  else:
+                      p.unlink()
+
+              for rel in sorted(expected):
+                  dest = repo / rel
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  info_name = internal + rel
+                  dest.write_bytes(z.read(info_name))
+
+          actual = {}
+          for p in repo.rglob('*'):
+              if not p.is_file() or '.git' in p.parts:
+                  continue
+              rel = p.relative_to(repo).as_posix()
+              actual[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+
+          expected_paths = set(expected)
+          actual_paths = set(actual)
+          missing = sorted(expected_paths - actual_paths)
+          extra = sorted(actual_paths - expected_paths)
+          mismatched = sorted(p for p in expected_paths & actual_paths if expected[p] != actual[p])
+          lower = {}
+          case_collisions = []
+          for p in sorted(actual_paths):
+              k = p.lower()
+              if k in lower and lower[k] != p:
+                  case_collisions.append((lower[k], p))
+              else:
+                  lower[k] = p
+
+          print(f'EXPECTED_COUNT={len(expected_paths)}')
+          print(f'ACTUAL_COUNT={len(actual_paths)}')
+          print(f'MISSING={missing}')
+          print(f'EXTRA={extra}')
+          print(f'HASH_MISMATCH={mismatched}')
+          print(f'CASE_COLLISIONS={case_collisions}')
+          if missing or extra or mismatched or case_collisions or len(actual_paths) != 367:
+              raise SystemExit('Exact source inventory verification failed')
+
+      - name: Run v2.2.7 release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m forgeboss.hardening.release_gate_v227
+
+      - name: Run controller selftest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node controller/siteboss-autopilot.js selftest
+
+      - name: Commit exact source truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ForgeBoss Chat 1 Builder'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git status --short
+          count=$(git ls-files | wc -l)
+          echo "TRACKED_FILE_COUNT=$count"
+          test "$count" -eq 367
+          git commit -m 'C3-001 import exact ForgeBoss v2.2.7 source tree'
+          git push origin HEAD:forgeboss/builder
