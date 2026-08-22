@@ -1,0 +1,1 @@
+﻿Independently review exact diff after clean acceptance. Fail closed on unresolved high-risk defects.

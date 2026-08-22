@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "categories": {
+    "database": [
+      "mini-swe",
+      "openhands"
+    ],
+    "backend": [
+      "mini-swe",
+      "openhands"
+    ],
+    "auth": [
+      "mini-swe",
+      "openhands"
+    ],
+    "frontend": [
+      "openhands",
+      "opencode"
+    ],
+    "small_bug": [
+      "mini-swe",
+      "opencode"
+    ],
+    "refactor": [
+      "openhands",
+      "opencode"
+    ],
+    "ci": [
+      "mini-swe",
+      "openhands"
+    ],
+    "tests": [
+      "mini-swe",
+      "openhands"
+    ]
+  }
+}

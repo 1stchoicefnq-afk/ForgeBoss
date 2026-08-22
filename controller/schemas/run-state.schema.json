@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema",
+    "run_id",
+    "command",
+    "state",
+    "created_at",
+    "updated_at",
+    "history"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "command": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "history": {
+      "type": "array"
+    }
+  }
+}

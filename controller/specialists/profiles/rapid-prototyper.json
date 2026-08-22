@@ -1,0 +1,37 @@
+{
+  "id": "rapid-prototyper",
+  "name": "Rapid Prototyper",
+  "category": "engineering",
+  "source_path": "engineering/engineering-rapid-prototyper.md",
+  "capabilities": [
+    "rapid-prototyping",
+    "mvp",
+    "proof-of-concept",
+    "fast-validation",
+    "iteration"
+  ],
+  "risk_level": "medium",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "reality-checker",
+    "code-reviewer"
+  ],
+  "routing_terms": [
+    "prototype",
+    "mvp",
+    "proof of concept",
+    "poc",
+    "spike",
+    "rapid",
+    "validate idea",
+    "first slice"
+  ],
+  "siteboss_profile": "Build the smallest working implementation that validates the bounded packet quickly. Prefer direct maintainable code over premature abstraction. Speed never overrides SiteBoss boundaries, tests, security or exact-head evidence.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

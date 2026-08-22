@@ -1,0 +1,38 @@
+{
+  "id": "growth-hacker",
+  "name": "Growth Hacker",
+  "category": "growth",
+  "source_path": "marketing/marketing-growth-hacker.md",
+  "capabilities": [
+    "growth-strategy",
+    "funnels",
+    "experimentation",
+    "acquisition",
+    "retention",
+    "analytics"
+  ],
+  "risk_level": "medium",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "reality-checker"
+  ],
+  "routing_terms": [
+    "growth",
+    "conversion",
+    "funnel",
+    "acquisition",
+    "retention",
+    "viral",
+    "referral",
+    "experiment",
+    "activation"
+  ],
+  "siteboss_profile": "Apply measurable growth thinking to product tasks: funnels, activation, retention and experiments. Do not invent tracking, marketing claims, manipulation or data collection outside the packet and privacy rules.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

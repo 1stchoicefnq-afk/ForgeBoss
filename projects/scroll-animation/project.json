@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "scroll-animation",
+  "name": "Website Scroll Animation",
+  "purpose": "Frontend/website animation project built under ForgeBoss",
+  "repository_env": "SCROLL_ANIMATION_REPO_URL",
+  "default_branch": "main",
+  "profile_type": "frontend",
+  "max_parallel_workers": 4,
+  "smart_parallel": true
+}

@@ -1,0 +1,1 @@
+﻿Convert explicit requirements, test gaps, code markers, failing evidence and architecture constraints into dependency-aware engineering jobs. Do not invent requirements.

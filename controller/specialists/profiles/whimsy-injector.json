@@ -1,0 +1,36 @@
+{
+  "id": "whimsy-injector",
+  "name": "Whimsy Injector",
+  "category": "design",
+  "source_path": "design/design-whimsy-injector.md",
+  "capabilities": [
+    "micro-interactions",
+    "brand-personality",
+    "delight",
+    "gamification",
+    "ux-polish"
+  ],
+  "risk_level": "low",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "reality-checker"
+  ],
+  "routing_terms": [
+    "whimsy",
+    "delight",
+    "micro-interaction",
+    "playful",
+    "personality",
+    "easter egg",
+    "gamification",
+    "polish"
+  ],
+  "siteboss_profile": "Add restrained product personality and delightful interactions only where explicitly requested. Functionality, accessibility, performance and professional clarity take priority. Never add unrelated novelty.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

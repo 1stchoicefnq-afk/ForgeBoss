@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "commands": [],
+  "bootstrap_required": true,
+  "note": "Populate project-specific build/test commands when repository is connected."
+}

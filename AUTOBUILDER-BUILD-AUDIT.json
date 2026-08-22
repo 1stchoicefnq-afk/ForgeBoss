@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "version": "1.4-autobuilder-draft",
+  "local_checks": [
+    {
+      "name": "main_syntax",
+      "exit_code": 0
+    },
+    {
+      "name": "adapter_syntax",
+      "exit_code": 0
+    },
+    {
+      "name": "controller_selftest",
+      "exit_code": 0
+    },
+    {
+      "name": "agency_selftest",
+      "exit_code": 0
+    },
+    {
+      "name": "hybrid_selftest",
+      "exit_code": 0
+    },
+    {
+      "name": "deepagents_policy",
+      "exit_code": 0
+    }
+  ],
+  "publication_contract": {
+    "draft_only": true,
+    "exact_parent_recheck": true,
+    "duplicate_safe": true,
+    "merge": false,
+    "deploy": false,
+    "force_push": false,
+    "requires_env_gate": true
+  },
+  "live_calls_performed_during_build": 0
+}

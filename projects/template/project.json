@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "template",
+  "name": "New ForgeBoss Project",
+  "purpose": "Clone this profile for another application",
+  "repository_env": "FORGEBOSS_PROJECT_REPO_URL",
+  "default_branch": "main",
+  "profile_type": "application",
+  "max_parallel_workers": 4,
+  "smart_parallel": true
+}

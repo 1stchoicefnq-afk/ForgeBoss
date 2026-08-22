@@ -1,0 +1,58 @@
+﻿{
+  "schema": 1,
+  "name": "Repair Rat PostgreSQL transaction reference pack",
+  "policy": "Architecture guidance only. No implementation source is copied.",
+  "sources": [
+    {
+      "name": "PostgreSQL Serialization Failure Handling",
+      "kind": "official_documentation",
+      "url": "https://www.postgresql.org/docs/current/mvcc-serialization-failure-handling.html",
+      "invariants": [
+        "Retry complete transactions after SQLSTATE 40001 serialization_failure.",
+        "40P01 deadlock_detected can be a bounded retry candidate.",
+        "A retry reruns complete transaction logic from the beginning."
+      ]
+    },
+    {
+      "name": "PostgreSQL Error Codes",
+      "kind": "official_documentation",
+      "url": "https://www.postgresql.org/docs/current/errcodes-appendix.html",
+      "invariants": [
+        "40001 = serialization_failure.",
+        "40P01 = deadlock_detected.",
+        "40003 = statement_completion_unknown; do not blind-replay unknown completion."
+      ]
+    },
+    {
+      "name": "node-postgres Transactions",
+      "kind": "official_documentation",
+      "license": "MIT",
+      "url": "https://node-postgres.com/features/transactions",
+      "invariants": [
+        "All statements of a transaction use the same checked-out client.",
+        "Do not use pool.query for statements inside one transaction."
+      ]
+    },
+    {
+      "name": "Slonik transaction retrying",
+      "kind": "open_source_reference",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/gajus/slonik",
+      "invariants": [
+        "Retry by rerunning the transaction callback after rollback-class failure.",
+        "The callback is the retry unit, not one failed statement.",
+        "Retry count is bounded/configurable."
+      ]
+    }
+  ],
+  "siteboss_required_constraints": [
+    "Retry only a complete fresh transaction attempt.",
+    "Default retry candidates in this repair scope are 40001 and 40P01.",
+    "Do not retry cancellation/abort.",
+    "Do not blindly retry ambiguous completion or commit outcomes.",
+    "Do not duplicate external/non-transactional side effects.",
+    "Preserve tenant isolation and exact-once/idempotency semantics.",
+    "Do not weaken SERIALIZABLE.",
+    "Bound retry count and any backoff/jitter."
+  ]
+}

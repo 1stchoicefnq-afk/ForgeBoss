@@ -1,0 +1,71 @@
+﻿{
+  "schema": 3,
+  "name": "SiteBoss Builder",
+  "version": "0.3-platform",
+  "architecture": "engineering-platform-supervisor",
+  "autonomy_level": "reviewed-draft-pr",
+  "engines": [
+    {
+      "id": "repo-mirror",
+      "mode": "local"
+    },
+    {
+      "id": "architecture",
+      "mode": "local"
+    },
+    {
+      "id": "backlog",
+      "mode": "local"
+    },
+    {
+      "id": "evidence",
+      "mode": "local"
+    },
+    {
+      "id": "cluster",
+      "mode": "local"
+    },
+    {
+      "id": "planner",
+      "mode": "local-first"
+    },
+    {
+      "id": "test-selector",
+      "mode": "local"
+    },
+    {
+      "id": "model-router",
+      "mode": "local"
+    },
+    {
+      "id": "cost-ledger",
+      "mode": "local"
+    },
+    {
+      "id": "repair-rat",
+      "mode": "paid-optional"
+    },
+    {
+      "id": "rat-review",
+      "mode": "paid-optional"
+    },
+    {
+      "id": "state",
+      "mode": "local"
+    },
+    {
+      "id": "events",
+      "mode": "local"
+    },
+    {
+      "id": "breaker",
+      "mode": "local"
+    }
+  ],
+  "safety": {
+    "automatic_merge": false,
+    "automatic_deploy": false,
+    "force_push": false,
+    "draft_publication_only": true
+  }
+}

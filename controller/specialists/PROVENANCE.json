@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 AgentLand Contributors",
+  "modifications": [
+    "profiles shortened",
+    "upstream permission/tool assumptions removed",
+    "SiteBoss governance precedence added",
+    "routing metadata added",
+    "builder/reviewer independence added"
+  ]
+}

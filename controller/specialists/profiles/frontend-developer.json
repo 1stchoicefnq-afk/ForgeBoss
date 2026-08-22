@@ -1,0 +1,38 @@
+{
+  "id": "frontend-developer",
+  "name": "Frontend Developer",
+  "category": "frontend",
+  "source": "agency-agents",
+  "source_path": "engineering/engineering-frontend-developer.md",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "capabilities": [
+    "frontend",
+    "ui",
+    "react",
+    "css",
+    "accessibility",
+    "browser"
+  ],
+  "risk_level": "medium",
+  "allowed_modes": [
+    "builder",
+    "reviewer"
+  ],
+  "recommended_reviewers": [
+    "code-reviewer"
+  ],
+  "routing_terms": [
+    "frontend",
+    "ui",
+    "react",
+    "css",
+    "html",
+    "browser",
+    "component",
+    "accessibility"
+  ],
+  "siteboss_profile": "Implement bounded UI changes while preserving existing product behavior, accessibility and tests. Do not redesign unrelated surfaces or change backend authority.",
+  "adaptation": "Concise SiteBoss specialist profile; upstream persona authority/tool assumptions removed."
+}

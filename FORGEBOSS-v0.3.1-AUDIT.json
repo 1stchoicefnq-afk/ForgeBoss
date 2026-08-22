@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "version": "0.3.1-case-collision-hotfix",
+  "checks": [
+    {
+      "name": "dashboard_compile",
+      "exit_code": 0
+    },
+    {
+      "name": "v031_selftest",
+      "exit_code": 0
+    }
+  ],
+  "canonical_pr_template": ".github/pull_request_template.md",
+  "legacy_duplicate": ".github/PULL_REQUEST_TEMPLATE.md",
+  "non_detector_legacy_refs_after_normalization": [],
+  "build_model_calls": 0,
+  "build_github_writes": 0,
+  "notes": "Remote SiteBoss deletion cannot occur during package build; ForgeBoss prepares an exact-head local cleanup patch as a dedicated hygiene task."
+}

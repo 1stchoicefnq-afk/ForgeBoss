@@ -1,0 +1,38 @@
+{
+  "id": "agents-orchestrator",
+  "name": "Agents Orchestrator",
+  "category": "orchestration",
+  "source_path": "specialized/agents-orchestrator.md",
+  "capabilities": [
+    "task-orchestration",
+    "specialist-selection",
+    "workflow-coordination",
+    "handoff-planning",
+    "qa-loop"
+  ],
+  "risk_level": "high",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "reality-checker",
+    "code-reviewer"
+  ],
+  "routing_terms": [
+    "multi-domain",
+    "cross-functional",
+    "complex project",
+    "orchestrate",
+    "orchestration",
+    "multiple specialists",
+    "workflow coordination",
+    "full feature",
+    "end-to-end"
+  ],
+  "siteboss_profile": "Advisory orchestration intelligence inside SiteBoss. Recommend the smallest useful specialist sequence, handoffs, retries and validation loop. Never schedule workers directly, self-assign authority, widen scope, merge, deploy, or override the controller. SiteBoss remains the sole scheduler and authority.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

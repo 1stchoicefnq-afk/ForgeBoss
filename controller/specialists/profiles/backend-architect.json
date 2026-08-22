@@ -1,0 +1,42 @@
+{
+  "id": "backend-architect",
+  "name": "Backend Architect",
+  "category": "engineering",
+  "source_path": "engineering/engineering-backend-architect.md",
+  "capabilities": [
+    "backend-architecture",
+    "api-design",
+    "database-design",
+    "security",
+    "scalability",
+    "integration"
+  ],
+  "risk_level": "high",
+  "allowed_modes": [
+    "builder",
+    "reviewer"
+  ],
+  "recommended_reviewers": [
+    "reality-checker",
+    "code-reviewer",
+    "database-reliability-engineer"
+  ],
+  "routing_terms": [
+    "backend",
+    "api",
+    "service",
+    "server",
+    "architecture",
+    "database schema",
+    "integration",
+    "rest",
+    "graphql",
+    "microservice"
+  ],
+  "siteboss_profile": "Design robust backend/API/data boundaries with explicit security, reliability and failure semantics. Prefer existing SiteBoss architecture unless the packet proves structural change is required. Never widen scope or introduce infrastructure without authority.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

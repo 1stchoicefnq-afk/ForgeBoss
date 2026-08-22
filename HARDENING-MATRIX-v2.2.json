@@ -1,0 +1,68 @@
+{
+  "version": "2.2",
+  "purpose": "Batch hardening sweep instead of one-edge-case-per-run.",
+  "categories": {
+    "patch_contract": [
+      "compact hashed line locators",
+      "stale locator rejection",
+      "symbol-role preservation",
+      "schema required/property preflight",
+      "candidate runtime regression rejection"
+    ],
+    "context_and_cost": [
+      "remove per-token locator explosion",
+      "remove anchor token enum explosion",
+      "compact fresh evidence to failed runs",
+      "bound retry trace evidence",
+      "hard 6 MiB request-body ceiling",
+      "budget error includes packet size/tokens"
+    ],
+    "learning_and_foundations": [
+      "zero-API learned repair retained",
+      "cumulative retained foundation retained",
+      "validated learning store roundtrip"
+    ],
+    "parallel_control_plane": [
+      "project profiles present",
+      "conflicting tasks isolated into separate batches"
+    ],
+    "control_plane_security": [
+      "HMAC authenticated connect + replay protection",
+      "Windows DACL on secret/control DB/learning DB",
+      "absolute local worktree root containment; UNC/device denied",
+      "executor_guard reused for task/claim scopes",
+      "task scope cannot be expanded at claim",
+      "repository/base SHA task binding",
+      "server-side tool whitelist",
+      "state/forgebossd and state/learning write denial",
+      "hidden-dot path normalization regression test"
+    ],
+    "evidence_scope_expansion": [
+      "extract src stack frames from current failed runs",
+      "read imports from exact failing test files",
+      "one bounded source dependency hop",
+      "bounded semantic grep from failing test names",
+      "maximum 8 added context files / 140k chars",
+      "writes restored only for paths already in controller-approved write allowlist"
+    ],
+    "path_containment": [
+      "component-aware repository containment in evidence dependency resolution",
+      "sibling-prefix regression: SiteBossOld is not inside SiteBoss",
+      "expanded extension/index candidates rechecked",
+      "src/ relative-path gate retained"
+    ],
+    "locator_and_spend_guard": [
+      "canonical source-line model for locator display and verification",
+      "cross-platform newline normalization",
+      "locator expected/actual diagnostics",
+      "locator mismatch terminal after one paid response",
+      "repeated deterministic fatal fingerprint breaker"
+    ]
+  },
+  "live_windows_docker_still_required": [
+    "PowerShell execution of repair loop",
+    "Docker/PostgreSQL retry trace",
+    "actual OpenAI structured-output request",
+    "real Git retained-foundation replay"
+  ]
+}

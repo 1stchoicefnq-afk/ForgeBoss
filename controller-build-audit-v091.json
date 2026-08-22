@@ -1,0 +1,96 @@
+{
+  "pass": 18,
+  "fail": 0,
+  "results": [
+    {
+      "name": "SITEBOSS-AUTOPILOT.cmd.controller_route",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "SITEBOSS-AUTOPILOT.cmd.no_legacy_builder",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "START-SITEBOSS.cmd.controller_route",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "START-SITEBOSS.cmd.no_legacy_builder",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "ONE-CLICK-SITEBOSS.cmd.controller_route",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "ONE-CLICK-SITEBOSS.cmd.no_legacy_builder",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy.breaker_is_v047",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy.breaker_no_stale_default",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy.breaker_no_paid_call_intent_assert",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy.run_builder_blocked",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "legacy.diagnose_builder_blocked",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "controller.version",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "controller.normal_run_no_paid_repair",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "controller.paid_repair_separate",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.main_syntax",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.launcher_routing_selftest",
+      "passed": true,
+      "detail": "[PASS] SITEBOSS-AUTOPILOT.cmd.routes_controller\n[PASS] SITEBOSS-AUTOPILOT.cmd.does_not_call_legacy\n[PASS] START-SITEBOSS.cmd.routes_controller\n[PASS] START-SITEBOSS.cmd.does_not_call_legacy\n[PASS] ONE-CLICK-SITEBOSS.cmd.routes_controller\n[PASS] ONE-CLICK-SITEBOSS.cmd.does_not_call_legacy\n[PASS] RUN-BUILDER.cmd.blocked\n[PASS] DIAGNOSE-BUILDER.cmd.blocked\n"
+    },
+    {
+      "name": "node.controller_selftest",
+      "passed": true,
+      "detail": "{\n  \"pass\": 8,\n  \"fail\": 0,\n  \"results\": [\n    {\n      \"name\": \"features.github_writes_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.merge_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.deploy_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.model_calls_off_default\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"control.read_enabled\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"state.atomic\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"machine.invalid_transition_rejected\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"lock.duplicate_blocked\",\n      \"ok\": true,\n      \"detail\": \"\"\n    }\n  ]\n}\n"
+    },
+    {
+      "name": "cmd.ascii_no_bom",
+      "passed": true,
+      "detail": "[]"
+    }
+  ]
+}

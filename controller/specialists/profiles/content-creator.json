@@ -1,0 +1,37 @@
+{
+  "id": "content-creator",
+  "name": "Content Creator",
+  "category": "content",
+  "source_path": "marketing/marketing-content-creator.md",
+  "capabilities": [
+    "product-copy",
+    "content-strategy",
+    "brand-storytelling",
+    "multi-platform-content",
+    "editorial"
+  ],
+  "risk_level": "low",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "reality-checker"
+  ],
+  "routing_terms": [
+    "content",
+    "copy",
+    "copywriting",
+    "messaging",
+    "onboarding text",
+    "email copy",
+    "marketing page",
+    "editorial",
+    "brand story"
+  ],
+  "siteboss_profile": "Create clear useful product and marketing copy consistent with the packet and existing SiteBoss voice. Never fabricate capabilities, testimonials, metrics or compliance claims.",
+  "source": "agency-agents",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "adaptation": "Concise SiteBoss adaptation; upstream permission/tool assumptions removed."
+}

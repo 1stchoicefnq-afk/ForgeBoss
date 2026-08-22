@@ -1,0 +1,96 @@
+{
+  "pass": 18,
+  "fail": 0,
+  "results": [
+    {
+      "name": "main_syntax",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "router_syntax",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "core_team_selftest",
+      "passed": true,
+      "detail": "[PASS] 8 core roles registered: agents-orchestrator,rapid-prototyper,backend-architect,ai-engineer,whimsy-injector,growth-hacker,content-creator,reality-checker\n[PASS] core team exactly 8: 8\n[PASS] complex task selects Agents Orchestrator: agents-orchestrator,backend-architect\n[PASS] max two profiles: 2\n[PASS] Rapid Prototyper routes\n[PASS] Backend Architect routes\n[PASS] AI Engineer routes\n[PASS] Whimsy Injector routes\n[PASS] Growth Hacker routes\n[PASS] Content Creator routes\n[PASS] Reality Checker final gate: reality-checker,code-reviewer\n[PASS] builder excluded from review: reality-checker,code-reviewer\n[PASS] orchestrator cannot merge\n[PASS] orchestrator cannot deploy\n[PASS] orchestrator cannot widen scope\n[PASS] governance section first\n[PASS] core MIT provenance\nAGENCY CORE TEAM SELFTEST: PASS=17 FAIL=0\n"
+    },
+    {
+      "name": "specialist_selftest",
+      "passed": true,
+      "detail": "[PASS] database selects optimizer: database-optimizer,minimal-change-engineer\n[PASS] auth selects IAM: identity-access-engineer,minimal-change-engineer\n[PASS] AI selects AI/orchestration: multi-agent-systems-architect,agents-orchestrator\n[PASS] frontend selects frontend: frontend-developer,minimal-change-engineer\n[PASS] CI selects DevOps: devops-automator,minimal-change-engineer\n[PASS] unknown safe fallback: minimal-change-engineer\n[PASS] governance appears first\n[PASS] allowlist preserved\n[PASS] context cannot become writable\n[PASS] specialist cannot grant merge\n[PASS] specialist cannot grant deploy\n[PASS] specialist cannot grant secret authority\n[PASS] specialist cannot widen scope\n[PASS] only selected profiles enter prompt\n[PASS] database review selects DBRE: database-reliability-engineer,reality-checker\n[PASS] reviewer differs from builder\n[PASS] IAM builder excluded from review: reality-checker,code-reviewer\n[PASS] independent code reviewer available: reality-checker,code-reviewer\n[PASS] hostile task cannot widen write authority\n[PASS] hostile task cannot grant merge/deploy\n[PASS] profile library bounded: 17\n[PASS] builder profile max two\n[PASS] review profile max two\n[PASS] all provenance retained\n[PASS] third party notice present\n[PASS] governance explicitly outranks profiles\nSPECIALIST SELFTEST: PASS=26 FAIL=0\n"
+    },
+    {
+      "name": "benchmark",
+      "passed": true,
+      "detail": "cases\": [\n    {\n      \"id\": \"postgres-transaction\",\n      \"mode\": \"builder\",\n      \"expected\": [\n        \"database-optimizer\"\n      ],\n      \"selected\": [\n        \"database-optimizer\",\n        \"minimal-change-engineer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 2095,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    },\n    {\n      \"id\": \"auth-permission\",\n      \"mode\": \"builder\",\n      \"expected\": [\n        \"identity-access-engineer\"\n      ],\n      \"selected\": [\n        \"identity-access-engineer\",\n        \"minimal-change-engineer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 2044,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    },\n    {\n      \"id\": \"travis-orchestration\",\n      \"mode\": \"builder\",\n      \"expected\": [\n        \"multi-agent-systems-architect\"\n      ],\n      \"selected\": [\n        \"multi-agent-systems-architect\",\n        \"ai-engineer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 2108,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    },\n    {\n      \"id\": \"frontend-bug\",\n      \"mode\": \"builder\",\n      \"expected\": [\n        \"frontend-developer\"\n      ],\n      \"selected\": [\n        \"frontend-developer\",\n        \"minimal-change-engineer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 1970,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    },\n    {\n      \"id\": \"ci-build\",\n      \"mode\": \"builder\",\n      \"expected\": [\n        \"devops-automator\"\n      ],\n      \"selected\": [\n        \"devops-automator\",\n        \"minimal-change-engineer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 2011,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    },\n    {\n      \"id\": \"code-review\",\n      \"mode\": \"reviewer\",\n      \"expected\": [\n        \"code-reviewer\"\n      ],\n      \"selected\": [\n        \"reality-checker\",\n        \"code-reviewer\"\n      ],\n      \"routing_correct\": true,\n      \"profile_count\": 2,\n      \"specialist_prompt_chars\": 2040,\n      \"baseline_generic_profile_chars\": 0,\n      \"scope_adherence_static\": true,\n      \"completion_quality\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"latency_ms\": \"NOT_MEASURED_NO_MODEL_CALL\",\n      \"failure_rate\": \"NOT_MEASURED_NO_MODEL_CALL\"\n    }\n  ],\n  \"summary\": {\n    \"cases\": 6,\n    \"routing_correct\": 6,\n    \"routing_accuracy\": 1,\n    \"max_profiles\": 2,\n    \"avg_specialist_prompt_chars\": 2045\n  }\n}\n"
+    },
+    {
+      "name": "controller_selftest",
+      "passed": true,
+      "detail": "{\n  \"pass\": 8,\n  \"fail\": 0,\n  \"results\": [\n    {\n      \"name\": \"features.github_writes_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.merge_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.deploy_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.model_calls_off_default\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"control.read_enabled\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"state.atomic\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"machine.invalid_transition_rejected\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"lock.duplicate_blocked\",\n      \"ok\": true,\n      \"detail\": \"\"\n    }\n  ]\n}\n"
+    },
+    {
+      "name": "scope_priority",
+      "passed": true,
+      "detail": "[PASS] write cap respected: 24\n[PASS] must write retained src/persistence/postgres.js\n[PASS] must write retained src/persistence/postgresApplicationServices.js\n[PASS] must write retained src/persistence/platformStore.js\n[PASS] must write retained src/travis/conversation.js\n[PASS] must write retained src/intake/postgresApplication.js\n[PASS] must write retained tests/postgresTravisIntake.integration.test.js\n[PASS] must write retained tests/postgresProductionHttp.integration.test.js\n[PASS] must write retained tests/postgresBusinessInvitations.integration.test.js\n[PASS] selection metadata\n[PASS] ranked candidates present\n"
+    },
+    {
+      "name": "core_exact_8",
+      "passed": true,
+      "detail": "['agents-orchestrator', 'rapid-prototyper', 'backend-architect', 'ai-engineer', 'whimsy-injector', 'growth-hacker', 'content-creator', 'reality-checker']"
+    },
+    {
+      "name": "orchestrator_advisory",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "reality_final_gate",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "no_swarm",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "max_two",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "github_writes_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "model_calls_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "merge_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "deploy_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "third_party_notice",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "cmd_ascii",
+      "passed": true,
+      "detail": "[]"
+    }
+  ]
+}

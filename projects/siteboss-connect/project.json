@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "siteboss-connect",
+  "name": "SiteBoss Connect",
+  "purpose": "Companion/connectivity application built under ForgeBoss",
+  "repository_env": "SITEBOSS_CONNECT_REPO_URL",
+  "default_branch": "main",
+  "profile_type": "application",
+  "max_parallel_workers": 4,
+  "smart_parallel": true
+}

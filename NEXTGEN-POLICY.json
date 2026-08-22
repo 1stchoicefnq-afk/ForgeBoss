@@ -1,0 +1,34 @@
+{
+  "schema": 2,
+  "name": "SiteBoss Builder NextGen",
+  "version": "0.6-dev-platform",
+  "enabled_in_oneclick": false,
+  "mode": "local-diagnostics-only",
+  "engines": {
+    "product_planner": true,
+    "issue_graph": true,
+    "impact_analysis": true,
+    "acceptance_contracts": true,
+    "security_scan": true,
+    "job_queue": true,
+    "provenance": true,
+    "readiness": true,
+    "merge_readiness": true,
+    "dashboard_export": true
+  },
+  "merge_thresholds": {
+    "minimum_readiness_score": 85,
+    "max_high_security_findings": 0,
+    "requires_zero_engine_failures": true,
+    "requires_baseline_oneclick_untouched": true,
+    "requires_all_nextgen_selftests": true
+  },
+  "safety": {
+    "model_calls": false,
+    "github_reads": false,
+    "github_writes": false,
+    "pushes": false,
+    "merges": false,
+    "deploys": false
+  }
+}

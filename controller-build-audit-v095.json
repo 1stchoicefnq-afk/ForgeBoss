@@ -1,0 +1,121 @@
+{
+  "pass": 23,
+  "fail": 0,
+  "results": [
+    {
+      "name": "scope.relevance_strategy",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.must_write",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.fail_if_must_write_dropped",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.transaction_scores",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.identity_scores",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.critical_postgres_boost",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.travis_boost",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.selection_metadata",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.must_write.src/persistence/postgres.js",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.must_write.src/persistence/postgresApplicationServices.js",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.must_write.src/persistence/platformStore.js",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.must_write.src/travis/conversation.js",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.write_cap_unchanged",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.github_writes_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.model_calls_off_default",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.merge_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.deploy_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.main_syntax",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.scope_priority_selftest",
+      "passed": true,
+      "detail": "[PASS] write cap respected: 24\n[PASS] must write retained src/persistence/postgres.js\n[PASS] must write retained src/persistence/postgresApplicationServices.js\n[PASS] must write retained src/persistence/platformStore.js\n[PASS] must write retained src/travis/conversation.js\n[PASS] must write retained src/intake/postgresApplication.js\n[PASS] must write retained tests/postgresTravisIntake.integration.test.js\n[PASS] must write retained tests/postgresProductionHttp.integration.test.js\n[PASS] must write retained tests/postgresBusinessInvitations.integration.test.js\n[PASS] selection metadata\n[PASS] ranked candidates present\n"
+    },
+    {
+      "name": "node.controller_selftest",
+      "passed": true,
+      "detail": "{\n  \"pass\": 8,\n  \"fail\": 0,\n  \"results\": [\n    {\n      \"name\": \"features.github_writes_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.merge_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.deploy_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.model_calls_off_default\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"control.read_enabled\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"state.atomic\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"machine.invalid_transition_rejected\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"lock.duplicate_blocked\",\n      \"ok\": true,\n      \"detail\": \"\"\n    }\n  ]\n}\n"
+    },
+    {
+      "name": "node.target_selftest",
+      "passed": true,
+      "detail": "[PASS] existing child mode\n[PASS] existing child target\n[PASS] parent local mode\n[PASS] parent local no repair pr\n[PASS] parent local target root head\n[PASS] parent local upstream base\n"
+    },
+    {
+      "name": "node.scope_contract_selftest",
+      "passed": true,
+      "detail": "[PASS] manifest limits required\n[PASS] source limit read from manifest\n[PASS] write limit read from manifest\n[PASS] absolute source ceiling\n[PASS] absolute write ceiling\n[PASS] source checked against manifest\n[PASS] write checked against manifest\n[PASS] stale config source cap removed from controller scope validation\n[PASS] stale config write cap removed from controller scope validation\n"
+    },
+    {
+      "name": "cmd.ascii_no_bom",
+      "passed": true,
+      "detail": "[]"
+    }
+  ]
+}

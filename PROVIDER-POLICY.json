@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "active_mode": "single-provider",
+  "defaults": {
+    "repair": "openai",
+    "review": "openai"
+  },
+  "supported_providers": [
+    "openai",
+    "anthropic"
+  ],
+  "environment": {
+    "repair_provider": "SITEBOSS_REPAIR_PROVIDER",
+    "review_provider": "SITEBOSS_REVIEW_PROVIDER",
+    "openai_key": "OPENAI_API_KEY",
+    "anthropic_key": "ANTHROPIC_API_KEY",
+    "openai_model": "SITEBOSS_OPENAI_MODEL",
+    "anthropic_model": "SITEBOSS_ANTHROPIC_MODEL"
+  },
+  "future_dual_review": {
+    "enabled": false,
+    "principles": [
+      "authoring provider must not be sole reviewer",
+      "dual review only for release/security/data-integrity/high-risk or disagreement escalation",
+      "one FAIL blocks; NEEDS_EVIDENCE blocks PASS",
+      "exact-head evidence cache keyed by provider/model/head/base/diff hash",
+      "hard per-job and per-day cost ceilings before enabling"
+    ]
+  },
+  "review_independence": {
+    "enforced": false,
+    "current_status": "same-provider second-pass review; not independent",
+    "required_for_claim": "different provider or independently isolated reviewer configuration"
+  }
+}

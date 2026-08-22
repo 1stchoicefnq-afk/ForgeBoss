@@ -36,7 +36,6 @@ function selftest(cfg){
  const temp=path.join(cfg.state.root,'selftest-v09');ensureDir(temp);const f=path.join(temp,'a.json');atomicWriteJson(f,{x:1});a('state.atomic',readJson(f)?.x===1);
  let bad=false;try{transition({state:'BOOT',history:[],updated_at:nowIso()},'PUBLISH','illegal');}catch{bad=true;}a('machine.invalid_transition_rejected',bad);
  const l1=new ControllerLock(temp,60),l2=new ControllerLock(temp,60);try{l1.acquire('a');let blocked=false;try{l2.acquire('b');}catch{blocked=true;}a('lock.duplicate_blocked',blocked);}finally{l1.release();l2.release();}
- const staleLive=new ControllerLock(temp,1),contender=new ControllerLock(temp,1);try{fs.writeFileSync(staleLive.file,JSON.stringify({schema:1,pid:process.pid,host:require('os').hostname(),run_id:'stale-live',created_at:'2000-01-01T00:00:00.000Z',heartbeat_at:'2000-01-01T00:00:00.000Z'},null,2));let blocked=false;try{contender.acquire('contender');}catch(e){blocked=e&&e.code==='LOCK_HELD';}a('lock.stale_live_same_host_pid_not_stolen',blocked);}finally{try{fs.unlinkSync(staleLive.file)}catch{}}
  try{fs.rmSync(temp,{recursive:true,force:true});}catch{}
  const fail=out.filter(x=>!x.ok).length;console.log(JSON.stringify({pass:out.length-fail,fail,results:out},null,2));return fail?2:0;
 }

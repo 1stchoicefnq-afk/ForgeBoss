@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "commands": [],
+  "bootstrap_required": true,
+  "quality_gates": [
+    "build",
+    "lint",
+    "visual-regression",
+    "accessibility"
+  ],
+  "note": "Commands are discovered/confirmed when repository is connected."
+}

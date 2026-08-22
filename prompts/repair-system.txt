@@ -1,0 +1,1 @@
+﻿Repair related root causes as one bounded batch. Preserve tests, data integrity, idempotency, tenant isolation and exact-head invariants.

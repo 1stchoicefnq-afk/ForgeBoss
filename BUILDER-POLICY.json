@@ -1,0 +1,55 @@
+﻿{
+  "schema": 3,
+  "cost": {
+    "max_paid_repair_calls_per_cycle": 2,
+    "max_paid_review_calls_per_cycle": 1,
+    "max_paid_calls_per_day": 8,
+    "min_failure_clusters_for_paid_repair": 1,
+    "reuse_cached_model_outputs": true,
+    "stop_when_failure_fingerprint_unchanged": true,
+    "usd_soft_limit": null,
+    "note": "Dollar gating disabled until exact provider usage/cost accounting is trustworthy."
+  },
+  "validation": {
+    "isolated_repeats": 3,
+    "full_postgres_repeats": 5,
+    "clean_validation_rounds": 2
+  },
+  "supervisor": {
+    "max_cycles_per_launch": 4,
+    "pause_file": "state/builder/PAUSE",
+    "stop_file": "state/builder/STOP",
+    "auto_independent_review": true,
+    "auto_draft_publish_after_review_pass": true
+  },
+  "git": {
+    "publish_mode": "draft-only",
+    "merge_enabled": false,
+    "deploy_enabled": false,
+    "force_push": false,
+    "protected_targets": [
+      "main",
+      "master",
+      "develop",
+      "production",
+      "release"
+    ]
+  },
+  "routing": {
+    "local_only": [
+      "classification",
+      "failure_clustering",
+      "test_selection",
+      "architecture_mapping",
+      "backlog_discovery"
+    ],
+    "database_repair": {
+      "provider": "openai",
+      "model": "gpt-5.6"
+    },
+    "independent_review": {
+      "provider": "openai",
+      "model": "gpt-5.6"
+    }
+  }
+}

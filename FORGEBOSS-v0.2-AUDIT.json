@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "version": "0.2-dashboard",
+  "dashboard_selftest": 0,
+  "server_compile": 0,
+  "top_level": [
+    "ForgeBoss-Internal",
+    "START-FORGEBOSS.cmd"
+  ],
+  "model_calls_during_build": 0,
+  "github_writes_during_build": 0,
+  "policy": {
+    "workers": 1,
+    "draft_only": true,
+    "merge": false,
+    "deploy": false,
+    "force_push": false,
+    "default_executor": "repair-rat"
+  }
+}

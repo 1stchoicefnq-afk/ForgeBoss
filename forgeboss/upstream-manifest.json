@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "policy": "Use official packages/CLI as dependencies; do not vendor whole upstream repositories unless a later audit justifies it.",
+  "components": [
+    {
+      "name": "OpenHands Software Agent SDK",
+      "role": "primary executor candidate",
+      "install": [
+        "openhands-sdk==1.22.1",
+        "openhands-tools==1.22.1",
+        "openhands-workspace==1.22.1"
+      ],
+      "source": "https://github.com/OpenHands/software-agent-sdk",
+      "license": "MIT",
+      "status": "REAL_DEPENDENCY_OPTIONAL"
+    },
+    {
+      "name": "mini-SWE-agent",
+      "role": "minimal executor/baseline candidate",
+      "install": [
+        "mini-swe-agent==2.4.6"
+      ],
+      "source": "https://github.com/SWE-agent/mini-swe-agent",
+      "license": "MIT",
+      "status": "REAL_DEPENDENCY_OPTIONAL"
+    },
+    {
+      "name": "Deep Agents",
+      "role": "durability/context/checkpoint candidate",
+      "install": [
+        "deepagents==0.7.6"
+      ],
+      "source": "https://github.com/langchain-ai/deepagents",
+      "license": "MIT",
+      "status": "REAL_DEPENDENCY_OPTIONAL"
+    },
+    {
+      "name": "OpenCode",
+      "role": "coding executor/tooling benchmark candidate",
+      "install": [
+        "opencode-ai@latest"
+      ],
+      "source": "https://github.com/anomalyco/opencode",
+      "license": "MIT",
+      "status": "REAL_CLI_OPTIONAL_VERSION_RECORDED_AT_INSTALL"
+    },
+    {
+      "name": "Agency Agents",
+      "role": "specialist intelligence",
+      "source": "https://github.com/msitarzewski/agency-agents",
+      "license": "MIT",
+      "status": "ADAPTED_PROFILES_ALREADY_PRESENT"
+    }
+  ]
+}

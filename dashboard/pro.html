@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ForgeBoss</title>
+<style>
+:root{
+ --bg:#07120f;--panel:#0d1915;--panel2:#10211b;--line:#1f3c31;
+ --mint:#6ef2cf;--mint2:#28c9a6;--orange:#f28a22;--text:#f3faf6;
+ --muted:#8ea79c;--danger:#ff6b6b;--warn:#ffc857;--ok:#6ef2cf;
+ --shadow:0 16px 40px rgba(0,0,0,.24);
+}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:radial-gradient(circle at 70% 0,#133126 0,#07120f 38%,#050b09 100%);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif;overflow:hidden}
+.app{display:grid;grid-template-columns:248px 1fr;height:100vh}
+.sidebar{padding:22px 16px;border-right:1px solid #173126;background:linear-gradient(180deg,#08110e 0,#07100d 100%);display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:12px;padding:6px 8px 22px}.brand img{width:48px;height:48px;object-fit:contain}.brand h1{font-size:20px;margin:0;letter-spacing:.5px}.brand small{display:block;color:var(--orange);font-weight:800;margin-top:2px}
+.nav{display:grid;gap:6px}.nav button{border:0;background:transparent;color:#afc5bb;text-align:left;padding:11px 12px;border-radius:10px;font-size:14px;cursor:pointer}.nav button.active{background:linear-gradient(90deg,rgba(110,242,207,.16),rgba(110,242,207,.05));color:var(--mint);box-shadow:inset 3px 0 0 var(--mint)}
+.nav button:hover{background:#102019}
+.sys{margin-top:auto;border-top:1px solid #193328;padding:16px 8px 0;color:var(--muted);font-size:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mint);box-shadow:0 0 14px rgba(110,242,207,.65);margin-right:8px}
+.main{overflow:auto;padding:26px 30px 34px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}.title h2{margin:0;font-size:24px}.title p{margin:4px 0 0;color:var(--muted);font-size:13px}.badges{display:flex;gap:8px;flex-wrap:wrap}.badge{padding:8px 11px;border:1px solid var(--line);background:rgba(15,30,24,.75);border-radius:10px;color:#c5d6ce;font-size:12px}.badge strong{color:var(--mint)}
+.grid{display:grid;grid-template-columns:1.35fr .65fr;gap:18px}.card{background:linear-gradient(180deg,rgba(16,33,27,.96),rgba(10,23,19,.96));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px}
+.card h3{margin:0 0 14px;font-size:14px;letter-spacing:.3px}.muted{color:var(--muted)}
+.controls{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}.field label{display:block;color:var(--muted);font-size:11px;margin:0 0 6px}.field select,.field input{width:100%;border:1px solid #24463a;background:#0a1713;color:var(--text);border-radius:10px;padding:11px 12px;outline:none}.start{border:0;border-radius:10px;padding:12px 18px;background:linear-gradient(135deg,var(--mint),var(--mint2));color:#042019;font-weight:900;cursor:pointer;box-shadow:0 0 24px rgba(110,242,207,.2)}.start:hover{filter:brightness(1.06)}
+.secondary{border:1px solid #315347;border-radius:10px;padding:10px 14px;background:#13251f;color:#dbe9e3;cursor:pointer}.danger{border:1px solid #6c3737;background:#2b1717;color:#ffb7b7}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.stat{padding:13px;border:1px solid #1b3a2f;background:#091711;border-radius:12px}.stat b{font-size:18px;display:block}.stat span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+.progress{height:7px;background:#06100c;border-radius:99px;overflow:hidden;margin-top:13px}.progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--mint2),var(--mint),var(--orange));transition:.35s}
+.actions{display:flex;gap:9px;margin-top:13px;flex-wrap:wrap}
+.activity{margin-top:18px}.timeline{display:grid;gap:0}.event{display:grid;grid-template-columns:38px 1fr;gap:10px;position:relative;padding:8px 0}.event:before{content:"";position:absolute;left:17px;top:34px;bottom:-7px;width:1px;background:#234438}.event:last-child:before{display:none}.icon{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#10271f;border:1px solid #2f594a;color:var(--mint);font-weight:900}.event.warn .icon{color:var(--warn);border-color:#66552c}.event.money .icon{color:var(--orange);border-color:#6d4828}.event h4{margin:2px 0 3px;font-size:13px}.event p{margin:0;color:var(--muted);font-size:12px;line-height:1.45}.time{color:#5e786c;font-size:10px;margin-left:8px}
+.engine{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1a342a}.engine:last-child{border:0}.ready{color:var(--mint);font-weight:800;font-size:11px}.waiting{color:#70877d;font-size:11px}
+.result-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #1a342a}.result-row:last-child{border:0}.pass{color:var(--mint);font-weight:900}.fail{color:var(--danger);font-weight:900}.none{color:#70877d;font-weight:700}
+.safety{display:grid;grid-template-columns:1fr auto;gap:8px 10px;font-size:12px}.safety .on{color:var(--mint);font-weight:800}.safety .off{color:var(--danger);font-weight:800}
+.footer{display:flex;justify-content:space-between;color:#587064;font-size:10px;padding:16px 2px 0}.orange{color:var(--orange)}
+@media(max-width:1180px){.grid{grid-template-columns:1fr}.controls{grid-template-columns:1fr 1fr}.app{grid-template-columns:210px 1fr}}
+.page{display:none}.page.active{display:block}.toggle{width:48px;height:26px;border-radius:20px;border:1px solid #365a4d;background:#16251f;position:relative;cursor:pointer}.toggle:after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#81958c;top:3px;left:4px;transition:.2s}.toggle.on{border-color:var(--mint);background:#12372d}.toggle.on:after{left:24px;background:var(--mint)}.table{width:100%;border-collapse:collapse}.table th,.table td{text-align:left;padding:12px;border-bottom:1px solid var(--line);font-size:12px}.table th{color:var(--muted);font-size:10px}.pagehead{margin-bottom:18px}.pagehead h2{margin:0}.pagehead p{color:var(--muted);font-size:12px}.worker-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.worker-card{padding:15px;border:1px solid var(--line);border-radius:13px;background:#091711}.setting{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--line)}
+.event.clickable{cursor:pointer;border-radius:10px;padding-left:6px;padding-right:6px}
+.event.clickable:hover{background:rgba(110,242,207,.06)}
+.code-modal{position:fixed;inset:0;background:rgba(0,0,0,.74);display:none;align-items:center;justify-content:center;z-index:9999;padding:24px}
+.code-modal.show{display:flex}
+.code-box{width:min(1180px,96vw);height:min(780px,92vh);background:#07120f;border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 30px 90px rgba(0,0,0,.6)}
+.code-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line);background:#0d1915}
+.code-head h3{margin:0;font-size:14px}.code-head p{margin:3px 0 0;color:var(--muted);font-size:11px}
+.code-actions{display:flex;gap:8px}.code-actions button{border:1px solid #315347;background:#12251e;color:#e8f4ee;border-radius:9px;padding:8px 11px;cursor:pointer}
+.code-body{flex:1;padding:14px;background:#030907}
+.code-body textarea{width:100%;height:100%;resize:none;background:#020806;color:#d8e7df;border:1px solid #173126;border-radius:10px;padding:14px;font:12px Consolas,monospace;line-height:1.45;outline:none;white-space:pre}
+
+.insight-grid{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:12px;margin:14px 0 18px}
+.insight{position:relative;overflow:hidden;padding:15px 16px;border-radius:14px;border:1px solid #214538;background:linear-gradient(145deg,#0b1c16,#08130f)}
+.insight:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 90% 0%,rgba(91,231,190,.08),transparent 42%);pointer-events:none}
+.insight label{display:block;color:#719b8b;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px}
+.insight b{display:block;font-size:15px;line-height:1.25;color:#f2fbf7}.insight p{margin:7px 0 0;font-size:11px;line-height:1.45;color:#9bb5aa}
+.insight.warn{border-color:#654d20;background:linear-gradient(145deg,#20190b,#11120d)}.insight.warn b{color:#ffd47c}
+.insight.good{border-color:#1f5c49}.insight.good b{color:#6ef2cf}
+.run-health{display:flex;gap:7px;align-items:center;margin:10px 0 0}.health-dot{width:8px;height:8px;border-radius:50%;background:#6ef2cf;box-shadow:0 0 12px rgba(110,242,207,.65)}
+.report-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.report-mini div{border:1px solid #1a382d;border-radius:10px;padding:9px;background:#08140f}.report-mini small{color:#76998b;display:block;font-size:9px;text-transform:uppercase;letter-spacing:.08em}.report-mini b{font-size:12px}
+.card h3{letter-spacing:.01em}.badge strong{letter-spacing:.04em}
+.intel-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid #285342;border-radius:999px;background:#0a1913;color:#6ef2cf;font-size:9px;font-weight:900;letter-spacing:.08em}
+.intel-chip:before{content:"";width:5px;height:5px;border-radius:50%;background:#6ef2cf;box-shadow:0 0 10px #6ef2cf}
+
+:root{--bg:#040b08;--panel:#0a1712;--line:#1c3b30;--muted:#789a8d;--text:#f2fbf7;--mint:#6ef2cf;--orange:#ff9b2f;--red:#ff6262}
+body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transparent 27%),radial-gradient(circle at 100% 0%,rgba(255,155,47,.05),transparent 22%),linear-gradient(180deg,#04100b 0%,#030906 100%)}
+.sidebar{background:linear-gradient(180deg,#07110d,#030806 72%);border-right:1px solid #173026;box-shadow:18px 0 50px rgba(0,0,0,.22)}
+.brand{padding:20px 16px 18px}.brand img{width:42px;height:42px;border-radius:11px;box-shadow:0 0 0 1px #29473b,0 10px 24px rgba(0,0,0,.4)}
+.nav button{position:relative;border-radius:11px;margin:3px 9px;width:calc(100% - 18px);padding:11px 13px;transition:.18s}.nav button:hover{transform:translateX(2px);background:#0b1913}.nav button.active{background:linear-gradient(90deg,#10261e,#0b1a14);box-shadow:inset 3px 0 0 var(--mint)}
+.card{background:linear-gradient(150deg,rgba(14,31,24,.98),rgba(8,18,14,.98));border:1px solid #1d3d31;border-radius:17px;box-shadow:0 20px 45px rgba(0,0,0,.16)}.card:hover{border-color:#285344}
+.start{border-radius:11px;background:linear-gradient(135deg,#6ef2cf,#42d8af);box-shadow:0 9px 24px rgba(54,214,170,.18)}
+.field input,.field select{background:#07130e;border:1px solid #204336;border-radius:11px}
+.stat{background:linear-gradient(145deg,#091711,#07110d);border-color:#1c3a2f;border-radius:13px}
+.hero-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 16px}.hero-metric{padding:13px 14px;border:1px solid #1b3b2f;border-radius:13px;background:linear-gradient(145deg,#0a1913,#07110d)}.hero-metric small{display:block;color:#6f9486;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}.hero-metric b{font-size:17px}
+.cost-bar{height:8px;border-radius:999px;background:#06100c;overflow:hidden;border:1px solid #143126;margin-top:8px}.cost-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#6ef2cf,#ff9b2f)}
+.pagehead{display:flex;align-items:end;justify-content:space-between}.pagehead:after{content:"FORGEBOSS CONTROL";font-size:9px;color:#4f7566;letter-spacing:.16em;font-weight:900}.pagehead h2{font-size:23px}
+.intel-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid #285342;border-radius:999px;background:#0a1913;color:#6ef2cf;font-size:9px;font-weight:900;letter-spacing:.08em}.intel-chip:before{content:"";width:5px;height:5px;border-radius:50%;background:#6ef2cf;box-shadow:0 0 10px #6ef2cf}
+.empty-state{padding:28px;text-align:center;color:#6f9486;border:1px dashed #204033;border-radius:13px;background:#07110d}
+
+/* v2.2.7 live-ops activity */
+@keyframes fbSpin{to{transform:rotate(360deg)}}
+@keyframes fbPulse{0%,100%{box-shadow:0 0 0 0 rgba(110,242,207,.34)}50%{box-shadow:0 0 0 8px rgba(110,242,207,0)}}
+.timeline .active .ico,.activity .active .ico,.event.active .ico{
+  border-color:var(--mint);color:var(--mint);animation:fbSpin 1.2s linear infinite,fbPulse 1.8s ease-in-out infinite;
+}
+.timeline .active .ico::after,.activity .active .ico::after,.event.active .ico::after{content:"";display:block;width:6px;height:6px;border-radius:50%;background:var(--mint)}
+.working-chip{display:inline-flex;align-items:center;gap:8px;color:var(--mint);font-weight:800}
+</style>
+</head>
+<body>
+<div id="bootGuard" style="position:fixed;right:22px;bottom:18px;z-index:9999;background:#0d1915;border:1px solid #1f3c31;color:#8ea79c;padding:8px 12px;border-radius:9px;font:11px Segoe UI,Arial">Connecting to ForgeBoss engine…</div>
+<div class="app">
+<aside class="sidebar">
+ <div class="brand"><img src="assets/siteboss-logo.png"><div><h1>ForgeBoss</h1><small>BUILDING SITEBOSS</small></div></div>
+ <div class="nav">
+  <button class="active" onclick="page('dashboard',this)">▦ &nbsp; Dashboard</button><button onclick="page('tasks',this)">◈ &nbsp; Tasks</button><button onclick="page('workers',this)">⚙ &nbsp; Workers</button><button onclick="page('costs',this)">$ &nbsp; Costs</button><button onclick="page('activity',this)">↻ &nbsp; Activity</button><button onclick="page('settings',this)">◌ &nbsp; Settings</button>
+ </div>
+ <div class="sys"><div><span class="dot"></span>LOCAL CONTROL ONLINE</div><div style="margin-top:12px;display:grid;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center">MERGE <div id="sideMerge" class="toggle" onclick="toggleAuth('merge_enabled')"></div></div><div style="display:flex;justify-content:space-between;align-items:center">DEPLOY <div id="sideDeploy" class="toggle" onclick="toggleAuth('deploy_enabled')"></div></div></div></div>
+</aside>
+
+<main class="main">
+ <section id="dashboard" class="page active"><div class="top">
+  <div class="title"><h2>Engineering Control Center</h2><p>Autonomous diagnose, repair, test and review control for SiteBoss &nbsp; <span class="intel-chip">UNIFIED EXECUTOR SECURITY</span></p></div>
+  <div class="badges"><div class="badge">STATUS <strong id="statusBadge">IDLE</strong></div><div class="badge">SPEND <strong id="topSpend">$0.00</strong></div></div>
+ </div>
+
+ <div class="insight-grid">
+   <div class="insight" id="blockerCard"><label>Current blocker</label><b id="blockerTitle">Waiting for run evidence</b><p id="blockerDetail">ForgeBoss will explain exactly what failed and why.</p></div>
+   <div class="insight good"><label>Repair Rat memory</label><b id="memoryTitle">LEARNING ENGINE ACTIVE</b><p id="memoryDetail">Proven repairs replay at $0. Failed/refused strategies teach the next evidence search.</p></div>
+   <div class="insight"><label>Next best action</label><b id="nextActionTitle">Run focused repair</b><p id="nextActionDetail">No blind retries. New evidence first.</p></div>
+  </div>
+
+ <div class="hero-strip">
+   <div class="hero-metric"><small>Repair Rat</small><b id="heroRat">LOCAL-FIRST</b></div>
+   <div class="hero-metric"><small>AI Lane</small><b id="heroLane">CHEAP-FIRST</b></div>
+   <div class="hero-metric"><small>Known Spend</small><b id="heroSpend">$0.00</b><div class="cost-bar"><i id="heroSpendBar"></i></div></div>
+   <div class="hero-metric"><small>Safety</small><b>LOCKED</b></div>
+  </div>
+ <div class="grid">
+  <div>
+   <section class="card">
+    <h3>Work Session</h3>
+    <div class="controls">
+     <div class="field"><label>DURATION</label><select id="duration"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120" selected>2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="until-stop">RUN UNTIL STOPPED</option></select></div>
+     <div class="field"><label>MAX API SPEND</label><input id="budget" type="number" step=".10" min=".10" value="3.00"></div>
+     <div class="field"><label>MODE</label><select id="mode"><option value="cost-optimized">Cost optimized · Repair Rat first → Luna</option><option value="balanced">Balanced · Terra</option><option value="strong">Strong · Sol</option></select></div>
+     <button class="start" onclick="startBuild()">▶ START BUILD</button>
+    </div>
+    <div class="stats">
+     <div class="stat"><b id="stage">IDLE</b><span>Current stage</span></div>
+     <div class="stat"><b id="timeLeft">--:--:--</b><span id="timeLabel">Time left</span></div>
+     <div class="stat"><b id="spend">$0.00 / $3.00</b><span>Session spend</span></div>
+     <div class="stat"><b id="cycle">0</b><span>Build cycle</span></div>
+    </div>
+    <div class="progress"><i id="budgetBar"></i></div>
+    <div class="actions"><button class="secondary danger" onclick="safeStop()">STOP SAFELY</button><button class="secondary" onclick="retest()">RETEST LAST CANDIDATES · $0</button><button class="secondary" onclick="league()">RUN CATEGORY LEAGUE · $1 TARGET</button></div>
+   </section>
+
+   <section class="card activity">
+    <h3>What ForgeBoss Is Doing</h3>
+    <div id="timeline" class="timeline"></div>
+   </section>
+  </div>
+
+  <div>
+   <section class="card">
+    <h3>Last Candidate Re-test</h3>
+    <div class="result-row"><span>mini-SWE</span><b id="miniResult" class="none">NO RESULT</b></div>
+    <div class="result-row"><span>OpenHands</span><b id="ohResult" class="none">NO RESULT</b></div>
+    <p id="resultSummary" class="muted" style="font-size:12px;line-height:1.5;margin:12px 0 0">No saved re-test result yet.</p>
+    <p class="orange" style="font-size:11px;font-weight:800">$0.00 new AI spend when re-testing saved candidates</p>
+   </section>
+
+   <section class="card" style="margin-top:18px">
+    <h3>Last Run Intelligence</h3>
+    <p id="runReportSummary" class="muted" style="font-size:12px;line-height:1.5">No completed autonomous run report yet.</p>
+    <div class="report-mini"><div><small>Outcome</small><b id="reportOutcome">—</b></div><div><small>Spend</small><b id="reportSpend">—</b></div><div><small>Cycles</small><b id="reportCycles">—</b></div></div>
+    <div class="actions"><button class="secondary" onclick="showRunReport()">OPEN FULL DIAGNOSIS</button><button class="secondary" onclick="publishRunReport()">PUBLISH FINDINGS</button></div>
+   </section>
+
+   <section class="card" style="margin-top:18px">
+    <h3>Executor Pool</h3>
+    <div id="engines"></div>
+   </section>
+
+   <section class="card" style="margin-top:18px">
+    <h3>Safety Contract</h3>
+    <div class="safety"><span>Exact Git HEAD</span><span class="on">ENFORCED</span><span>Bounded write scope</span><span class="on">ENFORCED</span><span>Independent review</span><span class="warn">NOT YET ENFORCED</span><span>Draft PR</span><span class="on">AFTER PASS</span><span>Merge</span><span class="off">OFF</span><span>Deploy</span><span class="off">OFF</span></div>
+   </section>
+  </div>
+ </div>
+ <div class="footer"><span>ForgeBoss <span class="orange">v2.2.7</span> · SiteBoss engineering system</span><span>POWER TO THE TRADIES. NO BULL.</span></div>
+</section>
+<section id="tasks" class="page"><div class="pagehead"><div><h2>Tasks</h2><p>Current SiteBoss work packets, locked scope and authoritative Git state.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Queue</small><b id="taskCount">0</b></div><div class="hero-metric"><small>Write Policy</small><b>BOUNDED</b></div><div class="hero-metric"><small>Git State</small><b>EXACT HEAD</b></div><div class="hero-metric"><small>Publish</small><b>DRAFT ONLY</b></div></div>
+<div class="card"><h3>Authoritative Work Queue</h3><table class="table"><thead><tr><th>TASK</th><th>STATUS</th><th>WRITE SCOPE</th><th>HEAD</th></tr></thead><tbody id="taskRows"></tbody></table></div></section>
+<section id="workers" class="page"><div class="pagehead"><div><h2>Workers</h2><p>Executor readiness, specialisation and promotion status.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Strategy</small><b>REPAIR RAT FIRST</b></div><div class="hero-metric"><small>Escalation</small><b>LUNA → TERRA → SOL</b></div><div class="hero-metric"><small>Promotion</small><b>BENCHMARKED</b></div><div class="hero-metric"><small>Review</small><b>INDEPENDENT</b></div></div><div id="workerGrid" class="worker-grid"></div><div class="card" style="margin-top:18px"><h3>Category Designations</h3><table class="table"><tbody id="designationRows"></tbody></table></div></section>
+<section id="costs" class="page"><div class="pagehead"><div><h2>Costs</h2><p>AI spend, cheap-first routing and budget protection.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Session Spend</small><b id="costSession">$0.00</b></div><div class="hero-metric"><small>Session Cap</small><b id="costCap">$0.00</b></div><div class="hero-metric"><small>Mode</small><b id="costMode">CHEAP-FIRST</b></div><div class="hero-metric"><small>Overspend Guard</small><b>ENFORCED</b></div></div>
+<div class="card"><h3 id="knownCost">Known spend $0.00</h3><table class="table"><tbody id="costRows"></tbody></table></div></section>
+<section id="activity" class="page"><div class="pagehead"><div><h2>Activity</h2><p>Owner-friendly engineering history with technical drill-down.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>View</small><b>PLAIN ENGLISH</b></div><div class="hero-metric"><small>Evidence</small><b>CLICK TO OPEN</b></div><div class="hero-metric"><small>Logs</small><b>LOCAL</b></div><div class="hero-metric"><small>GitHub Writes</small><b>CONTROLLED</b></div></div>
+<div class="card"><h3>Engineering Timeline</h3><div id="fullTimeline" class="timeline"></div></div></section>
+<section id="settings" class="page"><div class="pagehead"><div><h2>Settings</h2><p>Owner authority, budget policy and autonomous operating limits.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Merge</small><b id="setHeroMerge">OFF</b></div><div class="hero-metric"><small>Deploy</small><b id="setHeroDeploy">OFF</b></div><div class="hero-metric"><small>Risk</small><b id="setHeroRisk">CONSERVATIVE</b></div><div class="hero-metric"><small>Review Gate</small><b>REQUIRED</b></div></div><div class="grid"><div class="card"><h3>Authority</h3><div class="setting"><div><b>Merge permission</b><p class="muted">Arms merge authority after all gates. Auto-merge is not wired yet.</p></div><div id="setMerge" class="toggle" onclick="toggleAuth('merge_enabled')"></div></div><div class="setting"><div><b>Deploy permission</b><p class="muted">Arms future deployment authority. Deploy adapter is not wired yet.</p></div><div id="setDeploy" class="toggle" onclick="toggleAuth('deploy_enabled')"></div></div></div><div class="card"><h3>Policy</h3><div class="field"><label>DAILY BUDGET</label><input id="dailyBudget" value="10.00" type="number"></div><div class="field" style="margin-top:12px"><label>RISK MODE</label><select id="riskMode"><option value="conservative">Conservative</option><option value="balanced">Balanced · Terra</option></select></div><button class="secondary" style="margin-top:14px" onclick="savePolicy()">SAVE SETTINGS</button></div></div></section></main>
+</div>
+<script>
+let last={};
+function cls(el,status){el.className=status==='PASS'?'pass':(status==='FAIL'||status==='VALIDATOR ERROR')?'fail':'none'}
+function resultText(x){if(!x)return'NO RESULT';if(x.status==='VALIDATOR ERROR')return 'VALIDATOR ERROR';if(x.status==='FAIL'&&x.failures!=null)return `FAIL (${x.failures})`;return x.status||'NO RESULT'}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function icon(k){return k==='ok'?'✓':k==='warn'?'!':k==='money'?'$':k==='work'?'›':'•'}
+function page(id,b){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active')}
+function tog(id,on){let e=document.getElementById(id);if(e)e.classList.toggle('on',!!on)}
+async function toggleAuth(n){let cur=!!last.owner_settings?.[n],next=!cur;if(next&&!confirm(`Arm ${n.startsWith('merge')?'MERGE':'DEPLOY'} permission?\n\nThis does not bypass tests/review and automatic execution is not wired yet.`))return;await window.pywebview.api.set_safety_toggle(n,next);await snapshot()}
+async function savePolicy(){await window.pywebview.api.save_settings({daily_budget_usd:Number(dailyBudget.value),risk_mode:riskMode.value,require_review:true});alert('Settings saved')}
+function extended(s){let st=s.owner_settings||{};tog('sideMerge',st.merge_enabled);tog('sideDeploy',st.deploy_enabled);tog('setMerge',st.merge_enabled);tog('setDeploy',st.deploy_enabled);dailyBudget.value=st.daily_budget_usd??10;riskMode.value=st.risk_mode||'conservative';
+taskRows.innerHTML=(s.tasks||[]).map(x=>`<tr><td>${esc(x.id)}<br><span class="muted">${esc(x.title||'')}</span></td><td>${esc(x.status)}</td><td>${esc(x.scope??'-')}</td><td>${esc(x.head||'-')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No task packet saved yet.</td></tr>';
+workerGrid.innerHTML=Object.entries(s.engines||{}).map(([n,v])=>`<div class="worker-card"><b>${esc(n)}</b><p class="muted">${v.ready?'READY':'CHECKING'} ${esc(v.version||'')}</p></div>`).join('');
+designationRows.innerHTML=Object.entries(s.league?.winners||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v||'Not designated')}</td></tr>`).join('')||'<tr><td class="muted">Run category league to create assignments.</td></tr>';
+knownCost.textContent=`Known recorded spend $${Number(s.costs?.known_total||0).toFixed(2)}`;costRows.innerHTML=(s.costs?.items||[]).map(x=>`<tr><td>${esc(x.source)}</td><td>$${Number(x.cost).toFixed(4)}</td></tr>`).join('')||'<tr><td class="muted">No recorded cost events.</td></tr>';
+fullTimeline.innerHTML=(s.activity||[]).map(e=>{
+ const clickable=e.key==='retest';
+ return `<div class="event ${esc(e.kind||'')}${clickable?' clickable':''}" ${clickable?'data-event-key="retest"':''}><div class="icon">${icon(e.kind)}</div><div><h4>${esc(e.message)}<span class="time">${esc(e.time||'')}</span></h4><p>${esc(e.detail||'')}${clickable?' - Click to see code/tests':''}</p></div></div>`
+}).join('');
+ fullTimeline.querySelectorAll('[data-event-key="retest"]').forEach(el=>el.addEventListener('click',()=>showEventDetails('retest','Candidate re-test')));
+}
+async function snapshot(){
+ try{
+  const s=await window.pywebview.api.get_snapshot();last=s;
+  statusBadge.textContent=s.running?'RUNNING':(s.stage||'IDLE');stage.textContent=s.stage||'IDLE';cycle.textContent=s.current_cycle||0;
+  const spent=Number(s.spent_usd||0),cap=Number(s.budget_usd||0);spend.textContent=`$${spent.toFixed(2)} / $${cap.toFixed(2)}`;topSpend.textContent=`$${spent.toFixed(2)}`;
+  heroSpend.textContent=`$${spent.toFixed(4)}`;heroSpendBar.style.width=`${Math.min(100,cap?spent/cap*100:0)}%`;
+  heroLane.textContent=(s.mode||'cost-optimized').toUpperCase().replaceAll('-',' ');
+  heroRat.textContent=String(s.stage||'').toUpperCase()==='DRAFT_READY'?'PROVEN REPAIR':'LOCAL-FIRST';
+  if(document.getElementById('costSession'))costSession.textContent=`$${spent.toFixed(4)}`;
+  if(document.getElementById('costCap'))costCap.textContent=`$${cap.toFixed(2)}`;
+  if(document.getElementById('costMode'))costMode.textContent=(s.mode||'cost-optimized').toUpperCase().replaceAll('-',' ');
+  if(document.getElementById('taskCount'))taskCount.textContent=String((s.tasks||[]).length);
+  if(document.getElementById('setHeroMerge'))setHeroMerge.textContent=s.owner_settings?.merge_enabled?'ARMED':'OFF';
+  if(document.getElementById('setHeroDeploy'))setHeroDeploy.textContent=s.owner_settings?.deploy_enabled?'ARMED':'OFF';
+  if(document.getElementById('setHeroRisk'))setHeroRisk.textContent=String(s.owner_settings?.risk_mode||'conservative').toUpperCase();
+  budgetBar.style.width=`${Math.min(100,cap?spent/cap*100:0)}%`;
+  const rm=s.last_run_report||{};const gr=s.github_run_report||{};
+  runReportSummary.textContent=rm.run_id?`${rm.run_id} · ${gr.ok?'findings published to GitHub':'local report ready'}`:'No completed autonomous run report yet.';
+  reportOutcome.textContent=s.stage||'—';reportSpend.textContent=`$${Number(s.spent_usd||0).toFixed(4)}`;reportCycles.textContent=String(s.current_cycle||0);
+  let stageText=String(s.stage||'').toUpperCase(),msg=String(s.message||'');
+  blockerTitle.textContent=stageText==='DRAFT_READY'?'Green candidate ready':stageText==='GATHERING_EVIDENCE'?'AI needs more evidence':stageText==='NEEDS_OWNER'?'Repair unresolved':stageText==='BUDGET_BLOCKED'?'Budget protected':(stageText||'Watching SiteBoss');
+  blockerDetail.textContent=msg||'ForgeBoss is monitoring the current engineering state.';
+  blockerCard.classList.toggle('warn',['NEEDS_OWNER','BUDGET_BLOCKED','INFRA_ERROR','GATHERING_EVIDENCE'].includes(stageText));
+  nextActionTitle.textContent=stageText==='GATHERING_EVIDENCE'?'Gather locally, then retry once':stageText==='DRAFT_READY'?'Review draft evidence':stageText==='BUDGET_BLOCKED'?'Use cheaper/smaller lane':stageText==='NEEDS_OWNER'?'Inspect full diagnosis':'Continue focused workflow';
+  nextActionDetail.textContent=stageText==='GATHERING_EVIDENCE'?'ForgeBoss is collecting the missing facts at $0 before another model call.':'Open the full diagnosis for exact failure, rationale, tests and diff.';
+  if(s.running&&s.duration_mode==='until-stopped'){
+   timeLabel.textContent='Running for';
+   let ms=s.started_at?(Date.now()-new Date(s.started_at).getTime()):0;if(ms<0||!Number.isFinite(ms))ms=0;
+   let q=Math.floor(ms/1000),hh=Math.floor(q/3600),mm=Math.floor((q%3600)/60),ss=q%60;
+   timeLeft.textContent=[hh,mm,ss].map(v=>String(v).padStart(2,'0')).join(':');
+  }
+  else if(s.running&&s.ends_at){
+   timeLabel.textContent='Time left';
+   let ms=new Date(s.ends_at)-new Date();if(ms<0)ms=0;let q=Math.floor(ms/1000),hh=Math.floor(q/3600),mm=Math.floor((q%3600)/60),ss=q%60;
+   timeLeft.textContent=[hh,mm,ss].map(v=>String(v).padStart(2,'0')).join(':')
+  }
+  else{
+   timeLabel.textContent=(s.duration_mode==='until-stopped'&&s.started_at)?'Last runtime':'Time left';
+   if(s.duration_mode==='until-stopped'&&s.started_at){
+    const end=s.finished_at?new Date(s.finished_at).getTime():Date.now();
+    let ms=end-new Date(s.started_at).getTime();if(ms<0||!Number.isFinite(ms))ms=0;
+    let q=Math.floor(ms/1000),hh=Math.floor(q/3600),mm=Math.floor((q%3600)/60),ss=q%60;
+    timeLeft.textContent=[hh,mm,ss].map(v=>String(v).padStart(2,'0')).join(':');
+   }else timeLeft.textContent='--:--:--';
+  }
+  engines.innerHTML='';for(const [n,v] of Object.entries(s.engines||{})){const row=document.createElement('div');row.className='engine';const name=document.createElement('span');name.textContent=n;const state=document.createElement('span');state.className=v.ready?'ready':'waiting';state.textContent=v.ready?'READY':'CHECKING';row.append(name,state);engines.appendChild(row)}
+  const mr=s.retest?.['mini-swe']||{},or=s.retest?.openhands||{};miniResult.textContent=resultText(mr);ohResult.textContent=resultText(or);cls(miniResult,mr.status);cls(ohResult,or.status);
+  let w=s.retest?.winner;if(w==='both-pass-needs-cost-tiebreak')resultSummary.textContent='Both candidates passed. Cost and independent review decide the preferred worker.';else if(w)resultSummary.textContent=`${w} passed validation and currently leads this task class.`;else if(mr.status==='VALIDATOR ERROR'||or.status==='VALIDATOR ERROR')resultSummary.textContent='ForgeBoss validator failed before tests ran. This is an infrastructure error, not a worker failure.';else if(mr.status==='FAIL'||or.status==='FAIL')resultSummary.textContent='No verified winner yet. Real test failures are saved for diagnosis.';else resultSummary.textContent='No saved re-test result yet.';
+  timeline.innerHTML='';let ev=s.activity||[];if(!ev.length)ev=[{kind:'info',message:'ForgeBoss is ready.',detail:'Start a build, re-test saved work, or run the category league.',time:''}];
+  for(const e of ev){
+   const d=document.createElement('div');d.className=`event ${String(e.kind||'').replace(/[^a-z0-9_-]/gi,'')}${e.key==='retest'?' clickable':''}`;
+   const ic=document.createElement('div');ic.className='icon';ic.textContent=icon(e.kind);
+   const body=document.createElement('div'),title=document.createElement('h4'),tm=document.createElement('span'),p=document.createElement('p');
+   tm.className='time';tm.textContent=e.time||'';title.textContent=e.message||'';title.appendChild(tm);
+   p.textContent=(e.detail||'')+(e.key==='retest'?' - Click to see code/tests':'');
+   body.append(title,p);d.append(ic,body);
+   if(e.key==='retest')d.addEventListener('click',()=>showEventDetails('retest','Candidate re-test'));
+   timeline.appendChild(d);
+  }extended(s)
+ }catch(e){}
+}
+async function startBuild(){
+ let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw);
+ let dur=forever?'until you stop the session':`${d} minutes`;
+ if(!confirm(`ForgeBoss will work ${dur} and may spend up to $${b.toFixed(2)}.\n\nIt will diagnose failed cycles and retry with fresh evidence. Draft PR only after green gates. Merge/deploy execution remains disabled.\n\nStart?`))return;
+ await window.pywebview.api.start_build({budget_usd:b,duration_minutes:d,duration_mode:forever?'until-stopped':'timed',mode:mode.value})
+}
+async function safeStop(){await window.pywebview.api.safe_stop()}
+async function retest(){if(confirm('Re-test the saved mini-SWE and OpenHands candidates?\n\nNew AI spend: $0.00'))await window.pywebview.api.run_retest()}
+async function league(){if(confirm('Run the all-category league?\n\nTarget AI spend: $1.00. No merge/deploy.'))await window.pywebview.api.run_league()}
+async function showRunReport(){
+ const m=document.getElementById('codeModal'),t=document.getElementById('codeText');
+ document.getElementById('codeTitle').textContent='ForgeBoss overall run report';
+ m.classList.add('show');t.value='Loading overall run report…';
+ try{const r=await window.pywebview.api.get_last_run_report();t.value=r.text||'No report available.';t.scrollTop=0}catch(e){t.value='Could not load report: '+e}
+}
+async function publishRunReport(){
+ try{
+  const r=await window.pywebview.api.publish_last_run_report();
+  if(r.ok)alert('Run findings published to GitHub.');
+  else if(!r.cancelled)alert((r.message||'Publication failed')+'\n\nLocal report is still saved.');
+ }catch(e){alert('Publication failed: '+e)}
+}
+async function showEventDetails(key,title){
+ const m=document.getElementById('codeModal'),t=document.getElementById('codeText');
+ document.getElementById('codeTitle').textContent=title||'Technical details';
+ m.classList.add('show');t.value='Loading code and test evidence…';
+ try{const r=await window.pywebview.api.get_event_details(key);t.value=r.text||'No details available.';t.scrollTop=0}catch(e){t.value='Could not load details: '+e}
+}
+function closeCodeModal(){document.getElementById('codeModal').classList.remove('show')}
+async function copyCode(){const t=document.getElementById('codeText');try{await navigator.clipboard.writeText(t.value)}catch(e){t.focus();t.select();document.execCommand('copy')}}
+function saveCode(){const t=document.getElementById('codeText').value,b=new Blob([t],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='forgeboss-candidate-details.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+window.addEventListener('pywebviewready',()=>{const b=document.getElementById('bootGuard');if(b)b.remove();snapshot();setInterval(snapshot,1200)});
+</script>
+
+<div id="codeModal" class="code-modal" onclick="if(event.target.id==='codeModal')closeCodeModal()">
+ <div class="code-box">
+  <div class="code-head">
+   <div><h3 id="codeTitle">Technical details</h3><p>Raw diff + test evidence. Copy this straight into ChatGPT.</p></div>
+   <div class="code-actions"><button onclick="copyCode()">COPY ALL</button><button onclick="saveCode()">SAVE TXT</button><button onclick="closeCodeModal()">CLOSE</button></div>
+  </div>
+  <div class="code-body"><textarea id="codeText" readonly spellcheck="false">Loading…</textarea></div>
+ </div>
+</div>
+
+</body>
+</html>

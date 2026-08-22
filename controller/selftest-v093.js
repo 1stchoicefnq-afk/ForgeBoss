@@ -1,0 +1,14 @@
+'use strict';
+const {selectRepairTarget}=require('./lib/control');
+let fail=0;const ok=(n,v)=>{console.log(`[${v?'PASS':'FAIL'}] ${n}`);if(!v)fail++;};
+const child={root_pr:{number:168,head_sha:'aaa',head_ref:'beta'},repair_pr:{number:600,head_sha:'bbb',head_ref:'repair',base_sha:'aaa',base_ref:'beta'},binding:{status:'EXACT_REPAIR_CHILD_BOUND'}};
+const a=selectRepairTarget(child);
+ok('existing child mode',a.mode==='existing-child');
+ok('existing child target',a.repair_pr===600&&a.target_sha==='bbb'&&a.base_sha==='aaa');
+const noChild={root_pr:{number:168,head_sha:'newhead',head_ref:'beta',base_sha:'mainsha',base_ref:'main'},repair_pr:null,binding:{status:'NO_CURRENT_EXACT_REPAIR_CHILD'}};
+const b=selectRepairTarget(noChild);
+ok('parent local mode',b.mode==='parent-head-local');
+ok('parent local no repair pr',b.repair_pr===null);
+ok('parent local target root head',b.target_sha==='newhead');
+ok('parent local upstream base',b.base_sha==='mainsha');
+process.exit(fail?2:0);

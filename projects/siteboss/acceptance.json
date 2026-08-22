@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "commands": [
+    {
+      "name": "npm_test",
+      "command": [
+        "npm",
+        "test"
+      ],
+      "required": true
+    },
+    {
+      "name": "postgres_acceptance",
+      "command": [
+        "node",
+        "--test",
+        "tests/postgres*.integration.test.js"
+      ],
+      "required": true
+    }
+  ],
+  "retain_partial_wins": true,
+  "full_green_required_for_publish": true
+}

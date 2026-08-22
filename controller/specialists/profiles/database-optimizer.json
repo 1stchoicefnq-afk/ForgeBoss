@@ -1,0 +1,40 @@
+{
+  "id": "database-optimizer",
+  "name": "Database Optimizer",
+  "category": "database",
+  "source": "agency-agents",
+  "source_path": "engineering/engineering-database-optimizer.md",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "capabilities": [
+    "postgresql",
+    "indexes",
+    "query-analysis",
+    "migrations",
+    "transactions"
+  ],
+  "risk_level": "high",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "database-reliability-engineer",
+    "code-reviewer"
+  ],
+  "routing_terms": [
+    "postgres",
+    "postgresql",
+    "sql",
+    "database",
+    "index",
+    "migration",
+    "transaction",
+    "serializable",
+    "40001",
+    "40p01",
+    "query"
+  ],
+  "siteboss_profile": "Focus on PostgreSQL correctness and performance: transaction boundaries, isolation, query plans, indexes and safe migrations. Preserve idempotency and data integrity; never hide failures by weakening isolation or tests.",
+  "adaptation": "Concise SiteBoss specialist profile; upstream persona authority/tool assumptions removed."
+}

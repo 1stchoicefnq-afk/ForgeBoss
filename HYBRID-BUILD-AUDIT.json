@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "version": "1.3-hybrid-worker-test",
+  "tests": [
+    {
+      "name": "hybrid_selftest",
+      "exit_code": 0,
+      "stdout": "[PASS] database escalates OpenAI\n[PASS] simple bounded task may use local\n[PASS] missing local provider falls back OpenAI\n[PASS] authorized read\n[PASS] unauthorized read denied\n[PASS] traversal denied\n[PASS] Windows absolute path denied\n[PASS] authorized exact edit\n[PASS] bounded grep\nHYBRID SELFTEST COMPLETE: PASS=9 FAIL=0\n",
+      "stderr": ""
+    },
+    {
+      "name": "hybrid_bridge_smoke",
+      "exit_code": 0,
+      "stdout": "[PASS] simple bounded task routes local-capable: local\n[PASS] allowed source readable\n[PASS] unauthorized read blocked\n[PASS] unauthorized write blocked\n[PASS] traversal blocked\n[PASS] Windows absolute path blocked\n[PASS] authorized exact edit succeeds\n[PASS] approved fixture test passes: PASS\n[PASS] only authorized file changed\nHYBRID BRIDGE SMOKE COMPLETE: PASS=9 FAIL=0\n",
+      "stderr": ""
+    },
+    {
+      "name": "controller_selftest",
+      "exit_code": 0,
+      "stdout": "{\n  \"pass\": 8,\n  \"fail\": 0,\n  \"results\": [\n    {\n      \"name\": \"features.github_writes_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.merge_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.deploy_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.model_calls_off_default\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"control.read_enabled\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"state.atomic\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"machine.invalid_transition_rejected\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"lock.duplicate_blocked\",\n      \"ok\": true,\n      \"detail\": \"\"\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "selftest-specialists.js",
+      "exit_code": 0,
+      "stdout": "[PASS] database selects optimizer: database-optimizer,minimal-change-engineer\n[PASS] auth selects IAM: identity-access-engineer,minimal-change-engineer\n[PASS] AI selects AI/orchestration: multi-agent-systems-architect,agents-orchestrator\n[PASS] frontend selects frontend: frontend-developer,minimal-change-engineer\n[PASS] CI selects DevOps: devops-automator,minimal-change-engineer\n[PASS] unknown safe fallback: minimal-change-engineer\n[PASS] governance appears first\n[PASS] allowlist preserved\n[PASS] context cannot become writable\n[PASS] specialist cannot grant merge\n[PASS] specialist cannot grant deploy\n[PASS] specialist cannot grant secret authority\n[PASS] specialist cannot widen scope\n[PASS] only selected profiles enter prompt\n[PASS] database review selects DBRE: database-reliability-engineer,reality-checker\n[PASS] reviewer differs from builder\n[PASS] IAM builder excluded from review: reality-checker,code-reviewer\n[PASS] independent code reviewer available: reality-checker,code-reviewer\n[PASS] hostile task cannot widen write authority\n[PASS] hostile task cannot grant merge/deploy\n[PASS] profile library bounded: 17\n[PASS] builder profile max two\n[PASS] review profile max two\n[PASS] all provenance retained\n[PASS] third party notice present\n[PASS] governance explicitly outranks profiles\nSPECIALIST SELFTEST: PASS=26 FAIL=0\n",
+      "stderr": ""
+    },
+    {
+      "name": "selftest-agency-core-team.js",
+      "exit_code": 0,
+      "stdout": "[PASS] 8 core roles registered: agents-orchestrator,rapid-prototyper,backend-architect,ai-engineer,whimsy-injector,growth-hacker,content-creator,reality-checker\n[PASS] core team exactly 8: 8\n[PASS] complex task selects Agents Orchestrator: agents-orchestrator,backend-architect\n[PASS] max two profiles: 2\n[PASS] Rapid Prototyper routes\n[PASS] Backend Architect routes\n[PASS] AI Engineer routes\n[PASS] Whimsy Injector routes\n[PASS] Growth Hacker routes\n[PASS] Content Creator routes\n[PASS] Reality Checker final gate: reality-checker,code-reviewer\n[PASS] builder excluded from review: reality-checker,code-reviewer\n[PASS] orchestrator cannot merge\n[PASS] orchestrator cannot deploy\n[PASS] orchestrator cannot widen scope\n[PASS] governance section first\n[PASS] core MIT provenance\nAGENCY CORE TEAM SELFTEST: PASS=17 FAIL=0\n",
+      "stderr": ""
+    },
+    {
+      "name": "deepagents_policy",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Spreadsheet runtime warmup failed during python startup\nTraceback (most recent call last):\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/patches/warm_spreadsheet_runtime_on_startup.py\", line 26, in warm_spreadsheet_runtime_on_startup\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/spreadsheet_warmup.py\", line 785, in warm_spreadsheet_runtime\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/spreadsheet_warmup.py\", line 720, in _warm_feature_flows\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/spreadsheet_warmup.py\", line 704, in _warm_collaboration_flows\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/generated/interface/models.py\", line 32317, in hydrate_crdt_from_proto\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/rpc/remote.py\", line 749, in __call__\n  File \"/tmp/tmp.L2TH2Y5coc/artifact_tool_v2-2.8.22/artifact_tool/rpc/client.py\", line 150, in call\nartifact_tool.rpc.client.RemoteError: hydrateCrdtFromProto requires an empty collaborative document.\ntest_authorized (__main__.T.test_authorized) ... ok\ntest_command_budget (__main__.T.test_command_budget) ... ok\ntest_command_denied (__main__.T.test_command_denied) ... ok\ntest_controller (__main__.T.test_controller) ... ok\ntest_drive (__main__.T.test_drive) ... ok\ntest_file_budget (__main__.T.test_file_budget) ... ok\ntest_lease (__main__.T.test_lease) ... ok\ntest_parent (__main__.T.test_parent) ... ok\ntest_read (__main__.T.test_read) ... ok\ntest_stale_head (__main__.T.test_stale_head) ... ok\ntest_symlink_escape (__main__.T.test_symlink_escape) ... ok\ntest_unauthorized (__main__.T.test_unauthorized) ... ok\ntest_unc (__main__.T.test_unc) ... ok\n\n----------------------------------------------------------------------\nRan 13 tests in 1.496s\n\nOK\n"
+    }
+  ],
+  "summary": {
+    "tests_run": 6,
+    "failed": 0,
+    "model_calls": 0,
+    "github_writes": 0,
+    "merge": false,
+    "deploy": false
+  }
+}

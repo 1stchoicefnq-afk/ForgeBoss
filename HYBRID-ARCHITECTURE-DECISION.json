@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "decisions": {
+    "agency-agents": "ADOPT_SELECTED_COMPONENTS",
+    "deepagents": "ADOPT_SELECTED_COMPONENTS",
+    "opencode": "ADOPT_SELECTED_COMPONENTS"
+  },
+  "keep_custom": [
+    "GitHub live truth",
+    "controller",
+    "scheduler",
+    "leases",
+    "immutable task packets",
+    "writer caps",
+    "path allowlists",
+    "branch/write authority",
+    "review exclusions",
+    "author/reviewer independence",
+    "budgets",
+    "release gates",
+    "owner decisions"
+  ],
+  "reuse_adapt": {
+    "agency-agents": [
+      "specialist intelligence",
+      "profile metadata/catalog patterns",
+      "reviewer personas"
+    ],
+    "deepagents": [
+      "context management",
+      "checkpoint/resume primitives",
+      "structured long-run state",
+      "bounded subagents later"
+    ],
+    "opencode": [
+      "file/search/edit workflow concepts",
+      "LSP",
+      "provider abstraction",
+      "plan/build separation",
+      "session/event patterns"
+    ]
+  },
+  "reject": [
+    "framework-owned authority",
+    "OpenCode permission layer as SiteBoss security sandbox",
+    "unrestricted shell as worker authority",
+    "Deep Agents LocalShellBackend",
+    "framework-owned GitHub merge/deploy",
+    "unbounded agent swarm"
+  ],
+  "first_slice": [
+    "deterministic model router abstraction",
+    "OpenCode-inspired guarded coding tools",
+    "disposable bridge smoke fixture",
+    "capability matrix",
+    "no-model/no-GitHub-write tests"
+  ],
+  "licensing_note": "Top-level projects are being treated as permissive/MIT based on prior audit; before copying any new upstream source into production, re-pin the exact current commit and capture resolved dependency licences."
+}

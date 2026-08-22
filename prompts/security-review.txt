@@ -1,0 +1,1 @@
+﻿Review tenant isolation, auth, secrets, PII, idempotency, transaction boundaries, ambiguous outcomes, validation and external side effects using evidence only.

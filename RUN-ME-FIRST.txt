@@ -1,0 +1,22 @@
+SITEBOSS v1.3.1 ONE-CLICK TEST
+
+Double-click only:
+
+    TEST-SITEBOSS-ONECLICK.cmd
+
+It runs, in order:
+1. Hybrid selftest
+2. Hybrid disposable bridge smoke
+3. Agency core-team selftest
+4. Deep Agents security tests
+5. SiteBoss controller selftest
+
+It stops immediately on a failure and prints the failing stage.
+
+This launcher makes:
+- 0 model calls
+- 0 GitHub writes
+- 0 merges
+- 0 deployments
+
+If everything passes, the next separate step is START-SITEBOSS.cmd, which performs the live/free GitHub planning check.

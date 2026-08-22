@@ -1,0 +1,6 @@
+{
+  "name": "ForgeBoss",
+  "purpose": "Autonomous engineering control plane that builds the SiteBoss application",
+  "product_under_development": "SiteBoss",
+  "version": "0.1-open-source-executors"
+}

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "write_roots": [
+    "src/",
+    "app/",
+    "tests/"
+  ],
+  "deny_roots": [
+    ".git/",
+    ".github/workflows/",
+    ".github/actions/",
+    "secrets/"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "id": "ai-engineer",
+  "name": "AI Engineer",
+  "category": "ai",
+  "source": "agency-agents",
+  "source_path": "engineering/engineering-ai-engineer.md",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "capabilities": [
+    "llm-integration",
+    "model-routing",
+    "structured-output",
+    "ai-runtime"
+  ],
+  "risk_level": "medium",
+  "allowed_modes": [
+    "builder"
+  ],
+  "recommended_reviewers": [
+    "code-reviewer",
+    "multi-agent-systems-architect"
+  ],
+  "routing_terms": [
+    "openai",
+    "anthropic",
+    "model",
+    "llm",
+    "responses api",
+    "structured output",
+    "embedding",
+    "ai"
+  ],
+  "siteboss_profile": "Implement bounded AI integrations with explicit schemas, retries, budgets and observable failures. Prefer deterministic local computation before model calls and never widen tools or permissions.",
+  "adaptation": "Concise SiteBoss specialist profile; upstream persona authority/tool assumptions removed."
+}

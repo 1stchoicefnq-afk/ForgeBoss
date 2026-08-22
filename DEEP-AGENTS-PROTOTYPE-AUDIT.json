@@ -1,0 +1,8 @@
+{
+  "security_tests": 13,
+  "fail": 0,
+  "deepagents_installed": false,
+  "paid_model_calls": 0,
+  "github_writes": 0,
+  "decision": "ADOPT_SELECTED_COMPONENTS_ONLY"
+}

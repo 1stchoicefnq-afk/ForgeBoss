@@ -1,0 +1,8 @@
+{
+  "decision": "ADOPT_SELECTED_COMPONENTS_ONLY",
+  "version": "0.7.6",
+  "license": "MIT",
+  "enabled": false,
+  "no_local_shell": true,
+  "subagents_first_slice": 0
+}

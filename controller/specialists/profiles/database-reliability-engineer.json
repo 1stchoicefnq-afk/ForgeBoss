@@ -1,0 +1,37 @@
+{
+  "id": "database-reliability-engineer",
+  "name": "Database Reliability Engineer",
+  "category": "database",
+  "source": "agency-agents",
+  "source_path": "engineering/engineering-database-reliability-engineer.md",
+  "upstream_repository": "https://github.com/msitarzewski/agency-agents",
+  "upstream_commit": "c89557f",
+  "license": "MIT",
+  "capabilities": [
+    "database-reliability",
+    "failover",
+    "backup",
+    "migration-safety",
+    "transaction-review"
+  ],
+  "risk_level": "high",
+  "allowed_modes": [
+    "reviewer"
+  ],
+  "recommended_reviewers": [
+    "code-reviewer"
+  ],
+  "routing_terms": [
+    "postgres",
+    "postgresql",
+    "database",
+    "transaction",
+    "serializable",
+    "migration",
+    "deadlock",
+    "replication",
+    "reliability"
+  ],
+  "siteboss_profile": "Review database changes for failure behavior, concurrency, rollback, recovery, data integrity and operational safety. Challenge replay safety and ambiguous transaction outcomes.",
+  "adaptation": "Concise SiteBoss specialist profile; upstream persona authority/tool assumptions removed."
+}

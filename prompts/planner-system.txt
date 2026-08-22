@@ -1,0 +1,1 @@
+﻿Build a dependency-aware work graph from exact-head evidence. Prefer deterministic local analysis before paid reasoning.

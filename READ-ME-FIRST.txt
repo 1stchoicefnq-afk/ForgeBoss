@@ -1,0 +1,31 @@
+SITEBOSS AUTOPILOT v0.9.5 — RELEVANCE-PRIORITISED WRITE SCOPE
+
+The v0.9.4 paid run proved source discovery was broad enough (45 files), but
+the 24-file write allowlist was selected in filename order.
+
+That caused the model to safely refuse because critical transaction files were
+context-only instead of writable.
+
+v0.9.5 ranks writable files by repair relevance:
+- controller must-write paths
+- current repair diff
+- configured seeds
+- SERIALIZABLE / 40001 / 40P01 / retry evidence
+- invitation / membership / identity evidence
+- import dependencies
+- reverse references
+- known PostgreSQL transaction boundaries
+
+Critical files currently forced to survive the write cap when discovered:
+- src/persistence/postgres.js
+- src/persistence/postgresApplicationServices.js
+- src/persistence/platformStore.js
+- src/travis/conversation.js
+- src/intake/postgresApplication.js
+- three focused PostgreSQL integration tests
+
+The overall write cap is still 24 files.
+GitHub publication, merge and deploy remain OFF.
+
+PAID TEST:
+  AUTOPILOT-REPAIR-PAID.cmd

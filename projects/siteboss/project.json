@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "siteboss",
+  "name": "SiteBoss",
+  "purpose": "Primary SiteBoss application",
+  "repository_env": "SITEBOSS_REPO_URL",
+  "default_branch": "main",
+  "profile_type": "application",
+  "max_parallel_workers": 4,
+  "smart_parallel": true
+}

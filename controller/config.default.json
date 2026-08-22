@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "controller_version": "forgeboss-0.1-open-source-executors",
+  "project": "SiteBoss",
+  "repository": {
+    "url": "https://github.com/1stchoicefnq-afk/siteboss-monster.git",
+    "expected_name": "siteboss-monster",
+    "default_branch": "main",
+    "local_mirror": "%USERPROFILE%\\.siteboss\\autopilot\\mirrors\\siteboss-monster.git"
+  },
+  "state": {
+    "root": "%USERPROFILE%\\.siteboss\\autopilot\\controller-state",
+    "lock_timeout_seconds": 90,
+    "heartbeat_seconds": 10
+  },
+  "budgets": {
+    "max_model_calls_per_run": 3,
+    "max_model_calls_per_day": 8,
+    "max_repair_retries": 2
+  },
+  "features": {
+    "live_execution": true,
+    "github_writes": true,
+    "model_calls": false,
+    "merge": false,
+    "deploy": false,
+    "github_reads": true,
+    "control_read": true,
+    "scope_planning": true,
+    "repair_pipeline": true,
+    "parent_head_local_repair": true
+  },
+  "adapters": {
+    "precheck": "CHECK-SITEBOSS.ps1",
+    "breaker": "BREAK-REPAIR-RAT.ps1",
+    "legacy_diagnostics": "SiteBoss-Builder.ps1"
+  },
+  "control": {
+    "owner": "1stchoicefnq-afk",
+    "repo": "siteboss-monster",
+    "root_pr": 168,
+    "github_app": {
+      "app_id": "4608230",
+      "installation_id": "154040429",
+      "pem_path": "%USERPROFILE%\\.siteboss\\secrets\\github-app-private-key.pem"
+    },
+    "preferred_repair_pr": 525,
+    "repair_discovery": {
+      "enabled": true,
+      "head_prefix": "autopilot/repair-pr{root_pr}-",
+      "require_exact_base_sha": true,
+      "fail_on_ambiguous_exact_children": true
+    },
+    "repair_mode": "prefer_exact_child_else_parent_head"
+  },
+  "scope": {
+    "max_source_files": 48,
+    "max_write_files": 24,
+    "max_dependency_depth": 4,
+    "seed_paths": [
+      "src/persistence/transactionalPlatformStore.js",
+      "src/persistence/postgres.js",
+      "src/persistence/platformStore.js",
+      "src/persistence/postgresCrmStore.js",
+      "src/persistence/postgresApplicationServices.js",
+      "src/persistence/postgresLeadConversion.js",
+      "src/intake/postgresApplication.js",
+      "tests/postgresTravisIntake.integration.test.js",
+      "tests/postgresBusinessInvitations.integration.test.js",
+      "tests/postgresProductionHttp.integration.test.js"
+    ],
+    "must_write_paths": [
+      "src/persistence/postgres.js",
+      "src/persistence/postgresApplicationServices.js",
+      "src/persistence/platformStore.js",
+      "src/travis/conversation.js",
+      "src/intake/postgresApplication.js",
+      "tests/postgresTravisIntake.integration.test.js",
+      "tests/postgresProductionHttp.integration.test.js",
+      "tests/postgresBusinessInvitations.integration.test.js"
+    ]
+  },
+  "specialists": {
+    "enabled": true,
+    "registry": "controller/specialists/registry.json",
+    "max_builder_profiles": 2,
+    "max_reviewer_profiles": 2,
+    "upstream_commit": "c89557f",
+    "allow_profile_permission_expansion": false,
+    "core_team": [
+      "agents-orchestrator",
+      "rapid-prototyper",
+      "backend-architect",
+      "ai-engineer",
+      "whimsy-injector",
+      "growth-hacker",
+      "content-creator",
+      "reality-checker"
+    ],
+    "orchestrator_profile": "agents-orchestrator",
+    "final_reviewer_profile": "reality-checker"
+  },
+  "deepagents": {
+    "enabled": false,
+    "prototype_only": true,
+    "package_version": "0.7.6",
+    "python_min": "3.11",
+    "use_local_shell_backend": false,
+    "allow_mcp": false,
+    "allow_github_tools": false,
+    "allow_network_tools": false,
+    "max_subagents": 1,
+    "max_model_calls": 4,
+    "max_commands": 12,
+    "max_file_modifications": 8,
+    "max_repair_attempts": 2,
+    "resume_requires_revalidation": true
+  },
+  "hybrid": {
+    "enabled": false,
+    "prototype_only": true,
+    "opencode_direct_dependency": false,
+    "deepagents_live_executor": false,
+    "local_model_install": false,
+    "model_router": "controller/hybrid/model-router.js",
+    "coding_tools": "controller/hybrid/coding-tools.js"
+  },
+  "publication": {
+    "draft_child_pr_only": true,
+    "requires_env_gate": "SITEBOSS_ALLOW_DRAFT_PUBLISH=YES",
+    "merge": false,
+    "deploy": false,
+    "force_push": false
+  },
+  "cost_control": {
+    "run_budget_usd_default": 3.0,
+    "daily_budget_usd_default": 10.0,
+    "rates_are_configurable_via_env": true,
+    "note": "Monetary values are estimates derived from API usage and configured per-million-token rates."
+  },
+  "brand": "ForgeBoss",
+  "product": "SiteBoss",
+  "executor_registry": "forgeboss/executor-registry.json"
+}

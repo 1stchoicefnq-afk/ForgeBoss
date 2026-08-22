@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "default": "repair-rat",
+  "candidates": {
+    "repair-rat": {
+      "type": "existing",
+      "status": "PROVEN_REFERENCE"
+    },
+    "openhands": {
+      "type": "python",
+      "status": "BAKEOFF_CANDIDATE",
+      "runner": "forgeboss/executors/openhands_runner.py"
+    },
+    "mini-swe": {
+      "type": "python",
+      "status": "BAKEOFF_CANDIDATE",
+      "runner": "forgeboss/executors/mini_swe_runner.py"
+    },
+    "opencode": {
+      "type": "cli",
+      "status": "BAKEOFF_CANDIDATE",
+      "runner": "forgeboss/executors/opencode_runner.js"
+    },
+    "deepagents": {
+      "type": "library",
+      "status": "DURABILITY_ONLY_NOT_EXECUTOR_DEFAULT"
+    }
+  },
+  "promotion_rule": "No candidate becomes default until same frozen SiteBoss task passes scope, tests, review, cost and latency benchmark against Repair Rat."
+}

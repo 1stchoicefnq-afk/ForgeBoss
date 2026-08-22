@@ -1,0 +1,116 @@
+{
+  "pass": 22,
+  "fail": 0,
+  "results": [
+    {
+      "name": "repair.proven_v047",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "repair.scope_manifest",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "repair.scope_head_gate",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "review.no_publish",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "control.read_adapter",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "control.binding_gate",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.import_closure",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "scope.invitation_terms",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "packet.high_risk",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "paid.explicit_gate",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "review.adapter_no_publish",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.github_writes_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.model_calls_off_default",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.merge_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "config.deploy_off",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "main.run_is_plan_only",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "main.paid_repair_exists",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "main.no_publish_message",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.main_syntax",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "node.controller_selftest",
+      "passed": true,
+      "detail": "{\n  \"pass\": 8,\n  \"fail\": 0,\n  \"results\": [\n    {\n      \"name\": \"features.github_writes_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.merge_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.deploy_off\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"features.model_calls_off_default\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"control.read_enabled\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"state.atomic\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"machine.invalid_transition_rejected\",\n      \"ok\": true,\n      \"detail\": \"\"\n    },\n    {\n      \"name\": \"lock.duplicate_blocked\",\n      \"ok\": true,\n      \"detail\": \"\"\n    }\n  ]\n}\n"
+    },
+    {
+      "name": "node.scope_fixture",
+      "passed": true,
+      "detail": "[PASS] includes invitation test\n[PASS] dependency adds invitation service\n[PASS] dependency adds postgres\n[PASS] service writable\n[PASS] exact head bound\n[PASS] scope hash\n"
+    },
+    {
+      "name": "cmd.ascii",
+      "passed": true,
+      "detail": "[]"
+    }
+  ]
+}

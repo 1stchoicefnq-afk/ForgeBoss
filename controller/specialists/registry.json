@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "name": "SiteBoss Specialist Registry",
+  "source_policy": "Agency Agents is specialist intelligence only; SiteBoss governance and controller packets always outrank profiles.",
+  "max_profiles_per_builder_call": 2,
+  "max_profiles_per_review_call": 2,
+  "fallback_builder": "minimal-change-engineer",
+  "fallback_reviewer": "reality-checker",
+  "profiles": [
+    "multi-agent-systems-architect",
+    "ai-engineer",
+    "prompt-engineer",
+    "minimal-change-engineer",
+    "code-reviewer",
+    "database-optimizer",
+    "database-reliability-engineer",
+    "identity-access-engineer",
+    "devops-automator",
+    "frontend-developer",
+    "agents-orchestrator",
+    "rapid-prototyper",
+    "backend-architect",
+    "whimsy-injector",
+    "growth-hacker",
+    "content-creator",
+    "reality-checker"
+  ],
+  "upstream": {
+    "repository": "https://github.com/msitarzewski/agency-agents",
+    "commit": "c89557f",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2025 AgentLand Contributors"
+  },
+  "core_team": [
+    "agents-orchestrator",
+    "rapid-prototyper",
+    "backend-architect",
+    "ai-engineer",
+    "whimsy-injector",
+    "growth-hacker",
+    "content-creator",
+    "reality-checker"
+  ],
+  "core_team_policy": {
+    "agents_orchestrator_role": "advisory coordinator only; SiteBoss controller remains sole scheduler/authority",
+    "maximum_profiles_per_call": 2,
+    "reality_checker_final_gate": true,
+    "no_swarm": true
+  }
+}
