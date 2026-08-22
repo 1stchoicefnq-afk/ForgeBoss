@@ -12,4 +12,17 @@ class CostLedger:
    if cap and used+a>cap[0]+1e-12:raise RuntimeError("BUDGET_RESERVATION_DENIED")
    rid=str(uuid.uuid4());self.db.execute("INSERT INTO reservations VALUES(?,?,?,NULL,'reserved')",(rid,s,a));self.db.execute("COMMIT");return rid
   except Exception:self.db.execute("ROLLBACK");raise
- def settle(self,rid,a):self.db.execute("UPDATE reservations SET actual=?,status='settled' WHERE id=? AND status='reserved'",(finite_number(a,"actual",0),rid))
+ def settle(self,rid,a):
+  a=finite_number(a,"actual",0);self.db.execute("BEGIN IMMEDIATE")
+  try:
+   row=self.db.execute("SELECT scope,status FROM reservations WHERE id=?",(rid,)).fetchone()
+   if not row:raise RuntimeError("BUDGET_RESERVATION_UNKNOWN")
+   scope,status=row
+   if status!='reserved':raise RuntimeError("BUDGET_RESERVATION_ALREADY_SETTLED")
+   cap=self.db.execute("SELECT cap FROM budgets WHERE scope=?",(scope,)).fetchone()
+   used=self.db.execute("SELECT COALESCE(SUM(CASE WHEN status='settled' THEN actual ELSE reserved END),0) FROM reservations WHERE scope=? AND status IN ('reserved','settled') AND id<>?",(scope,rid)).fetchone()[0]
+   if cap and used+a>cap[0]+1e-12:raise RuntimeError("BUDGET_SETTLEMENT_DENIED")
+   cur=self.db.execute("UPDATE reservations SET actual=?,status='settled' WHERE id=? AND status='reserved'",(a,rid))
+   if cur.rowcount!=1:raise RuntimeError("BUDGET_RESERVATION_STATE_CHANGED")
+   self.db.execute("COMMIT")
+  except Exception:self.db.execute("ROLLBACK");raise
