@@ -1,0 +1,10 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Runtime/temp
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
