@@ -1,0 +1,109 @@
+name: Import ForgeBoss v2.2.7
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/import-v227.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify uploaded archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip
+          echo 'b0d67af38d0a3a1c4970e4d474901a837337d5ee988e7c083fee5db6f5523b4c  ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip' | sha256sum -c -
+
+      - name: Extract exact clean source tree
+        shell: python
+        run: |
+          import pathlib, zipfile, shutil
+          repo = pathlib.Path('.').resolve()
+          archive = repo / 'ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip'
+          wrapper = 'ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE/'
+          internal = wrapper + 'ForgeBoss-Internal/'
+          extracted = 0
+          with zipfile.ZipFile(archive) as z:
+              for info in z.infolist():
+                  name = info.filename
+                  if info.is_dir() or '__pycache__/' in name or name.endswith('.pyc'):
+                      continue
+                  if name.startswith(internal):
+                      rel = name[len(internal):]
+                  elif name == wrapper + 'START-FORGEBOSS.vbs':
+                      rel = 'START-FORGEBOSS.vbs'
+                  else:
+                      continue
+                  if not rel:
+                      continue
+                  dest = repo / rel
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  dest.write_bytes(z.read(info))
+                  extracted += 1
+          if extracted != 368:
+              raise SystemExit(f'Expected 368 clean package files (367 internal + START-FORGEBOSS.vbs), extracted {extracted}')
+          for p in repo.rglob('__pycache__'):
+              if p.is_dir(): shutil.rmtree(p)
+          for p in repo.rglob('*.pyc'):
+              if p.is_file(): p.unlink()
+          print(f'Extracted clean package files: {extracted}')
+
+      - name: Record import truth
+        shell: bash
+        run: |
+          cat > IMPORT-STATUS-v2.2.7.md <<'EOF'
+          # ForgeBoss v2.2.7 import status
+
+          Source package: `ForgeBoss-v2.2.7-RELEASE-BLOCKER-GATE.zip`
+
+          SHA-256: `b0d67af38d0a3a1c4970e4d474901a837337d5ee988e7c083fee5db6f5523b4c`
+
+          Exact clean package inventory imported: **368 files total** after excluding generated `__pycache__/` and `*.pyc` files:
+          - **367 files** under `ForgeBoss-Internal/`
+          - `START-FORGEBOSS.vbs`
+
+          The source tree was extracted from the verified archive into repository root by the Chat 3 controller import workflow.
+          EOF
+
+      - name: Run baseline gates
+        shell: bash
+        run: |
+          set +e
+          python -m forgeboss.hardening.release_gate_v227 > /tmp/release-gate.log 2>&1
+          RG=$?
+          if [ -f controller/siteboss-autopilot.js ]; then
+            node controller/siteboss-autopilot.js selftest > /tmp/controller-selftest.log 2>&1
+            CT=$?
+          else
+            echo 'controller/siteboss-autopilot.js missing' > /tmp/controller-selftest.log
+            CT=127
+          fi
+          set -e
+          cat /tmp/release-gate.log
+          cat /tmp/controller-selftest.log
+          printf 'release_gate_exit=%s\ncontroller_selftest_exit=%s\n' "$RG" "$CT" > IMPORT-TEST-RESULTS-v2.2.7.txt
+          cat /tmp/release-gate.log >> IMPORT-TEST-RESULTS-v2.2.7.txt
+          printf '\n--- controller selftest ---\n' >> IMPORT-TEST-RESULTS-v2.2.7.txt
+          cat /tmp/controller-selftest.log >> IMPORT-TEST-RESULTS-v2.2.7.txt
+
+      - name: Commit complete import
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/import-v227.yml
+          git config user.name 'ForgeBoss Chat 3 Controller'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Import complete ForgeBoss v2.2.7 source tree'
+          git push origin HEAD:main
