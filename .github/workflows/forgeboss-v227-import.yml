@@ -27,8 +27,8 @@ jobs:
             exit 0
           fi
           count=$(find .forgeboss-import -maxdepth 1 -name 'part-*.b64' -type f | wc -l)
-          if [ "$count" -ne 8 ]; then
-            echo "Waiting for all 8 import parts; have $count."
+          if [ "$count" -ne 79 ]; then
+            echo "Waiting for all 79 import parts; have $count."
             exit 0
           fi
           cat $(find .forgeboss-import -maxdepth 1 -name 'part-*.b64' -type f | sort) | base64 -d > /tmp/forgeboss-v227.zip
