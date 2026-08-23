@@ -159,21 +159,44 @@ class ControlStore:
         row=self.db.execute("SELECT COALESCE(MAX(state_version),0)+1 AS v FROM task_events").fetchone()
         return int(row["v"])
 
+    def _event(self,event_type,payload,task_id=None,run_id=None):
+        version=self._state_version()
+        cur=self.db.execute("INSERT INTO task_events(task_id,run_id,event_type,payload_json,state_version,created_at) VALUES(?,?,?,?,?,?)",
+            (task_id,run_id,event_type,json.dumps(payload,separators=(",",":")),version,time.time()))
+        return {"seq":int(cur.lastrowid),"stateVersion":version}
+
     def event(self,event_type,payload,task_id=None,run_id=None):
         with self._lock:
-            version=self._state_version()
-            cur=self.db.execute("INSERT INTO task_events(task_id,run_id,event_type,payload_json,state_version,created_at) VALUES(?,?,?,?,?,?)",
-                (task_id,run_id,event_type,json.dumps(payload,separators=(",",":")),version,time.time()))
-            return {"seq":int(cur.lastrowid),"stateVersion":version}
+            begun=False
+            try:
+                if not self.db.in_transaction:
+                    self.db.execute("BEGIN IMMEDIATE");begun=True
+                result=self._event(event_type,payload,task_id,run_id)
+                if begun:self.db.execute("COMMIT");begun=False
+                return result
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def create_task(self,t):
         now=time.time()
         with self._lock:
-            self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
-              VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
-              (t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),
-               json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
-            self.event("task.created",{"status":"queued"},t["taskId"])
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
+                  (t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),
+                   json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
+                self._event("task.created",{"status":"queued"},t["taskId"])
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
         return self.get_task(t["taskId"])
 
     def get_task(self,task_id):
@@ -206,7 +229,7 @@ class ControlStore:
                                 (run_id,task_id,1,next_epoch,runtime_id,now))
                 self.db.execute("UPDATE tasks SET status='running',revision=revision+1,current_step='workspace-claimed',assigned_runtime=?,updated_at=? WHERE task_id=?",
                                 (runtime_id,now,task_id))
-                self.event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head,"budgetReserved":reserved},task_id,run_id)
+                self._event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head,"budgetReserved":reserved},task_id,run_id)
                 self.db.execute("COMMIT");begun=False
                 return self.get_lease(task_id)
             except Exception:
@@ -228,29 +251,63 @@ class ControlStore:
             if expected_head and row["current_head"]!=expected_head:raise PermissionError("writer authority lost: expected head mismatch")
             return dict(row)
 
+    def _writer_row_in_transaction(self,task_id,run_id,owner_epoch,now):
+        row=self.db.execute("""SELECT * FROM workspace_leases
+            WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+            (task_id,run_id,int(owner_epoch))).fetchone()
+        if not row:raise PermissionError("writer authority lost: lease/epoch mismatch")
+        if float(row["expires_at"])<=now:raise PermissionError("writer authority lost: lease expired")
+        return row
+
     def heartbeat(self,task_id,run_id,owner_epoch,ttl_seconds=1200,current_head=None):
-        self.assert_writer(task_id,run_id,owner_epoch)
         now=time.time()
         with self._lock:
-            cur=self.db.execute("""UPDATE workspace_leases SET heartbeat_at=?,expires_at=?,current_head=COALESCE(?,current_head)
-                WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
-                (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch)))
-            if cur.rowcount!=1: raise PermissionError("writer authority lost during heartbeat")
-            self.event("workspace.heartbeat",{"ownerEpoch":int(owner_epoch)},task_id,run_id)
-            return self.get_lease(task_id)
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                lease=self._writer_row_in_transaction(task_id,run_id,owner_epoch,now)
+                old_head=str(lease["current_head"])
+                cur=self.db.execute("""UPDATE workspace_leases SET heartbeat_at=?,expires_at=?,current_head=COALESCE(?,current_head)
+                    WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL
+                      AND expires_at>? AND current_head=?""",
+                    (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch),now,old_head))
+                if cur.rowcount!=1:raise PermissionError("writer authority lost during heartbeat")
+                self._event("workspace.heartbeat",{"ownerEpoch":int(owner_epoch)},task_id,run_id)
+                self.db.execute("COMMIT");begun=False
+                return self.get_lease(task_id)
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released"):
-        self.assert_writer(task_id,run_id,owner_epoch)
         now=time.time()
         with self._lock:
-            # Claim grants are conservatively consumed in tasks.budget_spent and are not refunded here.
-            # No authoritative actual-cost settlement path exists in this control-plane version.
-            self.db.execute("UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head) WHERE task_id=? AND owner_run_id=? AND owner_epoch=?",
-                            (now,result_head,task_id,run_id,int(owner_epoch)))
-            self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
-            self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
-                            (outcome,result_head,now,task_id))
-            self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                lease=self._writer_row_in_transaction(task_id,run_id,owner_epoch,now)
+                old_head=str(lease["current_head"])
+                cur=self.db.execute("""UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head)
+                    WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL
+                      AND expires_at>? AND current_head=?""",
+                    (now,result_head,task_id,run_id,int(owner_epoch),now,old_head))
+                if cur.rowcount!=1:raise PermissionError("writer authority lost during release")
+                cur=self.db.execute("""UPDATE task_runs SET status=?,finished_at=?
+                    WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'""",
+                    (outcome,now,run_id,task_id,int(owner_epoch)))
+                if cur.rowcount!=1:raise PermissionError("writer run authority lost during release")
+                cur=self.db.execute("""UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=?
+                    WHERE task_id=? AND status='running'""",(outcome,result_head,now,task_id))
+                if cur.rowcount!=1:raise PermissionError("task state changed during release")
+                self._event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def snapshot(self):
         return {"schemaVersion":SCHEMA_VERSION,
