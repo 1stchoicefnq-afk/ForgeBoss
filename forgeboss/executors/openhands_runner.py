@@ -1,6 +1,37 @@
 from __future__ import annotations
-import json, os, sys, tempfile, shutil
+import inspect, json, math, os, sys, tempfile, shutil
 from pathlib import Path
+
+
+def _validated_budget(raw) -> float:
+    try:
+        value=float(raw)
+    except (TypeError,ValueError,OverflowError) as ex:
+        raise ValueError("BUDGET_USD must be a finite positive number") from ex
+    if not math.isfinite(value) or value<=0:
+        raise ValueError("BUDGET_USD must be a finite positive number")
+    return value
+
+
+def _conversation_budget_kwargs(Conversation,budget:float):
+    try:
+        params=inspect.signature(Conversation).parameters
+    except (TypeError,ValueError) as ex:
+        raise RuntimeError("OpenHands budget capability cannot be verified") from ex
+    if "max_budget_per_run" not in params:
+        raise RuntimeError("OpenHands SDK lacks max_budget_per_run; refusing paid execution")
+    return {"max_budget_per_run":budget}
+
+
+def _observed_cost(llm):
+    try:
+        value=float(getattr(llm.metrics,"accumulated_cost",None))
+    except (TypeError,ValueError,OverflowError,AttributeError):
+        return None
+    if not math.isfinite(value) or value<0:
+        return None
+    return value
+
 
 def main() -> int:
     if len(sys.argv)<4:
@@ -10,9 +41,17 @@ def main() -> int:
 
     packet=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     workspace=str(Path(sys.argv[2]).resolve())
-    budget=float(sys.argv[3])
     model_name=os.environ.get("FORGEBOSS_OPENHANDS_MODEL","openai/gpt-5.6-luna")
-    result={"executor":"openhands","model":model_name,"cost_usd":0.0,"completed":False,"error":None}
+    result={"executor":"openhands","model":model_name,"cost_usd":None,"completed":False,"error":None,
+            "budget_enforcement":"openhands_max_budget_per_run"}
+    try:
+        budget=_validated_budget(sys.argv[3])
+    except ValueError as ex:
+        result["error"]=str(ex)
+        print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
+        print("FORGEBOSS SAFE STOP: "+str(ex),file=sys.stderr)
+        return 12
+
     guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
@@ -26,6 +65,10 @@ def main() -> int:
         from openhands.sdk import LLM, Agent, Conversation, Tool
         from openhands.tools.file_editor import FileEditorTool
         from openhands.tools.task_tracker import TaskTrackerTool
+
+        # A paid OpenHands run is allowed only when the installed SDK exposes a
+        # real in-run cost guard. Older/unknown SDKs fail closed before LLM use.
+        conversation_budget_kwargs=_conversation_budget_kwargs(Conversation,budget)
 
         key=os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
         if not key: raise RuntimeError("OPENAI_API_KEY/LLM_API_KEY missing")
@@ -58,7 +101,7 @@ def main() -> int:
             llm=llm,
             tools=[Tool(name=FileEditorTool.name),Tool(name=TaskTrackerTool.name)]
         )
-        conversation=Conversation(agent=agent,workspace=workspace)
+        conversation=Conversation(agent=agent,workspace=workspace,**conversation_budget_kwargs)
         prompt=f"""You are a bounded execution worker inside ForgeBoss. Product: SiteBoss.
 Objective: {packet.get('objective','')}
 
@@ -68,7 +111,7 @@ HARD TASK CONTRACT:
 - You have NO terminal tool. Edit only through the workspace file editor. Never push, publish, merge, deploy, alter Git remotes, access GitHub, or read secrets.
 - Do not create files outside the repository.
 - Do not weaken/skip tests.
-- If the correct repair cannot be completed within scope, stop and explain why.
+- If the correct repair cannot be completed within scope or assigned cost budget ${budget:.4f}, stop.
 - Leave only justified source changes in this disposable workspace.
 
 Acceptance intent:
@@ -76,22 +119,27 @@ Acceptance intent:
 """
         conversation.send_message(prompt)
         conversation.run()
-        cost=float(getattr(llm.metrics,"accumulated_cost",0.0) or 0.0)
+        cost=_observed_cost(llm)
         result["cost_usd"]=cost
+        if cost is None:
+            result["error"]="OpenHands cost metrics unavailable after paid execution"
+            return 12
         post=subprocess.run([sys.executable,str(guard),"postflight","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","openhands"],capture_output=True,text=True)
         if post.returncode:
             result["error"]="ForgeBoss postflight denied worker result: "+(post.stdout or post.stderr)[-1200:]
             return 13
-        result["completed"]=True
-        # Tournament orchestrator independently refuses any result that exceeds its assigned share.
+        # max_budget_per_run is the OpenHands in-run guard. Keep this truthful
+        # postflight check because a final provider call can report cost at/over
+        # the threshold; never describe this post-hoc comparison as the hard cap.
         if cost>budget:
-            result["error"]=f"OpenHands exceeded assigned tournament share: ${cost:.4f} > ${budget:.4f}"
+            result["error"]=f"OpenHands reported spend above assigned budget after SDK budget stop: ${cost:.4f} > ${budget:.4f}"
             return 11
+        result["completed"]=True
         return 0
     except Exception as e:
         try:
             if 'llm' in locals():
-                result["cost_usd"]=float(getattr(llm.metrics,"accumulated_cost",0.0) or 0.0)
+                result["cost_usd"]=_observed_cost(llm)
         except Exception: pass
         result["error"]=f"{type(e).__name__}: {e}"
         print(result["error"],file=sys.stderr)
