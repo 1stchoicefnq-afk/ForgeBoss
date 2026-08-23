@@ -27,6 +27,11 @@ FORBIDDEN_EXACT={
 HIGH_IMPACT_SUFFIXES=(
     ".github/workflows",".github/actions"
 )
+GIT_META_EXACT=(
+    "config","config.worktree","HEAD","packed-refs","shallow",
+    "info/attributes","info/exclude","objects/info/alternates"
+)
+GIT_META_TREES=("refs","hooks")
 
 def norm(p):
     if not isinstance(p,str) or not p.strip():raise SecurityError("empty path")
@@ -82,6 +87,38 @@ def assert_paths_contained(work:Path,paths):
                 raise SecurityError("resolved path escapes workspace: "+norm(rel))
         except ValueError:
             raise SecurityError("resolved path escapes workspace: "+norm(rel))
+
+def _metadata_entry(p:Path):
+    if is_linklike(p):
+        return {"kind":"link","target":os.readlink(p) if p.is_symlink() else "<junction>"}
+    if p.is_file():return {"kind":"file","sha256":fhash(p),"size":p.stat().st_size}
+    return None
+
+def git_metadata_snapshot(work):
+    work=Path(work).resolve();dotgit=work/".git";out={}
+    if not dotgit.exists():return out
+    if dotgit.is_file() or is_linklike(dotgit):
+        entry=_metadata_entry(dotgit)
+        if entry is not None:out[".git"]=entry
+        return out
+    for rel in GIT_META_EXACT:
+        p=dotgit/rel
+        if p.exists() or is_linklike(p):
+            entry=_metadata_entry(p)
+            if entry is not None:out[".git/"+rel]=entry
+    for root in GIT_META_TREES:
+        base=dotgit/root
+        if not base.exists():continue
+        for p in base.rglob("*"):
+            if p.is_dir() and not is_linklike(p):continue
+            entry=_metadata_entry(p)
+            if entry is not None:
+                rel=str(p.relative_to(work)).replace("\\","/")
+                out[rel]=entry
+    # Compare the semantic index rather than raw .git/index bytes so harmless
+    # stat-cache refreshes from read-only Git commands do not create false positives.
+    out[".git/index:stage"]={"kind":"semantic","sha256":hashlib.sha256(git(work,"ls-files","--stage","-z").encode()).hexdigest()}
+    return out
 
 def snapshot(work):
     work=Path(work).resolve();out={}
@@ -141,7 +178,8 @@ def issue(packet_path,workspace,executor,ttl=1200):
            "allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],
            "issued_at":time.time(),"expires_at":time.time()+ttl,
            "token_sha256":hashlib.sha256(token.encode()).hexdigest(),
-           "baseline":snapshot(work),"isolation_verified":isolation_ok(executor)}
+           "baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),
+           "isolation_verified":isolation_ok(executor)}
     lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json"
     lp.write_text(json.dumps(lease,indent=2),encoding="utf-8")
     print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
@@ -162,6 +200,10 @@ def verify(lease_path,token,packet_path,workspace,executor):
 
 def postflight(lease_path,token,packet_path,workspace,executor):
     lease=verify(lease_path,token,packet_path,workspace,executor)
+    git_before=lease.get("git_metadata")
+    if not isinstance(git_before,dict):raise SecurityError("executor lease missing Git metadata baseline")
+    git_after=git_metadata_snapshot(workspace);git_ch=changed(git_before,git_after)
+    if git_ch:raise SecurityError("Git metadata changed during executor run: "+json.dumps(git_ch))
     after=snapshot(workspace);ch=changed(lease.get("baseline") or {},after)
     allowed={x.casefold() for x in (lease.get("allowed_files") or [])}
     bad=[p for p in ch if p.casefold() not in allowed]
