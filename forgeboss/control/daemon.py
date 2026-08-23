@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, hashlib, json, os, socketserver, threading, time, uuid
 from pathlib import Path
-from .store import ControlStore
+from .store import ControlStore,BudgetReservationError
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
 from .envelope import secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
@@ -89,8 +89,11 @@ class ForgeBossDaemon:
                     if candidate.exists():
                         assert_no_link_escape(candidate);assert_paths_contained(candidate,allowed)
                 except (SecurityError,ValueError) as ex:raise ProtocolError("SCOPE_DENIED",str(ex))
-                lease=self.store.claim_workspace(p["taskId"],p["runId"],p["worktreePath"],p.get("branch"),p["currentHead"],
-                                                 int(p.get("ttlSeconds",1200)),p.get("runtimeId"),WORKTREE_ROOT)
+                try:
+                    lease=self.store.claim_workspace(p["taskId"],p["runId"],p["worktreePath"],p.get("branch"),p["currentHead"],
+                                                     int(p.get("ttlSeconds",1200)),p.get("runtimeId"),WORKTREE_ROOT,p.get("budgetUsd",0))
+                except BudgetReservationError as ex:
+                    raise ProtocolError("BUDGET_DENIED",str(ex))
                 env={
                   "envelopeVersion":1,"protocolVersion":1,"taskId":p["taskId"],"repository":p["repository"],
                   "baseSha":p["baseSha"],"branch":p.get("branch"),"worktreePath":lease["worktree_path"],"runId":p["runId"],
@@ -98,7 +101,7 @@ class ForgeBossDaemon:
                   "runtime":{"adapter":p.get("runtimeId") or "unknown","provider":p.get("provider"),"model":p.get("model")},
                   "allowedPaths":allowed,"deniedPaths":p.get("deniedPaths",[]),"allowedTools":tools,
                   "contextBundleHash":p.get("contextBundleHash"),"transcript":p.get("transcript",{}),"events":p.get("events",{}),
-                  "budgetUsd":float(p.get("budgetUsd",0)),"expiresAt":float(lease["expires_at"])
+                  "budgetUsd":float(lease["budget_reserved_usd"]),"expiresAt":float(lease["expires_at"])
                 }
                 return {"lease":lease,"launchEnvelope":sign_envelope(env,self.secret)}
             return self._idem(req,do)
