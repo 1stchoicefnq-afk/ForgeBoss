@@ -1,9 +1,13 @@
 from __future__ import annotations
-import json, os, sqlite3, threading, time
+import json, math, os, sqlite3, threading, time
 from pathlib import Path
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 
 SCHEMA_VERSION=2
+
+class BudgetReservationError(ValueError):
+    pass
+
 def canonical_worktree_path(path,root):
     raw=str(path or "")
     if not raw:raise ValueError("worktreePath required")
@@ -84,7 +88,8 @@ class ControlStore:
               heartbeat_at REAL NOT NULL,
               expires_at REAL NOT NULL,
               released_at REAL,
-              current_head TEXT NOT NULL
+              current_head TEXT NOT NULL,
+              budget_reserved_usd REAL NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS worker_instances(
               worker_id TEXT PRIMARY KEY,
@@ -124,6 +129,9 @@ class ControlStore:
               created_at REAL NOT NULL
             );
             """)
+            lease_columns={str(r["name"]) for r in self.db.execute("PRAGMA table_info(workspace_leases)")}
+            if "budget_reserved_usd" not in lease_columns:
+                self.db.execute("ALTER TABLE workspace_leases ADD COLUMN budget_reserved_usd REAL NOT NULL DEFAULT 0")
             self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
 
     def _state_version(self):
@@ -151,28 +159,47 @@ class ControlStore:
         row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
         return dict(row) if row else None
 
-    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None):
+    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_usd=0.0):
         if worktree_root is None:raise ValueError("worktree_root required")
         worktree=canonical_worktree_path(worktree,worktree_root)
+        try:requested=float(budget_usd)
+        except (TypeError,ValueError,OverflowError):raise BudgetReservationError("budgetUsd must be a finite nonnegative number")
+        if not math.isfinite(requested) or requested<0:raise BudgetReservationError("budgetUsd must be a finite nonnegative number")
         now=time.time()
         with self._lock:
-            task=self.get_task(task_id)
-            if not task: raise KeyError("task not found")
-            row=self.db.execute("SELECT owner_epoch,released_at,expires_at FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
-            next_epoch=(int(row["owner_epoch"])+1) if row else 1
-            if row and row["released_at"] is None and float(row["expires_at"])>now:
-                raise RuntimeError("workspace lease is already active")
-            self.db.execute("""INSERT INTO workspace_leases(task_id,worktree_path,branch,owner_run_id,owner_epoch,claimed_at,heartbeat_at,expires_at,released_at,current_head)
-              VALUES(?,?,?,?,?,?,?,?,NULL,?)
-              ON CONFLICT(task_id) DO UPDATE SET worktree_path=excluded.worktree_path,branch=excluded.branch,owner_run_id=excluded.owner_run_id,
-              owner_epoch=excluded.owner_epoch,claimed_at=excluded.claimed_at,heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,released_at=NULL,current_head=excluded.current_head""",
-              (task_id,worktree,branch,run_id,next_epoch,now,now,now+ttl_seconds,current_head))
-            self.db.execute("INSERT INTO task_runs(run_id,task_id,attempt,owner_epoch,runtime_id,status,started_at) VALUES(?,?,?,?,?,'running',?)",
-                            (run_id,task_id,1,next_epoch,runtime_id,now))
-            self.db.execute("UPDATE tasks SET status='running',revision=revision+1,current_step='workspace-claimed',assigned_runtime=?,updated_at=? WHERE task_id=?",
-                            (runtime_id,now,task_id))
-            self.event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head},task_id,run_id)
-            return self.get_lease(task_id)
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not task_row:raise KeyError("task not found")
+                try:allocated=float(task_row["budget_allocated"]);spent=float(task_row["budget_spent"])
+                except (TypeError,ValueError,OverflowError):raise BudgetReservationError("task budget state is invalid")
+                if (not math.isfinite(allocated) or not math.isfinite(spent) or allocated<0 or spent<0 or spent>allocated+1e-12):
+                    raise BudgetReservationError("task budget state is invalid")
+                remaining=max(0.0,allocated-spent)
+                if requested>remaining+1e-12:raise BudgetReservationError("requested budget exceeds task remaining allocation")
+                row=self.db.execute("SELECT owner_epoch,released_at,expires_at FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
+                next_epoch=(int(row["owner_epoch"])+1) if row else 1
+                if row and row["released_at"] is None and float(row["expires_at"])>now:
+                    raise RuntimeError("workspace lease is already active")
+                cur=self.db.execute("UPDATE tasks SET budget_spent=budget_spent+? WHERE task_id=? AND budget_spent=?",(requested,task_id,spent))
+                if cur.rowcount!=1:raise BudgetReservationError("task budget changed during claim")
+                self.db.execute("""INSERT INTO workspace_leases(task_id,worktree_path,branch,owner_run_id,owner_epoch,claimed_at,heartbeat_at,expires_at,released_at,current_head,budget_reserved_usd)
+                  VALUES(?,?,?,?,?,?,?,?,NULL,?,?)
+                  ON CONFLICT(task_id) DO UPDATE SET worktree_path=excluded.worktree_path,branch=excluded.branch,owner_run_id=excluded.owner_run_id,
+                  owner_epoch=excluded.owner_epoch,claimed_at=excluded.claimed_at,heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,released_at=NULL,current_head=excluded.current_head,budget_reserved_usd=excluded.budget_reserved_usd""",
+                  (task_id,worktree,branch,run_id,next_epoch,now,now,now+ttl_seconds,current_head,requested))
+                self.db.execute("INSERT INTO task_runs(run_id,task_id,attempt,owner_epoch,runtime_id,status,started_at) VALUES(?,?,?,?,?,'running',?)",
+                                (run_id,task_id,1,next_epoch,runtime_id,now))
+                self.db.execute("UPDATE tasks SET status='running',revision=revision+1,current_step='workspace-claimed',assigned_runtime=?,updated_at=? WHERE task_id=?",
+                                (runtime_id,now,task_id))
+                self.event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head,"budgetReservedUsd":requested},task_id,run_id)
+                lease=self.get_lease(task_id)
+                self.db.execute("COMMIT")
+                return lease
+            except Exception:
+                try:self.db.execute("ROLLBACK")
+                except sqlite3.OperationalError:pass
+                raise
 
     def get_lease(self,task_id):
         row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
@@ -208,7 +235,7 @@ class ControlStore:
             self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
             self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
                             (outcome,result_head,now,task_id))
-            self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+            self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head,"budgetDisposition":"consumed-at-claim-no-refund"},task_id,run_id)
 
     def snapshot(self):
         return {
