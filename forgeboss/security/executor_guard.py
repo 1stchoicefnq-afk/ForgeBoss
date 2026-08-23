@@ -23,10 +23,11 @@ FORBIDDEN_EXACT={
     "pipfile","pipfile.lock","poetry.lock","cargo.toml","cargo.lock",
     "go.mod","go.sum"
 }
-# These are execution/supply-chain surfaces. Third-party writers cannot touch them.
-HIGH_IMPACT_SUFFIXES=(
-    ".github/workflows",".github/actions"
+GIT_META_EXACT=(
+    "config","config.worktree","HEAD","packed-refs","shallow",
+    "info/attributes","info/exclude","objects/info/alternates"
 )
+GIT_META_TREES=("refs","hooks")
 
 def norm(p):
     if not isinstance(p,str) or not p.strip():raise SecurityError("empty path")
@@ -71,7 +72,6 @@ def assert_paths_contained(work:Path,paths):
     work=work.resolve()
     for rel in paths:
         p=work/norm(rel)
-        # Existing path and every existing ancestor must stay inside the workspace.
         cur=p
         while cur!=work and cur.exists():
             if is_linklike(cur):raise SecurityError("symlink/junction path denied: "+norm(rel))
@@ -82,6 +82,74 @@ def assert_paths_contained(work:Path,paths):
                 raise SecurityError("resolved path escapes workspace: "+norm(rel))
         except ValueError:
             raise SecurityError("resolved path escapes workspace: "+norm(rel))
+
+def _metadata_entry(p:Path):
+    try:
+        if is_linklike(p):
+            return {"kind":"link","target":os.readlink(p) if p.is_symlink() else "<junction>"}
+        if p.is_file():return {"kind":"file","sha256":fhash(p),"size":p.stat().st_size}
+        if p.exists():raise SecurityError("unsupported Git metadata object: "+str(p))
+        return None
+    except SecurityError:raise
+    except Exception as ex:raise SecurityError("cannot read Git metadata: "+str(p)) from ex
+
+def _resolve_git_root(work:Path,arg:str)->Path:
+    try:raw=git(work,"rev-parse",arg)
+    except Exception as ex:
+        if isinstance(ex,SecurityError):raise
+        raise SecurityError(f"cannot resolve {arg}") from ex
+    if not isinstance(raw,str) or not raw.strip() or "\x00" in raw:
+        raise SecurityError(f"invalid {arg} result")
+    p=Path(raw.strip())
+    if not p.is_absolute():p=work/p
+    try:resolved=p.resolve(strict=True)
+    except Exception as ex:raise SecurityError(f"cannot resolve {arg} path") from ex
+    if not resolved.is_dir():raise SecurityError(f"{arg} is not a directory")
+    return resolved
+
+def _snapshot_git_root(root:Path,label:str,out:dict):
+    try:
+        for rel in GIT_META_EXACT:
+            p=root/rel
+            if p.exists() or is_linklike(p):
+                entry=_metadata_entry(p)
+                if entry is not None:out[f"{label}/{rel}"]=entry
+        for tree in GIT_META_TREES:
+            base=root/tree
+            if not base.exists() and not is_linklike(base):continue
+            if is_linklike(base):raise SecurityError("Git metadata tree is linklike: "+str(base))
+            if not base.is_dir():raise SecurityError("Git metadata tree is not directory: "+str(base))
+            for p in base.rglob("*"):
+                if p.is_dir() and not is_linklike(p):continue
+                entry=_metadata_entry(p)
+                if entry is not None:
+                    rel=str(p.relative_to(root)).replace("\\","/")
+                    out[f"{label}/{rel}"]=entry
+    except SecurityError:raise
+    except Exception as ex:raise SecurityError(f"cannot enumerate {label} Git metadata") from ex
+
+def git_metadata_snapshot(work):
+    work=Path(work).resolve();dotgit=work/".git";out={}
+    if not dotgit.exists() and not is_linklike(dotgit):return out
+    if is_linklike(dotgit):raise SecurityError("workspace .git link/junction denied")
+    if dotgit.is_file():
+        entry=_metadata_entry(dotgit)
+        if entry is None:raise SecurityError("cannot read workspace .git pointer")
+        out["workspace/.git"]=entry
+    elif not dotgit.is_dir():
+        raise SecurityError("workspace .git is not file/directory")
+    gitdir=_resolve_git_root(work,"--git-dir")
+    common=_resolve_git_root(work,"--git-common-dir")
+    _snapshot_git_root(gitdir,"gitdir",out)
+    if common!=gitdir:_snapshot_git_root(common,"common",out)
+    # Compare semantic index state instead of raw index bytes, avoiding false
+    # positives from harmless stat-cache refreshes by read-only Git commands.
+    try:stage=git(work,"ls-files","--stage","-z")
+    except Exception as ex:
+        if isinstance(ex,SecurityError):raise
+        raise SecurityError("cannot read semantic Git index") from ex
+    out["index:stage"]={"kind":"semantic","sha256":hashlib.sha256(stage.encode()).hexdigest()}
+    return out
 
 def snapshot(work):
     work=Path(work).resolve();out={}
@@ -123,9 +191,7 @@ def no_remotes(work):
     if (Path(work)/".git").exists() and git(work,"remote").strip():raise SecurityError("Git remotes present in executor workspace")
 
 def isolation_ok(executor):
-    # mini-SWE executes its shell in Docker --network none. Host-model traffic is separate.
     if executor=="mini-swe":return True
-    # OpenHands/OpenCode remain quarantined until an OS/network isolation adapter proves itself.
     return os.environ.get("FORGEBOSS_OS_ISOLATION_VERIFIED")=="YES"
 
 def issue(packet_path,workspace,executor,ttl=1200):
@@ -141,7 +207,8 @@ def issue(packet_path,workspace,executor,ttl=1200):
            "allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],
            "issued_at":time.time(),"expires_at":time.time()+ttl,
            "token_sha256":hashlib.sha256(token.encode()).hexdigest(),
-           "baseline":snapshot(work),"isolation_verified":isolation_ok(executor)}
+           "baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),
+           "isolation_verified":isolation_ok(executor)}
     lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json"
     lp.write_text(json.dumps(lease,indent=2),encoding="utf-8")
     print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
@@ -162,6 +229,10 @@ def verify(lease_path,token,packet_path,workspace,executor):
 
 def postflight(lease_path,token,packet_path,workspace,executor):
     lease=verify(lease_path,token,packet_path,workspace,executor)
+    git_before=lease.get("git_metadata")
+    if not isinstance(git_before,dict):raise SecurityError("executor lease missing Git metadata baseline")
+    git_after=git_metadata_snapshot(workspace);git_ch=changed(git_before,git_after)
+    if git_ch:raise SecurityError("Git metadata changed during executor run: "+json.dumps(git_ch))
     after=snapshot(workspace);ch=changed(lease.get("baseline") or {},after)
     allowed={x.casefold() for x in (lease.get("allowed_files") or [])}
     bad=[p for p in ch if p.casefold() not in allowed]
