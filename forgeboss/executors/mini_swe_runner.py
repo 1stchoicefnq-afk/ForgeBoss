@@ -1,6 +1,17 @@
 from __future__ import annotations
-import json, os, sys, traceback, subprocess
+import json, math, os, sys, traceback, subprocess
 from pathlib import Path
+
+
+def _validated_budget(raw) -> float:
+    try:
+        value=float(raw)
+    except (TypeError,ValueError,OverflowError) as ex:
+        raise ValueError("MiniSWE hard budget must be a finite positive number") from ex
+    if not math.isfinite(value) or value<=0:
+        raise ValueError("MiniSWE hard budget must be a finite positive number")
+    return value
+
 
 def main() -> int:
     if len(sys.argv)<4:
@@ -8,9 +19,13 @@ def main() -> int:
     if os.environ.get("FORGEBOSS_ALLOW_PAID_EXECUTOR")!="YES":
         print("FORGEBOSS SAFE STOP: paid executor gate is not enabled.");return 3
 
+    try:
+        budget=_validated_budget(sys.argv[3])
+    except ValueError as ex:
+        print("FORGEBOSS SAFE STOP: "+str(ex),file=sys.stderr);return 14
+
     packet=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     workspace=str(Path(sys.argv[2]).resolve())
-    budget=float(sys.argv[3])
     model_name=os.environ.get("FORGEBOSS_MINISWE_MODEL","openai/gpt-5.6-luna")
 
     result={"executor":"mini-swe","model":model_name,"cost_usd":0.0,"completed":False,"error":None}
