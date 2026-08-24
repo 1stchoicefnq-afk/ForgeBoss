@@ -1,62 +1,131 @@
 # ForgeBoss
 
-ForgeBoss is a controlled AI-assisted software build and repair system designed to work on SiteBoss through bounded tasks, isolated branches/worktrees, automated checks, independent review, and explicit controller approval.
+ForgeBoss is a controlled multi-agent software engineering system for building, repairing, testing, reviewing, and maintaining **any software project or repository** through bounded tasks, isolated branches/worktrees, automated checks, independent review, spend controls, and explicit controller approval.
 
-> **Current status:** active development and hardening. ForgeBoss is **not yet fully production-ready**. A restricted MVP mode exists for low-risk SiteBoss work while deeper hardening continues in parallel.
+It is **not a SiteBoss-specific tool**. SiteBoss is the first major real-world project ForgeBoss is being used to prove against, and ForgeBoss is also being designed to build and improve ForgeBoss itself.
 
-## What ForgeBoss is trying to solve
+> **Current status:** active development and hardening. ForgeBoss is not yet fully production-ready. Finish Line 1 is the proof that ForgeBoss can safely build ForgeBoss itself with multiple concurrent agents. SiteBoss comes after that proof.
 
-A normal coding agent can edit files. ForgeBoss adds the control layer needed to make that process safer and repeatable:
+## What ForgeBoss is for
+
+A normal coding agent can edit files. ForgeBoss adds the orchestration and control layer needed to turn several coding agents into a safer, repeatable engineering system.
+
+ForgeBoss is intended to work on projects such as:
+
+- web applications;
+- mobile applications;
+- APIs and backend services;
+- desktop software;
+- internal business systems;
+- automation tools;
+- libraries and frameworks;
+- infrastructure and developer tooling;
+- existing legacy codebases;
+- brand-new repositories;
+- ForgeBoss itself.
+
+The target repository is a project configuration choice, not part of ForgeBoss's identity.
+
+## Core idea
+
+ForgeBoss coordinates builders, reviewers, tests, repository isolation, budgets, evidence, and controller decisions around one or more target repositories.
+
+Core capabilities include:
 
 - bounded task packets with explicit writable paths;
+- multiple builders working in parallel;
 - separate builder and reviewer roles;
-- branch/worktree isolation;
-- stale-head and scope validation;
+- one branch/worktree per worker;
+- exact non-overlapping write scopes;
+- stale-head/base validation;
 - test and evidence collection;
-- spend/cost controls;
-- controller-managed task assignment;
+- per-worker and global API spend controls;
+- controller-managed assignment and collision prevention;
+- stop/reassign handling;
 - crash/restart and lease handling;
-- specialist routing for different engineering tasks;
+- exact-SHA independent review;
+- controlled integration;
+- known-good version promotion and rollback;
+- specialist routing where useful;
 - structured findings and review evidence in GitHub Issues;
-- gradual multi-worker operation rather than uncontrolled agent swarms.
+- project switching without redesigning the orchestration layer.
 
-The long-term goal is for ForgeBoss to coordinate multiple engineering workers that can safely build and maintain SiteBoss with strong evidence, review, spend and isolation controls.
+The long-term goal is a general-purpose engineering control plane that can safely coordinate many AI-assisted workers across arbitrary software projects.
 
-## Current operating model
+## Current Finish Line 1
 
-ForgeBoss currently runs two tracks at the same time.
+The current first finish line is deliberately narrow:
 
-### Track A — Controlled SiteBoss MVP use
+**ForgeBoss must successfully build ForgeBoss itself using 2–4 concurrent builders.**
 
-ForgeBoss may be used for tightly bounded, low-risk SiteBoss tasks under Issue **#15 — MVP TRACK — Controlled SiteBoss Build Mode**.
+That proof requires:
 
-Initial MVP rules include:
+- isolated branches/worktrees;
+- exact non-overlapping writable scopes;
+- controller-owned task assignment and collision prevention;
+- stale-state protection;
+- hard per-worker and global spend authority;
+- focused tests and exact scope/diff evidence;
+- independent exact-SHA review;
+- stop/reassign proof;
+- a frozen known-good controller while self-build workers modify ForgeBoss;
+- promotion of a successful new ForgeBoss version only after required checks;
+- rollback to the previous known-good ForgeBoss version if activation fails.
 
-- maximum **1 active ForgeBoss builder** on SiteBoss at a time unless the controller explicitly raises it;
-- separate branch/worktree required;
-- exact writable paths declared before work begins;
-- no direct writes to SiteBoss `main`;
-- no automatic merge;
-- mandatory independent review on the exact candidate SHA;
-- focused tests required;
-- stale-head revalidation before handoff/acceptance;
-- no first-run database migrations, auth/permission changes, payment/billing work, deployment, destructive data operations, secret handling, or infrastructure changes.
+New findings do not automatically expand Finish Line 1. A new problem joins the critical path only if it directly breaks one of those already-defined requirements. Everything else goes to backlog.
 
-Good first MVP jobs are deterministic tests, isolated business-logic fixes, small UI fixes, dead-code cleanup, narrow bug fixes, and documentation/build-tooling changes.
+## Project targets
 
-### Track B — ForgeBoss hardening
+ForgeBoss should treat the active project as an explicit target.
 
-The hardening queue continues in parallel. Current work covers areas such as:
+Planned operating model:
 
-- spend and hard-cap correctness;
-- durable transaction and lease behavior;
-- Windows release-gate execution proof;
-- Git metadata mutation visibility;
-- restart/idempotency behavior;
-- scope/provenance validation;
-- multi-worker collision and recovery testing.
+```text
+Project Mode
+    |
+    +--> ForgeBoss
+    |
+    +--> SiteBoss
+    |
+    +--> Any other configured repository
+```
 
-Hardening findings block any claim that ForgeBoss is fully ready, but they do not automatically block a low-risk MVP SiteBoss task that is outside the affected capability and satisfies the MVP contract.
+A project target should define at minimum:
+
+- repository identity;
+- base/default branch;
+- build/test commands;
+- project-specific environment requirements;
+- allowed and forbidden paths where needed;
+- integration rules;
+- deployment rules if deployment is enabled later.
+
+The multi-agent safety model remains the same regardless of which project is selected.
+
+## ForgeBoss self-build
+
+ForgeBoss is explicitly designed to improve itself.
+
+Self-build uses an extra known-good boundary:
+
+1. the active controller runs from a frozen known-good ForgeBoss version;
+2. builders edit only isolated ForgeBoss branches/worktrees;
+3. builders cannot replace the running controller in place;
+4. candidates freeze before review;
+5. a different worker independently reviews the exact SHA;
+6. controller acceptance requires scope, tests, review, spend and base/head checks;
+7. the resulting ForgeBoss version must pass startup/control/selftests and required multi-agent checks before promotion;
+8. failed activation rolls back to the previous known-good version.
+
+Once this is proven, the same fleet can be pointed at other repositories.
+
+## SiteBoss
+
+SiteBoss is the first major target application for ForgeBoss, not the definition of ForgeBoss.
+
+After ForgeBoss proves self-build and scales its worker fleet safely, SiteBoss will be used as the first large external product target for high-throughput parallel development.
+
+Any SiteBoss-specific launchers, repair scripts, references or compatibility code currently in the repository should be treated as project adapters or historical implementation paths. Over time, project-specific behavior should move behind generic ForgeBoss project interfaces rather than define the core architecture.
 
 ## Safety and review model
 
@@ -67,16 +136,38 @@ ForgeBoss follows one core rule:
 Additional rules:
 
 - no worker may approve code it authored or materially changed;
-- every production write needs an explicit non-overlapping scope;
+- every write needs an explicit non-overlapping scope;
 - reviewers evaluate the exact candidate SHA;
-- a source review does not become a runtime PASS unless the required runtime test actually executed;
-- no self-merge;
+- source review does not become runtime PASS unless the required runtime test actually executed;
+- builders and reviewers do not directly write the target project's protected main branch;
 - merge/deployment authority remains separate from build authority;
-- when evidence is unavailable, ForgeBoss records the result as blocked instead of fabricating PASS evidence.
+- unavailable evidence is reported as blocked, never fabricated as PASS;
+- live repository state wins over stale issue text or old SHAs.
+
+## Root-cause-first repair protocol
+
+ForgeBoss workers should diagnose before rewriting code.
+
+For a reported failure:
+
+1. reconstruct the exact history, candidate SHA and environment;
+2. identify which candidate actually failed;
+3. distinguish old rejected fixes from the current candidate;
+4. reproduce the real behavior where possible;
+5. determine why previous tests missed it;
+6. trace the production root cause;
+7. check whether a newer existing fix already solves it;
+8. make the smallest real correction only when needed;
+9. run focused and adjacent regressions;
+10. freeze the exact candidate SHA;
+11. send it to an independent reviewer;
+12. revalidate live base/topology before integration.
+
+This prevents repeated speculative rewrites and false confidence from weak tests.
 
 ## GitHub control structure
 
-The GitHub Issues in this repository are the durable source of truth for active work:
+GitHub Issues are the durable source of truth for active ForgeBoss development:
 
 - **Issue #4** — authoritative CONTROL board;
 - **Issue #5** — findings and review-evidence ledger;
@@ -86,21 +177,24 @@ The GitHub Issues in this repository are the durable source of truth for active 
 - **Issue #10** — Controller / Integration / Assist lane;
 - **Issue #13** — Worker C / Chat 4 lane;
 - **Issue #14** — Worker D / Chat 5 lane;
-- **Issue #15** — controlled SiteBoss MVP operating mode.
+- **Issue #15** — Finish Line 1: multi-agent ForgeBoss builds ForgeBoss;
+- **Issue #17** — Project Mode, self-build scale-up and later target switching.
 
 Before acting on a task, workers should verify live `main` and read the latest relevant issue comments. Older issue bodies or comments may contain stale SHAs or superseded assignments.
 
 ## Requirements
 
-ForgeBoss is primarily developed for Windows and currently expects the local environment used by its launchers and tests to provide:
+ForgeBoss is primarily developed and tested on Windows today and currently expects the local environment used by its launchers and tests to provide:
 
 - Windows 10/11;
 - Git;
 - PowerShell / `pwsh`;
 - Python;
 - Node.js + npm;
-- Docker for the SiteBoss repair/test paths that require it;
+- Docker for project paths that require containerized execution;
 - provider API credentials only when a paid model path is intentionally enabled.
+
+Future project adapters may add project-specific requirements.
 
 Do not store API keys, daemon secrets, private keys, runtime databases or other local state in Git.
 
@@ -112,54 +206,61 @@ From an extracted ForgeBoss folder, run:
 SETUP-FORGEBOSS-ENGINES.cmd
 ```
 
-This creates the isolated ForgeBoss Python runtime and installs the supported open-source executor dependencies.
+This creates the isolated ForgeBoss Python runtime and installs supported executor dependencies.
 
-The current setup script installs pinned OpenHands, mini-SWE-agent and Deep Agents versions. OpenCode setup is also present; its version-pinning/reproducibility behavior is part of the active hardening backlog.
+The setup currently includes integrations for engines such as mini-SWE-agent, OpenHands, Deep Agents and OpenCode. ForgeBoss should prefer maintained upstream execution engines where practical while keeping ForgeBoss responsible for controller policy, isolation, scope, review, spend and evidence.
 
 ## Launchers
 
-Several launchers currently exist because ForgeBoss evolved through multiple development stages. Some are aliases and some are legacy paths. Do not assume that similarly named files have different behavior without checking the current source.
+ForgeBoss evolved through several development stages, so some current launchers still contain SiteBoss-specific names.
 
-Useful current entry points include:
+Useful entry points include:
 
-- `START-FORGEBOSS.vbs` — desktop/dashboard launcher after the runtime is installed;
-- `FORGEBOSSD-HEALTH.cmd` — daemon/control-plane health check;
+- `START-FORGEBOSS.vbs` — ForgeBoss launcher/dashboard;
+- `FORGEBOSSD-HEALTH.cmd` — daemon/control-plane health;
 - `AUTOPILOT-STATUS.cmd` — controller status;
 - `AUTOPILOT-PLAN.cmd` — planning/control path;
 - `AUTOPILOT-DOCTOR.cmd` — diagnostics;
 - `AUTOPILOT-STOP.cmd` — stop request;
 - `AUTOPILOT-RESUME.cmd` — resume path;
-- `START-HYBRID-TESTS.cmd` — zero-model-spend hybrid validation path;
-- `BUILD-SITEBOSS.cmd` / `BUILD-SITEBOSS-WITH-FORGEBOSS.cmd` — bounded SiteBoss build launchers, still subject to the active safety gates and current controller state.
+- `START-HYBRID-TESTS.cmd` — zero-model-spend validation path.
 
-Some launcher duplication and naming cleanup is still tracked as maintenance work.
+Existing `BUILD-SITEBOSS...` and SiteBoss Repair Rat scripts are project-specific integrations. They should not be interpreted as limiting ForgeBoss to SiteBoss.
 
 ## Tests and evidence
 
-ForgeBoss uses a mix of Python, Node.js, PowerShell and Windows-specific checks. Important principles:
+ForgeBoss uses Python, Node.js, PowerShell and Windows-specific checks.
 
-- a test marked PASS must correspond to an actual assertion or successful required behavior;
-- compile/static checks are not substitutes for behavioral runtime checks;
-- Windows-specific PowerShell behavior must be verified on Windows where required;
-- source-only review must be labelled as source-only;
-- exact candidate SHA and exact changed files are part of the review evidence;
-- runtime blockers are recorded instead of being silently downgraded.
+Important principles:
 
-The active findings ledger in Issue #5 contains the exact defect, severity, reproduction/evidence, fix SHA, reviewer and acceptance state for tracked findings.
+- PASS must correspond to real assertions or successful required behavior;
+- source-marker checks are not substitutes for behavioral execution;
+- compile/static checks are not substitutes for runtime checks;
+- Windows-specific behavior must be verified on Windows when required;
+- source-only review is labelled source-only;
+- exact candidate SHA and changed files are part of the evidence;
+- runtime blockers are recorded explicitly;
+- tests should prove the behavior that matters, not merely that expected text exists in a file.
+
+The findings ledger in Issue #5 records defects, evidence, fix candidates, review results and controller acceptance state.
 
 ## Multi-worker operation
 
-ForgeBoss supports multiple engineering lanes, but full parallel SiteBoss operation is intentionally gated.
+ForgeBoss is intended to scale beyond a single coding agent.
 
-Current policy:
+The operating model is:
 
-1. drain independent reviews first;
-2. otherwise build explicitly assigned non-overlapping work;
-3. otherwise perform read-only defensive QA on an unclaimed subsystem;
-4. never self-review;
-5. never let two builders own the same write scope.
+1. controller loads the target project and current known-good/base state;
+2. controller assigns non-overlapping tasks;
+3. each builder receives its own branch/worktree and bounded packet;
+4. workers build and test independently;
+5. completed candidate SHAs freeze;
+6. independent reviewers inspect exact SHAs;
+7. controller integrates only reviewed candidates after fresh topology/base checks;
+8. failed/hung work can be revoked and safely reassigned;
+9. concurrency increases only after evidence shows the previous level is stable.
 
-Full parallel readiness is not claimed until the dedicated transaction/isolation work and an end-to-end multi-worker collision/recovery proof pass.
+Workers should continue consuming safe Finish-Line work within a turn instead of stopping after one trivial task, while still preserving separate commit/test/review boundaries for each logical change.
 
 ## Repository state and secrets
 
@@ -177,20 +278,22 @@ venv/
 node_modules/
 ```
 
-The repository is actively tightening ignore rules and historical secret/state checks. If any secret is ever proven to have entered Git history, ignoring it later is not sufficient; the credential must be rotated and history handled appropriately.
+If a secret is ever proven to have entered Git history, ignoring it later is not sufficient; the credential must be rotated and history handled appropriately.
 
 ## Development workflow
 
-A normal ForgeBoss finding moves through this lifecycle:
+A normal ForgeBoss change moves through this lifecycle:
 
 ```text
-AUDIT / REPRODUCE
+REPRODUCE / DIAGNOSE
+        ↓
+ROOT CAUSE
         ↓
 CONTROLLER ASSIGNMENT
         ↓
 BUILDER BRANCH + EXACT SCOPE
         ↓
-FOCUSED TESTS
+FOCUSED + ADJACENT TESTS
         ↓
 CANDIDATE SHA FROZEN
         ↓
@@ -201,12 +304,28 @@ CONTROLLER ACCEPT / REJECT
 INTEGRATION
 ```
 
-A failed review returns the exact candidate for rework. A builder does not modify a frozen candidate while another worker is reviewing it.
+A failed review returns the exact candidate for narrow rework. A builder does not modify a frozen candidate while another worker is reviewing it.
 
 ## Project direction
 
-The immediate goal is practical rather than theoretical:
+The product direction is:
 
-**Get ForgeBoss safely doing useful SiteBoss work now under a narrow MVP envelope, while continuing to harden the system toward reliable multi-worker autonomous engineering.**
+**Build a general-purpose multi-agent software engineering control system that can safely work on ForgeBoss, SiteBoss, and arbitrary future repositories without redesigning the core orchestration layer for every project.**
 
-For the live state, do not rely on this README alone. Read **Issue #4 (CONTROL)** and **Issue #5 (LEDGER)** before making release, readiness or active-assignment decisions.
+Immediate sequence:
+
+```text
+Finish Line 1: ForgeBoss builds ForgeBoss
+        ↓
+Project Mode / target switching
+        ↓
+Scale ForgeBoss self-build worker count
+        ↓
+Switch target to SiteBoss
+        ↓
+Apply the proven fleet to SiteBoss
+        ↓
+Support additional projects/repositories
+```
+
+For live readiness or assignment decisions, do not rely on this README alone. Read **Issue #4 (CONTROL)** and **Issue #5 (LEDGER)** first.
