@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json,math,os,sys,subprocess
 from pathlib import Path
-from forgeboss.security.executor_guard import paid_start_authority
+from forgeboss.security.private_paid_start import prepare_private_paid_start,commit_private_result,cleanup_private_session
 
 def _positive_budget(raw):
     if isinstance(raw,bool):raise ValueError("budget must be a finite positive number")
@@ -29,9 +29,18 @@ def main()->int:
     if not lease or not lease_token or not control_envelope:
         print("FORGEBOSS SAFE STOP: paid executor authority is incomplete",file=sys.stderr);return 12
     model_name=os.environ.get("FORGEBOSS_MINISWE_MODEL","openai/gpt-5.6-luna")
-    result={"executor":"mini-swe","model":model_name,"cost_usd":None,"completed":False,"error":None};env_obj=None
+    result={"executor":"mini-swe","model":model_name,"cost_usd":None,"completed":False,"error":None};env_obj=None;private_session=None
     guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     try:
+        # FB-026 REWORK11 boundary: verify the exact signed current run/epoch,
+        # durably consume its paid authority, then materialize a private clean
+        # exact-commit snapshot. The paid executor never sees the mutable host
+        # worktree, so another local ForgeBoss process cannot alter its execution
+        # view after final validation. Failure to establish this private view is
+        # a hard stop before model construction.
+        private_session=prepare_private_paid_start(lease,lease_token,packet_path,workspace,"mini-swe",control_envelope,cli_budget)
+        authority=private_session["authority"];budget=float(authority["budgetUsd"]);private_workspace=private_session["workspace"]
+
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
         from minisweagent.models.litellm_model import LitellmModel
@@ -55,21 +64,19 @@ IMMUTABLE RULES:
 - Do not modify .github, credentials, generated files, or anything outside allowed_files.
 - Do not push, publish, merge, deploy, alter remotes, or access network.
 - Do not weaken tests.
-- Use the repository already mounted at /workspace.
+- Use the private repository snapshot already mounted at /workspace.
 Required acceptance intent:
 {json.dumps(packet.get('acceptance_criteria',[]))}"""
-        # Critical FB-026/FB-029 boundary: the cross-process workspace fence is
-        # acquired before the final Git/control-envelope validation and remains
-        # held through model construction and agent.run. The durable paid lease
-        # is consumed before any paid model object is constructed.
-        with paid_start_authority(lease,lease_token,packet_path,workspace,"mini-swe",control_envelope,cli_budget) as authority:
-            budget=float(authority["budgetUsd"])
-            mount=f"type=bind,src={workspace},dst=/workspace"
-            env_obj=DockerEnvironment(image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),cwd="/workspace",run_args=["--rm","--network","none","--mount",mount],timeout=180,container_timeout="45m")
-            model=LitellmModel(model_name=model_name)
-            agent=DefaultAgent(model,env_obj,system_template=system_template,instance_template=instance_template,cost_limit=budget,step_limit=30,wall_time_limit_seconds=900)
-            agent.run(task)
-            result["cost_usd"]=_observed_cost(getattr(agent,"cost",None));result["calls"]=int(getattr(agent,"n_calls",0) or 0)
+        mount=f"type=bind,src={private_workspace},dst=/workspace"
+        env_obj=DockerEnvironment(image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),cwd="/workspace",run_args=["--rm","--network","none","--mount",mount],timeout=180,container_timeout="45m")
+        model=LitellmModel(model_name=model_name)
+        agent=DefaultAgent(model,env_obj,system_template=system_template,instance_template=instance_template,cost_limit=budget,step_limit=30,wall_time_limit_seconds=900)
+        agent.run(task)
+        result["cost_usd"]=_observed_cost(getattr(agent,"cost",None));result["calls"]=int(getattr(agent,"n_calls",0) or 0)
+
+        # Copy back only after proving the private diff is in scope and the host
+        # worktree did not change concurrently while paid execution was running.
+        commit_private_result(private_session)
         post=subprocess.run([sys.executable,str(guard),"postflight","--lease",lease,"--token",lease_token,"--packet",str(packet_path),"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
         if post.returncode:
             result["error"]="ForgeBoss postflight denied worker result: "+(post.stdout or post.stderr)[-1200:];return 13
@@ -84,6 +91,7 @@ Required acceptance intent:
         try:
             if env_obj is not None:env_obj.cleanup()
         except Exception:pass
+        cleanup_private_session(private_session)
         print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
 
 if __name__=="__main__":raise SystemExit(main())
