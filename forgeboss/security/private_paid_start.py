@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from forgeboss.security import executor_guard as guard
@@ -42,36 +43,7 @@ def _exact_revision(packet: dict, signed_env: dict) -> str:
     return revision
 
 
-def _assert_current_durable_writer(authority: dict, workspace: Path, executor: str) -> None:
-    task_id = str(authority.get("taskId") or "")
-    run_id = str(authority.get("runId") or "")
-    try:
-        epoch = int(authority.get("ownerEpoch"))
-    except Exception as ex:
-        raise PrivatePaidStartError("signed control ownerEpoch is invalid") from ex
-    if not task_id or not run_id or epoch <= 0:
-        raise PrivatePaidStartError("signed control task/run/epoch identity is incomplete")
-    if not CONTROL_DB.exists():
-        raise PrivatePaidStartError("authoritative control database is unavailable")
-    uri = "file:" + CONTROL_DB.resolve().as_posix() + "?mode=ro"
-    db = None
-    try:
-        db = sqlite3.connect(uri, uri=True, timeout=5)
-        db.row_factory = sqlite3.Row
-        row = db.execute(
-            """SELECT wl.*, t.assigned_runtime FROM workspace_leases wl
-               JOIN tasks t ON t.task_id=wl.task_id
-               WHERE wl.task_id=? AND wl.owner_run_id=? AND wl.owner_epoch=? AND wl.released_at IS NULL""",
-            (task_id, run_id, epoch),
-        ).fetchone()
-    except Exception as ex:
-        raise PrivatePaidStartError("unable to verify durable current writer authority") from ex
-    finally:
-        try:
-            if db is not None:
-                db.close()
-        except Exception:
-            pass
+def _validate_writer_row(row, authority: dict, workspace: Path, executor: str) -> None:
     if row is None:
         raise PrivatePaidStartError("durable writer authority no longer matches signed run/epoch")
     if float(row["expires_at"]) <= time.time():
@@ -81,9 +53,86 @@ def _assert_current_durable_writer(authority: dict, workspace: Path, executor: s
     runtime = str(row["assigned_runtime"] or "")
     if runtime and runtime != executor:
         raise PrivatePaidStartError("durable assigned runtime differs from paid executor")
-    signed_budget = float(authority["budgetUsd"])
-    if float(row["budget_reserved"] or 0.0) != signed_budget:
+    if float(row["budget_reserved"] or 0.0) != float(authority["budgetUsd"]):
         raise PrivatePaidStartError("durable reserved budget differs from signed paid authority")
+
+
+def _writer_identity(authority: dict):
+    task_id = str(authority.get("taskId") or "")
+    run_id = str(authority.get("runId") or "")
+    try:
+        epoch = int(authority.get("ownerEpoch"))
+    except Exception as ex:
+        raise PrivatePaidStartError("signed control ownerEpoch is invalid") from ex
+    if not task_id or not run_id or epoch <= 0:
+        raise PrivatePaidStartError("signed control task/run/epoch identity is incomplete")
+    return task_id, run_id, epoch
+
+
+def _select_writer(db, authority: dict):
+    task_id, run_id, epoch = _writer_identity(authority)
+    return db.execute(
+        """SELECT wl.*, t.assigned_runtime FROM workspace_leases wl
+           JOIN tasks t ON t.task_id=wl.task_id
+           WHERE wl.task_id=? AND wl.owner_run_id=? AND wl.owner_epoch=? AND wl.released_at IS NULL""",
+        (task_id, run_id, epoch),
+    ).fetchone()
+
+
+def _assert_current_durable_writer(authority: dict, workspace: Path, executor: str) -> None:
+    if not CONTROL_DB.exists():
+        raise PrivatePaidStartError("authoritative control database is unavailable")
+    uri = "file:" + CONTROL_DB.resolve().as_posix() + "?mode=ro"
+    db = None
+    try:
+        db = sqlite3.connect(uri, uri=True, timeout=5)
+        db.row_factory = sqlite3.Row
+        row = _select_writer(db, authority)
+    except PrivatePaidStartError:
+        raise
+    except Exception as ex:
+        raise PrivatePaidStartError("unable to verify durable current writer authority") from ex
+    finally:
+        try:
+            if db is not None:
+                db.close()
+        except Exception:
+            pass
+    _validate_writer_row(row, authority, workspace, executor)
+
+
+@contextmanager
+def _hold_current_durable_writer(authority: dict, workspace: Path, executor: str):
+    """Prevent claim/release/reassign while paid authority is consumed and snapshotted."""
+    if not CONTROL_DB.exists():
+        raise PrivatePaidStartError("authoritative control database is unavailable")
+    db = None
+    begun = False
+    try:
+        db = sqlite3.connect(str(CONTROL_DB.resolve()), timeout=15, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN IMMEDIATE")
+        begun = True
+        row = _select_writer(db, authority)
+        _validate_writer_row(row, authority, workspace, executor)
+        yield
+        db.execute("COMMIT")
+        begun = False
+    except PrivatePaidStartError:
+        raise
+    except Exception as ex:
+        raise PrivatePaidStartError("unable to fence durable writer authority during paid start") from ex
+    finally:
+        if db is not None:
+            if begun:
+                try:
+                    db.execute("ROLLBACK")
+                except Exception:
+                    pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _git_archive_exact(workspace: Path, revision: str) -> bytes:
@@ -149,9 +198,7 @@ def _path_state(root: Path, rel: str):
 def _assert_packet_inputs_match_private(host: Path, private: Path, packet: dict) -> None:
     allowed, context = guard.validate_packet(packet)
     for rel in allowed + context:
-        host_state = _path_state(host, rel)
-        private_state = _path_state(private, rel)
-        if host_state != private_state:
+        if _path_state(host, rel) != _path_state(private, rel):
             raise PrivatePaidStartError("host packet input differs from bound exact Git revision: " + rel)
 
 
@@ -177,42 +224,40 @@ def prepare_private_paid_start(lease_path, token, packet_path, workspace, execut
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
     private_root = Path(tempfile.mkdtemp(prefix="forgeboss-paid-private-"))
     try:
-        # Validate exact signed control authority against the durable current
-        # control-plane writer BEFORE single-use paid consumption. This closes
-        # stale-but-still-signed run/epoch pairing without burning authority.
         lease_before = json.loads(Path(lease_path).read_text(encoding="utf-8"))
         signed_env = guard._load_control_envelope(control_envelope)
         pre_authority = guard._control_authority(control_envelope, lease_before, host, executor)
         if float(signed_env.get("expiresAt") or 0) <= time.time():
             raise PrivatePaidStartError("signed control authority expired before paid start")
         revision = _exact_revision(packet, signed_env)
-        _assert_current_durable_writer(pre_authority, host, executor)
         if guard._positive_budget(cli_budget) != pre_authority["budgetUsd"]:
             raise PrivatePaidStartError("runner budget differs from signed current writer authority")
 
-        with guard.paid_start_authority(
-            lease_path, token, packet_path, host, executor, control_envelope, cli_budget
-        ) as authority:
-            # Recheck that the authority consumed by the guard is exactly the
-            # prevalidated durable run/epoch/envelope tuple.
-            for key in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd"):
-                if authority.get(key) != pre_authority.get(key):
-                    raise PrivatePaidStartError("paid authority changed between writer check and consume: " + key)
-            archive = _git_archive_exact(host, revision)
-            _safe_extract_tar(archive, private_root)
-            if (private_root / ".git").exists():
-                raise PrivatePaidStartError("private paid snapshot unexpectedly contains Git metadata")
-            guard.assert_no_link_escape(private_root)
-            allowed, context = guard.validate_packet(packet)
-            guard.assert_paths_contained(private_root, allowed + context)
-            _assert_packet_inputs_match_private(host, private_root, packet)
-            private_baseline = guard.snapshot(private_root)
-            host_baseline = guard.snapshot(host)
-            persisted = json.loads(Path(lease_path).read_text(encoding="utf-8"))
-            bound = persisted.get("paid_authority") or {}
-            for key in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd"):
-                if bound.get(key) != authority.get(key):
-                    raise PrivatePaidStartError("durable paid authority binding mismatch: " + key)
+        # SQLite BEGIN IMMEDIATE prevents the controller from releasing or
+        # reassigning this writer while the exact authority is consumed and the
+        # immutable private execution view is materialized.
+        with _hold_current_durable_writer(pre_authority, host, executor):
+            with guard.paid_start_authority(
+                lease_path, token, packet_path, host, executor, control_envelope, cli_budget
+            ) as authority:
+                for key in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd"):
+                    if authority.get(key) != pre_authority.get(key):
+                        raise PrivatePaidStartError("paid authority changed between writer fence and consume: " + key)
+                archive = _git_archive_exact(host, revision)
+                _safe_extract_tar(archive, private_root)
+                if (private_root / ".git").exists():
+                    raise PrivatePaidStartError("private paid snapshot unexpectedly contains Git metadata")
+                guard.assert_no_link_escape(private_root)
+                allowed, context = guard.validate_packet(packet)
+                guard.assert_paths_contained(private_root, allowed + context)
+                _assert_packet_inputs_match_private(host, private_root, packet)
+                private_baseline = guard.snapshot(private_root)
+                host_baseline = guard.snapshot(host)
+                persisted = json.loads(Path(lease_path).read_text(encoding="utf-8"))
+                bound = persisted.get("paid_authority") or {}
+                for key in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd"):
+                    if bound.get(key) != authority.get(key):
+                        raise PrivatePaidStartError("durable paid authority binding mismatch: " + key)
         return {
             "workspace": str(private_root),
             "hostWorkspace": str(host),
@@ -251,11 +296,10 @@ def commit_private_result(session: dict) -> list[str]:
             if guard.is_linklike(src) or not src.is_file():
                 raise PrivatePaidStartError("private paid output is not a regular file: " + rel)
             _atomic_copy_file(src, dst)
-        else:
-            if dst.exists():
-                if guard.is_linklike(dst) or not dst.is_file():
-                    raise PrivatePaidStartError("host destination became unsafe before delete: " + rel)
-                dst.unlink()
+        elif dst.exists():
+            if guard.is_linklike(dst) or not dst.is_file():
+                raise PrivatePaidStartError("host destination became unsafe before delete: " + rel)
+            dst.unlink()
     return changed
 
 
