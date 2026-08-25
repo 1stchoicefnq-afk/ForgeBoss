@@ -18,6 +18,9 @@ class IsolationBrokerTests(unittest.TestCase):
     def _authority(self,root):
         return {"ordinary":broker.guard.snapshot(root),"git":{"g":"same"},"head":"h"*40}
 
+    def _preimages(self,root,packet):
+        return broker._capture_allowed_preimages(root,packet)
+
     def _patch_git(self,git_meta=None,head=None):
         return (mock.patch.object(broker.guard,"git_metadata_snapshot",return_value={"g":"same"} if git_meta is None else git_meta),
                 mock.patch.object(broker.guard,"git",return_value="h"*40 if head is None else head))
@@ -38,59 +41,68 @@ class IsolationBrokerTests(unittest.TestCase):
             bad={"authority":dict(expected)};bad["authority"][key]=value
             with self.subTest(key=key),self.assertRaises(broker.IsolationBrokerError):broker._validate_reply_authority(bad,expected)
 
+    def test_pre_run_preimage_binds_backup_and_hash_from_same_original_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);target=root/"a.txt";target.write_bytes(b"old");packet={"allowed_files":["a.txt"],"context_files":[]}
+            pre=self._preimages(root,packet)["a.txt"]
+            target.write_bytes(b"racer")
+            self.assertEqual(pre["backup"],b"old")
+            self.assertEqual(pre["state"]["sha256"],hashlib.sha256(b"old").hexdigest())
+            self.assertNotEqual(pre["state"],broker._file_state(target))
+
     def test_apply_good_change_with_stable_git_authority(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);p1,p2=self._patch_git()
-            with p1,p2:self.assertEqual(broker._apply_changes(root,packet,baseline,[self._change("a.txt")]),["a.txt"])
+            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet);p1,p2=self._patch_git()
+            with p1,p2:self.assertEqual(broker._apply_changes(root,packet,baseline,[self._change("a.txt")],pre),["a.txt"])
             self.assertEqual((root/"a.txt").read_bytes(),b"new")
 
     def test_git_only_drift_rejects_before_first_host_write(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root)
+            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet)
             with mock.patch.object(broker.guard,"git_metadata_snapshot",return_value={"g":"drift"}),mock.patch.object(broker.guard,"git",return_value="h"*40):
-                with self.assertRaisesRegex(broker.IsolationBrokerError,"Git authority drifted"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")])
+                with self.assertRaisesRegex(broker.IsolationBrokerError,"Git authority drifted"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")],pre)
             self.assertEqual((root/"a.txt").read_text(encoding="utf-8"),"old")
 
     def test_head_only_drift_rejects_before_first_host_write(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root)
+            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet)
             with mock.patch.object(broker.guard,"git_metadata_snapshot",return_value={"g":"same"}),mock.patch.object(broker.guard,"git",return_value="x"*40):
-                with self.assertRaisesRegex(broker.IsolationBrokerError,"HEAD drifted"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")])
+                with self.assertRaisesRegex(broker.IsolationBrokerError,"HEAD drifted"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")],pre)
             self.assertEqual((root/"a.txt").read_text(encoding="utf-8"),"old")
 
     def test_malformed_second_change_causes_zero_partial_writes(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("A",encoding="utf-8");(root/"b.txt").write_text("B",encoding="utf-8");packet={"allowed_files":["a.txt","b.txt"],"context_files":[]};baseline=self._authority(root);changes=[self._change("a.txt",b"AA"),{"path":"b.txt","action":"write","contentBase64":"%%%","sha256":"0"*64}];p1,p2=self._patch_git()
+            root=Path(td);(root/"a.txt").write_text("A",encoding="utf-8");(root/"b.txt").write_text("B",encoding="utf-8");packet={"allowed_files":["a.txt","b.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet);changes=[self._change("a.txt",b"AA"),{"path":"b.txt","action":"write","contentBase64":"%%%","sha256":"0"*64}];p1,p2=self._patch_git()
             with p1,p2:
-                with self.assertRaises(broker.IsolationBrokerError):broker._apply_changes(root,packet,baseline,changes)
+                with self.assertRaises(broker.IsolationBrokerError):broker._apply_changes(root,packet,baseline,changes,pre)
             self.assertEqual((root/"a.txt").read_text(),"A");self.assertEqual((root/"b.txt").read_text(),"B")
 
     def test_mid_apply_failure_rolls_back_prior_touched_file(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("A",encoding="utf-8");(root/"b.txt").write_text("B",encoding="utf-8");packet={"allowed_files":["a.txt","b.txt"],"context_files":[]};baseline=self._authority(root);changes=[self._change("a.txt",b"AA"),self._change("b.txt",b"BB")];real=broker._atomic_write_bytes;calls={"n":0}
+            root=Path(td);(root/"a.txt").write_text("A",encoding="utf-8");(root/"b.txt").write_text("B",encoding="utf-8");packet={"allowed_files":["a.txt","b.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet);changes=[self._change("a.txt",b"AA"),self._change("b.txt",b"BB")];real=broker._atomic_write_bytes;calls={"n":0}
             def flaky(target,data):
                 calls["n"]+=1
                 if calls["n"]==2:raise OSError("synthetic second write failure")
                 return real(target,data)
             p1,p2=self._patch_git()
             with p1,p2,mock.patch.object(broker,"_atomic_write_bytes",side_effect=flaky):
-                with self.assertRaises(OSError):broker._apply_changes(root,packet,baseline,changes)
+                with self.assertRaises(OSError):broker._apply_changes(root,packet,baseline,changes,pre)
             self.assertEqual((root/"a.txt").read_text(),"A");self.assertEqual((root/"b.txt").read_text(),"B")
 
     def test_post_apply_git_drift_rolls_back_worker_output(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root)
+            root=Path(td);(root/"a.txt").write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet)
             with mock.patch.object(broker.guard,"git_metadata_snapshot",side_effect=[{"g":"same"},{"g":"drift"}]),mock.patch.object(broker.guard,"git",return_value="h"*40):
-                with self.assertRaisesRegex(broker.IsolationBrokerError,"Git authority drifted during"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")])
+                with self.assertRaisesRegex(broker.IsolationBrokerError,"Git authority drifted during"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")],pre)
             self.assertEqual((root/"a.txt").read_text(),"old")
 
     def test_target_preimage_race_is_detected_before_write(self):
         with tempfile.TemporaryDirectory() as td:
-            root=Path(td);target=root/"a.txt";target.write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);real_assert=broker._assert_authority
+            root=Path(td);target=root/"a.txt";target.write_text("old",encoding="utf-8");packet={"allowed_files":["a.txt"],"context_files":[]};baseline=self._authority(root);pre=self._preimages(root,packet);real_assert=broker._assert_authority
             def race(host,base,label):real_assert(host,base,label);target.write_text("racer",encoding="utf-8")
             p1,p2=self._patch_git()
             with p1,p2,mock.patch.object(broker,"_assert_authority",side_effect=race):
-                with self.assertRaisesRegex(broker.IsolationBrokerError,"target preimage changed"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")])
+                with self.assertRaisesRegex(broker.IsolationBrokerError,"target preimage changed"):broker._apply_changes(root,packet,baseline,[self._change("a.txt")],pre)
             self.assertEqual(target.read_text(),"racer")
 
     def test_call_broker_rejects_non_isolated_claims(self):
