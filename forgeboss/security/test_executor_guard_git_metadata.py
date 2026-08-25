@@ -158,12 +158,14 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             self.assertIn("gitdir/config",snap)
         finally:td.cleanup()
 
-    def test_filter_command_config_is_denied_fail_closed(self):
+    def test_filter_command_config_is_inert_for_local_metadata_allowlist_and_bound(self):
         td,work=self._ordinary()
         try:
             self._git(work,"config","filter.evil.clean","python external.py")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):
-                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: filter.evil.clean"):guard.git_metadata_snapshot(work)
+            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
+            self._git(work,"config","filter.evil.clean","python changed.py")
+            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
+            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
         finally:td.cleanup()
 
     def test_fsmonitor_boolean_is_allowed_but_path_target_is_denied(self):
@@ -208,6 +210,17 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
         finally:td.cleanup()
 
+    def test_credential_helper_sentinel_not_invoked_by_metadata_or_verify(self):
+        td,work=self._ordinary()
+        try:
+            marker=work.parent/"credential-helper-invoked.txt"
+            self._git(work,"config","credential.helper",f'!echo invoked > "{marker.as_posix()}"')
+            lease=self._lease(work)
+            self.assertFalse(marker.exists())
+            self._verify(work,lease)
+            self.assertFalse(marker.exists())
+        finally:td.cleanup()
+
     def test_diff_external_is_denied_fail_closed(self):
         td,work=self._ordinary()
         try:
@@ -216,12 +229,52 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
                 with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.external"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
-    def test_diff_textconv_is_denied_fail_closed(self):
+    def test_diff_textconv_config_is_inert_for_local_metadata_allowlist_and_bound(self):
         td,work=self._ordinary()
         try:
-            external=work.parent/"textconv.sh";external.write_text("#!/bin/sh\nexit 0\n",encoding="utf-8");self._git(work,"config","diff.bin.textconv",external.as_posix())
-            with patch.object(guard,"git",side_effect=self._real_guard_git):
-                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.bin.textconv"):guard.git_metadata_snapshot(work)
+            self._git(work,"config","diff.bin.textconv","external-one")
+            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
+            self._git(work,"config","diff.bin.textconv","external-two")
+            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
+            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
+        finally:td.cleanup()
+
+    def test_stock_git_for_windows_lfs_global_config_is_inert(self):
+        td,work=self._ordinary()
+        try:
+            global_cfg=work.parent/"git-for-windows-global.cfg"
+            global_cfg.write_text(
+                '[diff "astextplain"]\n\ttextconv = astextplain\n'
+                '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n',
+                encoding="utf-8",
+            )
+            env={"GIT_CONFIG_GLOBAL":str(global_cfg),"GIT_CONFIG_NOSYSTEM":"1"}
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):
+                snap=guard.git_metadata_snapshot(work)
+            self.assertIn("git:effective-config",snap)
+        finally:td.cleanup()
+
+    def test_local_git_allowlist_rejects_execution_capable_shapes_before_subprocess(self):
+        td,work=self._ordinary()
+        try:
+            cases=(("credential","fill"),("diff","--textconv","HEAD"),("checkout","--","allowed.txt"),("fetch",),("submodule","update"))
+            for args in cases:
+                with self.subTest(args=args),patch.object(guard.subprocess,"run") as run:
+                    with self.assertRaisesRegex(guard.SecurityError,"non-local/transport-capable Git command denied"):guard.git(work,*args)
+                    run.assert_not_called()
+        finally:td.cleanup()
+
+    def test_execution_config_failure_reason_is_deterministic(self):
+        td,work=self._ordinary()
+        try:
+            self._git(work,"config","diff.external","external-diff")
+            self._git(work,"config","core.editor","external-editor")
+            messages=[]
+            for _ in range(3):
+                with patch.object(guard,"git",side_effect=self._real_guard_git):
+                    with self.assertRaises(guard.SecurityError) as cm:guard.git_metadata_snapshot(work)
+                messages.append(str(cm.exception))
+            self.assertEqual(messages,["execution-capable Git config denied: core.editor"]*3)
         finally:td.cleanup()
 
     def test_editor_and_askpass_style_program_config_are_denied(self):
