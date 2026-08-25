@@ -1,5 +1,5 @@
 from __future__ import annotations
-import inspect,math,unittest
+import inspect,unittest
 import forgeboss.executors.mini_swe_runner as runner
 
 class MiniSweBudgetTests(unittest.TestCase):
@@ -11,14 +11,16 @@ class MiniSweBudgetTests(unittest.TestCase):
         for value in (None,float("nan"),float("inf"),float("-inf"),-0.01,"bad",True):
             with self.subTest(value=value):self.assertIsNone(runner._observed_cost(value))
         self.assertEqual(runner._observed_cost(0),0.0);self.assertEqual(runner._observed_cost("0.42"),0.42)
-    def test_paid_start_context_precedes_model_construction_and_run(self):
-        src=inspect.getsource(runner.main)
-        guard_i=src.index("with paid_start_authority(")
-        model_i=src.index("LitellmModel(model_name=model_name)")
-        run_i=src.index("agent.run(task)")
-        self.assertLess(guard_i,model_i);self.assertLess(model_i,run_i)
-    def test_old_verify_subprocess_boundary_is_removed(self):
-        src=inspect.getsource(runner.main)
+    def test_runner_delegates_entire_paid_run_to_privileged_broker(self):
+        src=inspect.getsource(runner)
+        self.assertIn("run_isolated_mini_swe",src)
+        self.assertNotIn("LitellmModel",src)
+        self.assertNotIn("DefaultAgent",src)
+        self.assertNotIn("DockerEnvironment",src)
+        self.assertNotIn("agent.run",src)
+    def test_no_host_workspace_bind_mount_or_old_verify_boundary(self):
+        src=inspect.getsource(runner)
+        self.assertNotIn("type=bind",src)
         self.assertNotIn('"verify","--lease"',src)
         self.assertIn("FORGEBOSS_CONTROL_ENVELOPE",src)
     def test_result_cost_defaults_to_unknown_not_zero(self):
