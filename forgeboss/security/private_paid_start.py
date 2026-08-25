@@ -32,12 +32,12 @@ def _file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def _exact_revision(packet: dict, authority: dict) -> str:
+def _exact_revision(packet: dict, signed_env: dict) -> str:
     revision = str(packet.get("expected_head_revision") or packet.get("exact_head") or "").lower()
     if not _SHA_RE.fullmatch(revision):
         raise PrivatePaidStartError("private paid execution requires an exact 40-hex revision")
-    base = str(authority.get("baseSha") or authority.get("base_sha") or "").lower()
-    if base and base != revision:
+    base = str(signed_env.get("baseSha") or "").lower()
+    if base != revision:
         raise PrivatePaidStartError("signed control base SHA differs from private execution revision")
     return revision
 
@@ -54,6 +54,7 @@ def _assert_current_durable_writer(authority: dict, workspace: Path, executor: s
     if not CONTROL_DB.exists():
         raise PrivatePaidStartError("authoritative control database is unavailable")
     uri = "file:" + CONTROL_DB.resolve().as_posix() + "?mode=ro"
+    db = None
     try:
         db = sqlite3.connect(uri, uri=True, timeout=5)
         db.row_factory = sqlite3.Row
@@ -67,7 +68,8 @@ def _assert_current_durable_writer(authority: dict, workspace: Path, executor: s
         raise PrivatePaidStartError("unable to verify durable current writer authority") from ex
     finally:
         try:
-            db.close()
+            if db is not None:
+                db.close()
         except Exception:
             pass
     if row is None:
@@ -175,17 +177,34 @@ def prepare_private_paid_start(lease_path, token, packet_path, workspace, execut
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
     private_root = Path(tempfile.mkdtemp(prefix="forgeboss-paid-private-"))
     try:
+        # Validate exact signed control authority against the durable current
+        # control-plane writer BEFORE single-use paid consumption. This closes
+        # stale-but-still-signed run/epoch pairing without burning authority.
+        lease_before = json.loads(Path(lease_path).read_text(encoding="utf-8"))
+        signed_env = guard._load_control_envelope(control_envelope)
+        pre_authority = guard._control_authority(control_envelope, lease_before, host, executor)
+        if float(signed_env.get("expiresAt") or 0) <= time.time():
+            raise PrivatePaidStartError("signed control authority expired before paid start")
+        revision = _exact_revision(packet, signed_env)
+        _assert_current_durable_writer(pre_authority, host, executor)
+        if guard._positive_budget(cli_budget) != pre_authority["budgetUsd"]:
+            raise PrivatePaidStartError("runner budget differs from signed current writer authority")
+
         with guard.paid_start_authority(
             lease_path, token, packet_path, host, executor, control_envelope, cli_budget
         ) as authority:
-            _assert_current_durable_writer(authority, host, executor)
-            revision = _exact_revision(packet, authority)
+            # Recheck that the authority consumed by the guard is exactly the
+            # prevalidated durable run/epoch/envelope tuple.
+            for key in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd"):
+                if authority.get(key) != pre_authority.get(key):
+                    raise PrivatePaidStartError("paid authority changed between writer check and consume: " + key)
             archive = _git_archive_exact(host, revision)
             _safe_extract_tar(archive, private_root)
             if (private_root / ".git").exists():
                 raise PrivatePaidStartError("private paid snapshot unexpectedly contains Git metadata")
             guard.assert_no_link_escape(private_root)
-            guard.assert_paths_contained(private_root, guard.validate_packet(packet)[0] + guard.validate_packet(packet)[1])
+            allowed, context = guard.validate_packet(packet)
+            guard.assert_paths_contained(private_root, allowed + context)
             _assert_packet_inputs_match_private(host, private_root, packet)
             private_baseline = guard.snapshot(private_root)
             host_baseline = guard.snapshot(host)
