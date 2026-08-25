@@ -40,8 +40,7 @@ def _broker_path() -> Path:
             raise IsolationBrokerError("isolation broker override is test-only")
         return Path(test_override).resolve(strict=True)
     if os.name == "nt":
-        program_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
-        path = program_files / "ForgeBoss" / "ForgeBossIsolationBrokerClient.exe"
+        path = Path(os.environ.get("ProgramFiles") or r"C:\Program Files") / "ForgeBoss" / "ForgeBossIsolationBrokerClient.exe"
     else:
         path = Path("/usr/libexec/forgeboss-isolation-broker")
     try:
@@ -101,14 +100,8 @@ def _expected_authority(lease_path, control_envelope, workspace, executor, cli_b
 def _call_broker(request: dict) -> dict:
     broker = _broker_path()
     raw = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    proc = subprocess.run(
-        [str(broker), "run-mini-swe-v1"],
-        input=raw,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=3600,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    proc = subprocess.run([str(broker), "run-mini-swe-v1"], input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=3600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or b"")[-1200:].decode("utf-8", "replace")
         raise IsolationBrokerError("privilege-separated isolation broker rejected paid run: " + detail)
@@ -140,15 +133,39 @@ def _validate_reply_authority(reply: dict, expected: dict) -> None:
         raise IsolationBrokerError("broker authority mismatch: budgetUsd")
 
 
-def _apply_changes(host: Path, packet: dict, baseline: dict, changes) -> list[str]:
-    if guard.snapshot(host) != baseline:
-        raise IsolationBrokerError("host worktree changed while isolated paid execution was running")
+def _file_state(path: Path):
+    if not path.exists():
+        return {"kind": "missing"}
+    if guard.is_linklike(path) or not path.is_file():
+        return {"kind": "unsafe"}
+    data = path.read_bytes()
+    return {"kind": "file", "sha256": _sha256(data), "size": len(data)}
+
+
+def _capture_authority(host: Path):
+    return {
+        "ordinary": guard.snapshot(host),
+        "git": guard.git_metadata_snapshot(host),
+        "head": guard.git(host, "rev-parse", "HEAD"),
+    }
+
+
+def _assert_authority(host: Path, baseline: dict, label: str) -> None:
+    if guard.snapshot(host) != baseline["ordinary"]:
+        raise IsolationBrokerError(label + ": ordinary host worktree drifted")
+    if guard.git_metadata_snapshot(host) != baseline["git"]:
+        raise IsolationBrokerError(label + ": host Git authority drifted")
+    if guard.git(host, "rev-parse", "HEAD") != baseline["head"]:
+        raise IsolationBrokerError(label + ": host HEAD drifted")
+
+
+def _stage_changes(host: Path, packet: dict, changes):
     allowed, _ = guard.validate_packet(packet)
     allowed_keys = {p.casefold(): p for p in allowed}
     if not isinstance(changes, list):
         raise IsolationBrokerError("broker changes must be an array")
     seen = set()
-    applied = []
+    staged = []
     for item in changes:
         if not isinstance(item, dict):
             raise IsolationBrokerError("broker change entry is invalid")
@@ -157,35 +174,92 @@ def _apply_changes(host: Path, packet: dict, baseline: dict, changes) -> list[st
         if key not in allowed_keys or key in seen:
             raise IsolationBrokerError("broker returned duplicate/out-of-scope path: " + rel)
         seen.add(key)
-        target = host / allowed_keys[key]
-        guard.assert_paths_contained(host, [allowed_keys[key]])
+        canonical = allowed_keys[key]
+        guard.assert_paths_contained(host, [canonical])
+        target = host / canonical
+        preimage = _file_state(target)
+        backup = target.read_bytes() if preimage.get("kind") == "file" else None
         action = item.get("action")
-        if action == "delete":
-            if target.exists():
-                if guard.is_linklike(target) or not target.is_file():
-                    raise IsolationBrokerError("host delete target became unsafe: " + rel)
-                target.unlink()
-            applied.append(rel)
-            continue
-        if action != "write":
+        data = None
+        if action == "write":
+            encoded = item.get("contentBase64")
+            if not isinstance(encoded, str):
+                raise IsolationBrokerError("broker write is missing content: " + rel)
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except Exception as ex:
+                raise IsolationBrokerError("broker write content is invalid base64: " + rel) from ex
+            if len(data) > _MAX_FILE:
+                raise IsolationBrokerError("broker write exceeds per-file output limit: " + rel)
+            if str(item.get("sha256") or "").lower() != _sha256(data):
+                raise IsolationBrokerError("broker write digest mismatch: " + rel)
+        elif action != "delete":
             raise IsolationBrokerError("broker change action is invalid: " + rel)
-        encoded = item.get("contentBase64")
-        if not isinstance(encoded, str):
-            raise IsolationBrokerError("broker write is missing content: " + rel)
+        if preimage.get("kind") == "unsafe":
+            raise IsolationBrokerError("host target is unsafe before apply: " + rel)
+        staged.append({"rel": canonical, "target": target, "action": action, "data": data,
+                       "preimage": preimage, "backup": backup})
+    return staged
+
+
+def _expected_post_snapshot(baseline: dict, staged) -> dict:
+    expected = dict(baseline)
+    for item in staged:
+        rel = item["rel"]
+        if item["action"] == "delete":
+            expected.pop(rel, None)
+        else:
+            data = item["data"]
+            expected[rel] = {"kind": "file", "sha256": _sha256(data), "size": len(data)}
+    return expected
+
+
+def _restore(staged, touched) -> None:
+    failures = []
+    for item in reversed(touched):
+        target = item["target"]
         try:
-            data = base64.b64decode(encoded, validate=True)
+            if item["preimage"].get("kind") == "missing":
+                if target.exists():
+                    if guard.is_linklike(target) or not target.is_file():
+                        raise IsolationBrokerError("rollback target became unsafe: " + item["rel"])
+                    target.unlink()
+            else:
+                _atomic_write_bytes(target, item["backup"])
         except Exception as ex:
-            raise IsolationBrokerError("broker write content is invalid base64: " + rel) from ex
-        if len(data) > _MAX_FILE:
-            raise IsolationBrokerError("broker write exceeds per-file output limit: " + rel)
-        expected_hash = str(item.get("sha256") or "").lower()
-        if expected_hash != _sha256(data):
-            raise IsolationBrokerError("broker write digest mismatch: " + rel)
-        if target.exists() and (guard.is_linklike(target) or not target.is_file()):
-            raise IsolationBrokerError("host write target became unsafe: " + rel)
-        _atomic_write_bytes(target, data)
-        applied.append(rel)
-    return applied
+            failures.append(item["rel"] + ": " + str(ex))
+    if failures:
+        raise IsolationBrokerError("broker result rollback failed: " + "; ".join(failures))
+    for item in staged:
+        if _file_state(item["target"]) != item["preimage"]:
+            raise IsolationBrokerError("broker result rollback did not restore preimage: " + item["rel"])
+
+
+def _apply_changes(host: Path, packet: dict, authority_baseline: dict, changes) -> list[str]:
+    staged = _stage_changes(host, packet, changes)
+    _assert_authority(host, authority_baseline, "before broker result apply")
+    expected_post = _expected_post_snapshot(authority_baseline["ordinary"], staged)
+    touched = []
+    try:
+        for item in staged:
+            if _file_state(item["target"]) != item["preimage"]:
+                raise IsolationBrokerError("target preimage changed immediately before apply: " + item["rel"])
+            if item["action"] == "delete":
+                if item["target"].exists():
+                    item["target"].unlink()
+            else:
+                _atomic_write_bytes(item["target"], item["data"])
+            touched.append(item)
+        if guard.git_metadata_snapshot(host) != authority_baseline["git"] or guard.git(host, "rev-parse", "HEAD") != authority_baseline["head"]:
+            raise IsolationBrokerError("host Git authority drifted during broker result apply")
+        if guard.snapshot(host) != expected_post:
+            raise IsolationBrokerError("host worktree does not equal exact staged broker result")
+        return [item["rel"] for item in staged]
+    except Exception:
+        _restore(staged, touched)
+        # A failed apply must not leave broker-touched files behind. Git drift is
+        # still reported by the original failure; touched paths are restored.
+        raise
 
 
 def run_isolated_mini_swe(lease_path, token, packet_path, workspace, control_envelope, cli_budget, model_name, image):
@@ -195,7 +269,7 @@ def run_isolated_mini_swe(lease_path, token, packet_path, workspace, control_env
     guard.validate_packet(packet)
     guard.assert_no_link_escape(host)
     authority = _expected_authority(lease_path, control_envelope, host, "mini-swe", cli_budget)
-    host_baseline = guard.snapshot(host)
+    host_authority = _capture_authority(host)
     request = {
         "schema": 1,
         "operation": "run-mini-swe-v1",
@@ -208,15 +282,10 @@ def run_isolated_mini_swe(lease_path, token, packet_path, workspace, control_env
         "model": str(model_name),
         "image": str(image),
         "expectedAuthority": {k: authority[k] for k in ("taskId", "runId", "ownerEpoch", "envelopeSha256", "budgetUsd")},
+        "expectedHead": host_authority["head"],
     }
     reply = _call_broker(request)
     _validate_reply_authority(reply, authority)
-    applied = _apply_changes(host, packet, host_baseline, reply.get("changes", []))
-    return {
-        "completed": reply.get("completed") is True,
-        "cost_usd": reply.get("cost_usd"),
-        "calls": reply.get("calls"),
-        "error": reply.get("error"),
-        "applied": applied,
-        "authority": authority,
-    }
+    applied = _apply_changes(host, packet, host_authority, reply.get("changes", []))
+    return {"completed": reply.get("completed") is True, "cost_usd": reply.get("cost_usd"),
+            "calls": reply.get("calls"), "error": reply.get("error"), "applied": applied, "authority": authority}
