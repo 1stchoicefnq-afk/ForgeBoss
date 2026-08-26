@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse,hashlib,json,math,os,re,secrets,subprocess,time
+import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
@@ -12,7 +12,7 @@ FORBIDDEN_EXACT={".git",".env",".env.local",".env.production",".npmrc",".pypirc"
 GIT_META_EXACT=("config","config.worktree","HEAD","packed-refs","shallow","info/attributes","info/exclude","objects/info/alternates")
 GIT_META_TREES=("refs","hooks")
 EXEC_CONFIG_EXACT={"core.askpass","core.editor","core.gitproxy","core.pager","core.sshcommand","diff.external","gpg.program","interactive.difffilter","sequence.editor"}
-EXEC_CONFIG_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),re.compile(r"^diff\..+\.(?:command|textconv)$",re.I),re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
+EXEC_CONFIG_PATTERNS=(re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
@@ -74,9 +74,27 @@ def _assert_local_git_args(args):
     if a in _LOCAL_GIT_EXACT:return
     if len(a)==4 and a[:3]==("config","--includes","--get-all") and a[3] and not any(c in a[3] for c in ("\x00","\r","\n")):return
     raise SecurityError("non-local/transport-capable Git command denied: "+" ".join(a))
+def _resolve_git_executable():
+    name="git.exe" if os.name=="nt" else "git"
+    raw=shutil.which(name)
+    if not raw:raise SecurityError("Git executable unavailable: "+name)
+    p=Path(raw)
+    try:
+        if is_linklike(p):raise SecurityError("linklike Git executable denied: "+str(p))
+        resolved=p.resolve(strict=True)
+        if is_linklike(resolved):raise SecurityError("linklike Git executable denied: "+str(resolved))
+        if not resolved.is_file():raise SecurityError("Git executable is not a regular file: "+str(resolved))
+        if os.name!="nt" and not os.access(resolved,os.X_OK):raise SecurityError("Git executable is not executable: "+str(resolved))
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to resolve Git executable: "+str(e)) from e
+    return resolved
+def _git_executable_identity():
+    p=_resolve_git_executable()
+    try:return {"kind":"executable","path":str(p),"sha256":fhash(p),"size":p.stat().st_size}
+    except Exception as e:raise SecurityError("unable to bind Git executable identity: "+str(e)) from e
 def git(work,*args):
-    _assert_local_git_args(args)
-    p=subprocess.run(["git.exe",*args],cwd=work,capture_output=True,text=True,timeout=60,creationflags=CNW)
+    _assert_local_git_args(args);exe=_resolve_git_executable()
+    p=subprocess.run([str(exe),*args],cwd=work,capture_output=True,text=True,timeout=60,creationflags=CNW)
     if p.returncode:raise SecurityError((p.stdout+p.stderr).strip() or "git failed")
     return p.stdout.strip()
 def _resolve_git_dir(work:Path,flag:str):
@@ -141,12 +159,12 @@ def _assert_safe_execution_config(work:Path,gitdir:Path,common:Path):
     elif "protocol.allow" in names:
         vals=[v.casefold() for v in _config_values(work,"protocol.allow")]
         if not vals or any(v!="never" for v in vals):raise SecurityError("execution-capable Git transport denied: protocol.allow")
-    for name in names:
+    for name in sorted(names):
         if name in EXEC_CONFIG_EXACT or any(rx.match(name) for rx in EXEC_CONFIG_PATTERNS):raise SecurityError("execution-capable Git config denied: "+name)
         if name.startswith("alias.") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
         if name.startswith("submodule.") and name.endswith(".update") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
 def git_metadata_snapshot(work):
-    work=Path(work).resolve();dotgit=work/".git";out={}
+    work=Path(work).resolve();dotgit=work/".git";out={};git_exe_before=_git_executable_identity()
     if not dotgit.exists() and not is_linklike(dotgit):return out
     if is_linklike(dotgit):raise SecurityError("linklike workspace .git denied")
     if dotgit.is_file():out[".git"]=_metadata_entry(dotgit,".git")
@@ -159,6 +177,9 @@ def git_metadata_snapshot(work):
     out["git:effective-config"]={"kind":"semantic","sha256":hashlib.sha256(effective.encode("utf-8")).hexdigest()}
     staged=git(work,"ls-files","--stage","-z")
     out["git:index:stage"]={"kind":"semantic","sha256":hashlib.sha256(staged.encode("utf-8")).hexdigest()}
+    git_exe_after=_git_executable_identity()
+    if git_exe_before!=git_exe_after:raise SecurityError("Git executable identity changed during metadata snapshot")
+    out["git:executable"]=git_exe_before
     return out
 def snapshot(work):
     work=Path(work).resolve();out={}
