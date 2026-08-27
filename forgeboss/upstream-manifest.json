@@ -45,6 +45,30 @@
       "status": "REAL_CLI_OPTIONAL_VERSION_RECORDED_AT_INSTALL"
     },
     {
+      "name": "Cline",
+      "role": "headless coding executor and multi-agent/worktree benchmark candidate",
+      "install": [
+        "cline@latest"
+      ],
+      "source": "https://github.com/cline/cline",
+      "license": "Apache-2.0",
+      "status": "REAL_CLI_OPTIONAL_QUARANTINED_VERSION_RECORDED_AT_INSTALL"
+    },
+    {
+      "name": "bolt.diy",
+      "role": "prompt-to-app UX, provider, template and preview reference architecture",
+      "source": "https://github.com/stackblitz-labs/bolt.diy",
+      "license": "MIT",
+      "status": "REFERENCE_ONLY_DO_NOT_VENDOR_WHOLE_REPOSITORY"
+    },
+    {
+      "name": "Dyad",
+      "role": "local-first app-builder and desktop process-boundary reference architecture",
+      "source": "https://github.com/dyad-sh/dyad",
+      "license": "Apache-2.0 outside src/pro; src/pro is FSL-1.1-ALv2",
+      "status": "REFERENCE_ONLY_NON_PRO_CODE_ONLY"
+    },
+    {
       "name": "Agency Agents",
       "role": "specialist intelligence",
       "source": "https://github.com/msitarzewski/agency-agents",
