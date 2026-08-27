@@ -21,6 +21,16 @@
       "status": "BAKEOFF_CANDIDATE",
       "runner": "forgeboss/executors/opencode_runner.js"
     },
+    "cline": {
+      "type": "cli",
+      "status": "QUARANTINED_BAKEOFF_CANDIDATE",
+      "runner": "forgeboss/executors/cline_runner.js",
+      "required_gates": [
+        "FORGEBOSS_ALLOW_PAID_EXECUTOR=YES",
+        "FORGEBOSS_ENABLE_QUARANTINED_CLINE=YES",
+        "FORGEBOSS_OS_ISOLATION_VERIFIED=YES"
+      ]
+    },
     "deepagents": {
       "type": "library",
       "status": "DURABILITY_ONLY_NOT_EXECUTOR_DEFAULT"
