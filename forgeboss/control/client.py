@@ -25,3 +25,8 @@ class Client:
     def close(self):
         try:self.f.close()
         finally:self.s.close()
+
+def protected_worker_launch_signer(transport,trust,required_generation=None):
+    """Create the narrow protected signer client without loading any private signing key."""
+    from .authority import WorkerLaunchSignerClient
+    return WorkerLaunchSignerClient(transport,trust,required_generation=required_generation)

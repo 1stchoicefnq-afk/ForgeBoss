@@ -21,13 +21,13 @@ def secret_file(root:Path):
     return p,data
 
 def sign_envelope(payload,secret:bytes):
-    body=dict(payload)
-    body.pop("signature",None)
-    sig=hmac.new(secret,canonical(body),hashlib.sha256).hexdigest()
-    body["signature"]="hmac-sha256:"+sig
+    """Legacy migration-only HMAC launch envelope signer."""
+    body=dict(payload);body.pop("signature",None)
+    sig=hmac.new(secret,canonical(body),hashlib.sha256).hexdigest();body["signature"]="hmac-sha256:"+sig
     return body
 
 def verify_envelope(payload,secret:bytes,now=None):
+    """Legacy migration-only HMAC verifier. Protected authority never falls back here."""
     now=time.time() if now is None else float(now)
     if not isinstance(payload,dict):raise ValueError("envelope must be object")
     allowed={"envelopeVersion","taskId","repository","baseSha","branch","worktreePath","runId","attempt","ownerEpoch","runtime",
@@ -47,3 +47,7 @@ def verify_envelope(payload,secret:bytes,now=None):
     want=hmac.new(secret,canonical(unsigned),hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig.split(":",1)[1],want):raise PermissionError("worker launch envelope signature mismatch")
     return unsigned
+
+def verify_protected_launch_authority(document,trust,now=None,required_generation=None):
+    from .authority import verify_protected_authority
+    return verify_protected_authority(document,trust,now=now,required_generation=required_generation)
