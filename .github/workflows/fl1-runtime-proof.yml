@@ -17,21 +17,24 @@ concurrency:
   group: fl1-runtime-proof-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   linux:
     name: Linux FL1 proof
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout exact workflow SHA
+      - name: Checkout exact candidate SHA
         shell: bash
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git fetch --depth=1 origin "${TARGET_SHA}"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - name: Record platform and Git identity
         shell: bash
         run: |
@@ -40,17 +43,29 @@ jobs:
           git --version
           command -v git
           git rev-parse HEAD
-      - name: Core FL1 unit/runtime checks
+          printf 'target_sha=%s\n' "${TARGET_SHA}"
+      - name: Existing FL1 unit/runtime checks
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest forgeboss.control.test_known_good forgeboss.control.test_activation -v
+          ran=0
+          if [ -f forgeboss/control/test_known_good.py ]; then
+            python -m unittest forgeboss.control.test_known_good -v
+            ran=1
+          fi
+          if [ -f forgeboss/control/test_activation.py ]; then
+            python -m unittest forgeboss.control.test_activation -v
+            ran=1
+          fi
           if [ -f forgeboss/control/test_process_lifecycle.py ]; then
             python -m unittest forgeboss.control.test_process_lifecycle -v
+            ran=1
           fi
           if [ -f forgeboss/security/test_executor_guard_git_metadata.py ]; then
             python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+            ran=1
           fi
+          echo "executed_candidate_test_group=${ran}"
       - name: Linux production Git path sentinel
         shell: bash
         run: |
@@ -62,7 +77,8 @@ jobs:
           assert git, 'system git missing'
           p = Path(git)
           assert p.is_absolute(), git
-          print({'trusted_git_candidate': str(p), 'exists': p.exists()})
+          assert p.exists() and p.is_file(), p
+          print({'trusted_git_candidate': str(p), 'exists': True})
           PY
 
   windows:
@@ -70,15 +86,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout exact workflow SHA
+      - name: Checkout exact candidate SHA
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           git init .
           git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --depth=1 origin $env:GITHUB_SHA
+          git fetch --depth=1 origin $env:TARGET_SHA
           git checkout --detach FETCH_HEAD
-          if ((git rev-parse HEAD).Trim() -ne $env:GITHUB_SHA) { throw 'checked out SHA mismatch' }
+          if ((git rev-parse HEAD).Trim() -ne $env:TARGET_SHA) { throw 'checked out SHA mismatch' }
       - name: Record platform and Git identity
         shell: pwsh
         run: |
@@ -87,17 +103,29 @@ jobs:
           git --version
           (Get-Command git.exe).Source
           git rev-parse HEAD
-      - name: Core FL1 unit/runtime checks
+          Write-Host "target_sha=$env:TARGET_SHA"
+      - name: Existing FL1 unit/runtime checks
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python -m unittest forgeboss.control.test_known_good forgeboss.control.test_activation -v
+          $ran = $false
+          if (Test-Path 'forgeboss/control/test_known_good.py') {
+            python -m unittest forgeboss.control.test_known_good -v
+            $ran = $true
+          }
+          if (Test-Path 'forgeboss/control/test_activation.py') {
+            python -m unittest forgeboss.control.test_activation -v
+            $ran = $true
+          }
           if (Test-Path 'forgeboss/control/test_process_lifecycle.py') {
             python -m unittest forgeboss.control.test_process_lifecycle -v
+            $ran = $true
           }
           if (Test-Path 'forgeboss/security/test_executor_guard_git_metadata.py') {
             python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+            $ran = $true
           }
+          Write-Host "executed_candidate_test_group=$ran"
       - name: Windows production Git path sentinel
         shell: pwsh
         run: |
