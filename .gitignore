@@ -1,6 +1,10 @@
 # Python cache
 __pycache__/
 *.py[cod]
+venv/
+
+# Node
+node_modules/
 
 # Runtime/temp
 *.log
@@ -8,3 +12,13 @@ __pycache__/
 *.bak
 .DS_Store
 Thumbs.db
+
+# Local runtime state and secrets (see README "Repository state and secrets")
+state/
+.env
+.env.*
+!.env.example
+*.db
+*.bin
+*.pem
+*.key
