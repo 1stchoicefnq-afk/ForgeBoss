@@ -1,6 +1,6 @@
 ---
 name: Claude isolated worker
-aabout: Run one Claude worker in a non-overlapping file lane
+about: Run one Claude worker in a non-overlapping file lane
 title: "CLAUDE WORKER — [LANE] — [TASK]"
 labels: ""
 assignees: ""
