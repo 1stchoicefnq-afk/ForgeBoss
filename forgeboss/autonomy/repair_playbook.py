@@ -5,6 +5,19 @@ ROOT=Path(__file__).resolve().parents[2];STATE=ROOT/"state"/"autonomy";STATE.mkd
 def load(p):
  try:return json.loads(Path(p).read_text(encoding="utf-8-sig"))
  except:return {}
+def load_db(p):
+ # The playbook DB is the memory that lets a known-proven patch be replayed instead
+ # of paying for a fresh model repair, and lets a known-dead strategy be skipped. A
+ # corrupt file silently read as "empty" would fail open on both of those, so it is
+ # quarantined and raised instead of defaulting to {} the way load() does for inputs.
+ p=Path(p)
+ if not p.exists():return {}
+ try:return json.loads(p.read_text(encoding="utf-8-sig"))
+ except Exception as e:
+  corrupt=p.with_name(p.name+f".corrupt-{int(time.time())}")
+  try:p.replace(corrupt)
+  except Exception:pass
+  raise RuntimeError(f"corrupt repair-playbook db {p}, quarantined to {corrupt}") from e
 def save(x):
  p=DB.with_suffix(".tmp");p.write_text(json.dumps(x,indent=2),encoding="utf-8");p.replace(DB)
 def run(a,cwd=None,inp=None):return subprocess.run(a,cwd=cwd,input=inp,capture_output=True,text=True,timeout=90,creationflags=CNW)
@@ -33,7 +46,7 @@ def binding_valid(e):
  if patch_sha256(patch)!=ph:return False
  return binding_sha256(base,commit,changed,ph)==binding
 def record(report_path,feedback_path=None):
- r=load(report_path);f=load(feedback_path) if feedback_path else {};db=load(DB) or {"schema":1,"entries":[]};head=r.get("exact_head");repo=r.get("local_workspace");accepted_commit=r.get("local_commit")
+ r=load(report_path);f=load(feedback_path) if feedback_path else {};db=load_db(DB) or {"schema":1,"entries":[]};head=r.get("exact_head");repo=r.get("local_workspace");accepted_commit=r.get("local_commit")
  for a in r.get("attempts",[]) or []:
   changed=a.get("changed_paths") or []
   if not changed:continue
@@ -48,7 +61,7 @@ def record(report_path,feedback_path=None):
   else:e["seen_count"]=1;db["entries"].append(e)
  db["entries"]=db["entries"][-1000:];save(db)
 def find(funnel,repo):
- f=load(funnel);db=load(DB) or {"entries":[]};head=f.get("target_sha");sig=f.get("failure_signature");cat=f.get("category");hits=[]
+ f=load(funnel);db=load_db(DB) or {"entries":[]};head=f.get("target_sha");sig=f.get("failure_signature");cat=f.get("category");hits=[]
  for e in db.get("entries",[]):
   if e.get("outcome")!="proven" or not binding_valid(e):continue
   if e.get("failure_signature")!=sig and e.get("category")!=cat:continue

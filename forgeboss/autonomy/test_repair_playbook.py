@@ -51,4 +51,39 @@ class RepairPlaybookBindingTests(unittest.TestCase):
   rp.DB.write_text(json.dumps({"entries":[entry]}));funnel=self.write('funnel.json',{"target_sha":"target","failure_signature":"sig","category":"backend"})
   with mock.patch.object(rp,'blob',return_value='beforehash'):self.assertEqual(rp.find(funnel,Path('repo'))['accepted_commit'],'accepted456')
 
+class RepairPlaybookCorruptDbTests(unittest.TestCase):
+ # A corrupt playbook DB must never be silently treated as "no history": that would
+ # fail open, letting the caller re-pay for a repair that was already proven, or
+ # re-attempt a strategy already known to fail. It must fail closed instead.
+ def setUp(self):
+  self.tmp=Path(tempfile.mkdtemp());self.old_db=rp.DB;rp.DB=self.tmp/'repair-playbook.json';rp.DB.write_text('{not valid json',encoding='utf-8')
+ def tearDown(self):rp.DB=self.old_db
+ def write(self,name,obj):
+  p=self.tmp/name;p.write_text(json.dumps(obj),encoding='utf-8');return p
+ def test_find_raises_on_corrupt_db_instead_of_reporting_no_hit(self):
+  funnel=self.write('funnel.json',{"target_sha":"target","failure_signature":"sig","category":"backend"})
+  with self.assertRaises(RuntimeError):rp.find(funnel,Path('repo'))
+ def test_record_raises_on_corrupt_db_instead_of_silently_resetting_history(self):
+  report=self.write('report.json',{"exact_head":"base123","local_workspace":"repo","local_commit":"accepted456","builder_specialists":[],"attempts":[{"acceptance_passed":True,"changed_paths":["src/a.js"],"runs":[]}]})
+  with self.assertRaises(RuntimeError):rp.record(report)
+  # the corrupt file must be quarantined, not overwritten with a fresh empty DB
+  self.assertFalse(rp.DB.exists())
+  quarantined=list(self.tmp.glob('repair-playbook.json.corrupt-*'))
+  self.assertEqual(len(quarantined),1)
+  self.assertEqual(quarantined[0].read_text(encoding='utf-8'),'{not valid json')
+ def test_missing_db_is_treated_as_fresh_start_not_corruption(self):
+  rp.DB.unlink()
+  funnel=self.write('funnel.json',{"target_sha":"target","failure_signature":"sig","category":"backend"})
+  self.assertIsNone(rp.find(funnel,Path('repo')))
+
+class RepairPlaybookAtomicWriteTests(unittest.TestCase):
+ def setUp(self):
+  self.tmp=Path(tempfile.mkdtemp());self.old_db=rp.DB;rp.DB=self.tmp/'repair-playbook.json'
+ def tearDown(self):rp.DB=self.old_db
+ def test_save_leaves_no_tmp_file_and_db_is_valid_json(self):
+  rp.save({"schema":1,"entries":[]})
+  self.assertTrue(rp.DB.exists())
+  self.assertEqual(list(self.tmp.glob('*.tmp')),[])
+  self.assertEqual(json.loads(rp.DB.read_text()),{"schema":1,"entries":[]})
+
 if __name__=='__main__':unittest.main()

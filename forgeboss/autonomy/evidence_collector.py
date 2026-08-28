@@ -78,7 +78,7 @@ def main():
     }
     raw=json.dumps(obj,indent=2)
     obj["sha256"]=hashlib.sha256(raw.encode()).hexdigest()
-    p=STATE/"evidence-enrichment-last.json";p.write_text(json.dumps(obj,indent=2),encoding="utf-8")
+    p=STATE/"evidence-enrichment-last.json";tmp=p.with_suffix(p.suffix+".tmp");tmp.write_text(json.dumps(obj,indent=2),encoding="utf-8");tmp.replace(p)
     print(json.dumps({"ok":True,"path":str(p),"new_evidence_count":obj["new_evidence_count"],"terms":query_terms[:8]}))
     return 0
 if __name__=="__main__":raise SystemExit(main())

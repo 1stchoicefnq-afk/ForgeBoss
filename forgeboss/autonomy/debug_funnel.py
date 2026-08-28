@@ -159,7 +159,7 @@ def main():
     }
     raw=json.dumps(obj,indent=2)
     obj["sha256"]=hashlib.sha256(raw.encode()).hexdigest()
-    p=STATE/"debug-funnel-last.json";p.write_text(json.dumps(obj,indent=2),encoding="utf-8")
+    p=STATE/"debug-funnel-last.json";tmp=p.with_suffix(p.suffix+".tmp");tmp.write_text(json.dumps(obj,indent=2),encoding="utf-8");tmp.replace(p)
     print("FORGEBOSS_DEBUG_FUNNEL="+json.dumps({"category":cat,"files":len(snippets),"chars":obj["focused_source_chars"],"path":str(p)}))
     return 0
 if __name__=="__main__":raise SystemExit(main())

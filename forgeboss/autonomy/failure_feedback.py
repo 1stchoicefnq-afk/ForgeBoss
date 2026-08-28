@@ -146,7 +146,9 @@ def make(source:Path,kind:str):
       "github_writes":0
     }
     p=STATE/"failure-feedback-last.json"
-    p.write_text(json.dumps(out,indent=2),encoding="utf-8")
+    tmp=p.with_suffix(p.suffix+".tmp")
+    tmp.write_text(json.dumps(out,indent=2),encoding="utf-8")
+    tmp.replace(p)
     print("FORGEBOSS_FAILURE_FEEDBACK="+json.dumps(out,separators=(",",":")))
     return 0
 
