@@ -1,8 +1,10 @@
 from __future__ import annotations
-import argparse, json, re, subprocess, hashlib
+import argparse, json, re, subprocess, sys, hashlib
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
+from forgeboss.autonomy import state_store
 STATE=ROOT/"state"/"autonomy";STATE.mkdir(parents=True,exist_ok=True)
 CTRL=Path.home()/".siteboss"/"autopilot"/"controller-state"
 CREATE_NO_WINDOW=getattr(subprocess,"CREATE_NO_WINDOW",0)
@@ -159,7 +161,10 @@ def main():
     }
     raw=json.dumps(obj,indent=2)
     obj["sha256"]=hashlib.sha256(raw.encode()).hexdigest()
-    p=STATE/"debug-funnel-last.json";p.write_text(json.dumps(obj,indent=2),encoding="utf-8")
-    print("FORGEBOSS_DEBUG_FUNNEL="+json.dumps({"category":cat,"files":len(snippets),"chars":obj["focused_source_chars"],"path":str(p)}))
+    # Unique-temp atomic publication stamped with this run's identity. Two funnel
+    # builders can no longer collide on a shared temp path, so a run can never
+    # publish another run's evidence under its own name.
+    p=STATE/"debug-funnel-last.json";obj=state_store.publish_artifact(p,obj)
+    print("FORGEBOSS_DEBUG_FUNNEL="+json.dumps({"category":cat,"files":len(snippets),"chars":obj["focused_source_chars"],"path":str(p),"run_id":state_store.RUN_ID}))
     return 0
 if __name__=="__main__":raise SystemExit(main())

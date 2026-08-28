@@ -1,8 +1,10 @@
 from __future__ import annotations
-import argparse,json,re,subprocess,hashlib,time
+import argparse,json,re,subprocess,sys,hashlib,time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
+from forgeboss.autonomy import state_store
 STATE=ROOT/"state"/"autonomy";STATE.mkdir(parents=True,exist_ok=True)
 CTRL=Path.home()/".siteboss"/"autopilot"/"controller-state"
 CNW=getattr(subprocess,"CREATE_NO_WINDOW",0)
@@ -78,7 +80,7 @@ def main():
     }
     raw=json.dumps(obj,indent=2)
     obj["sha256"]=hashlib.sha256(raw.encode()).hexdigest()
-    p=STATE/"evidence-enrichment-last.json";p.write_text(json.dumps(obj,indent=2),encoding="utf-8")
-    print(json.dumps({"ok":True,"path":str(p),"new_evidence_count":obj["new_evidence_count"],"terms":query_terms[:8]}))
+    p=STATE/"evidence-enrichment-last.json";obj=state_store.publish_artifact(p,obj)
+    print(json.dumps({"ok":True,"path":str(p),"new_evidence_count":obj["new_evidence_count"],"terms":query_terms[:8],"run_id":state_store.RUN_ID}))
     return 0
 if __name__=="__main__":raise SystemExit(main())

@@ -1,8 +1,10 @@
 from __future__ import annotations
-import argparse, hashlib, json, re, subprocess, time
+import argparse, hashlib, json, re, subprocess, sys, time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
+from forgeboss.autonomy import state_store
 STATE=ROOT/"state"/"autonomy";STATE.mkdir(parents=True,exist_ok=True)
 CTRL=Path.home()/".siteboss"/"autopilot"/"controller-state"
 
@@ -146,7 +148,7 @@ def make(source:Path,kind:str):
       "github_writes":0
     }
     p=STATE/"failure-feedback-last.json"
-    p.write_text(json.dumps(out,indent=2),encoding="utf-8")
+    out=state_store.publish_artifact(p,out)
     print("FORGEBOSS_FAILURE_FEEDBACK="+json.dumps(out,separators=(",",":")))
     return 0
 
