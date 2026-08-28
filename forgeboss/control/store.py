@@ -1,10 +1,16 @@
 from __future__ import annotations
 import json, math, os, sqlite3, threading, time
+from contextlib import contextmanager
 from decimal import Decimal,InvalidOperation
 from pathlib import Path
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 
 SCHEMA_VERSION=3
+# release() writes its caller-supplied outcome straight into tasks.status and
+# task_runs.status, so these two are refused: a released lease must never leave
+# the task or the run advertising itself as still live.
+NON_TERMINAL_STATUSES={"queued","running"}
+
 class BudgetReservationError(RuntimeError):
     def __init__(self,code,message):
         super().__init__(message);self.code=code
@@ -155,20 +161,67 @@ class ControlStore:
             if "budget_reserved" not in cols:self.db.execute("ALTER TABLE workspace_leases ADD COLUMN budget_reserved REAL NOT NULL DEFAULT 0")
             self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
 
+    @contextmanager
+    def _write_txn(self):
+        """Hold the database write lock for the whole block.
+
+        ``self._lock`` only serialises threads sharing this connection, so the
+        ``BEGIN IMMEDIATE`` is what serialises against other connections and
+        other processes on the same file. Reentrant: a nested use joins the
+        transaction already in flight rather than committing early, which lets
+        the state-transition helpers compose without losing atomicity.
+        """
+        with self._lock:
+            if self.db.in_transaction:
+                yield
+                return
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                try:self.db.execute("ROLLBACK")
+                except Exception:pass
+                raise
+            try:self.db.execute("COMMIT")
+            except BaseException:
+                # A failed COMMIT would otherwise leave the transaction open and
+                # the write lock held for every later caller on this connection.
+                try:self.db.execute("ROLLBACK")
+                except Exception:pass
+                raise
+
+    @contextmanager
+    def _read_txn(self):
+        """Read every table from one WAL snapshot so multi-table reads cannot tear."""
+        with self._lock:
+            if self.db.in_transaction:
+                yield
+                return
+            self.db.execute("BEGIN DEFERRED")
+            try:
+                yield
+            finally:
+                try:self.db.execute("COMMIT")
+                except Exception:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+
     def _state_version(self):
         row=self.db.execute("SELECT COALESCE(MAX(state_version),0)+1 AS v FROM task_events").fetchone()
         return int(row["v"])
 
     def event(self,event_type,payload,task_id=None,run_id=None):
-        with self._lock:
+        # MAX(state_version)+1 is only unique if the read and the insert are one
+        # write transaction; otherwise two connections hand out the same version.
+        with self._write_txn():
             version=self._state_version()
             cur=self.db.execute("INSERT INTO task_events(task_id,run_id,event_type,payload_json,state_version,created_at) VALUES(?,?,?,?,?,?)",
                 (task_id,run_id,event_type,json.dumps(payload,separators=(",",":")),version,time.time()))
             return {"seq":int(cur.lastrowid),"stateVersion":version}
 
     def create_task(self,t):
-        now=time.time()
-        with self._lock:
+        with self._write_txn():
+            now=time.time()
             self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
               VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
               (t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),
@@ -183,78 +236,91 @@ class ControlStore:
     def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0):
         if worktree_root is None:raise ValueError("worktree_root required")
         worktree=canonical_worktree_path(worktree,worktree_root)
-        now=time.time()
-        with self._lock:
-            begun=False
-            try:
-                self.db.execute("BEGIN IMMEDIATE");begun=True
-                task=self.get_task(task_id)
-                if not task: raise KeyError("task not found")
-                row=self.db.execute("SELECT owner_epoch,released_at,expires_at FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
-                next_epoch=(int(row["owner_epoch"])+1) if row else 1
-                if row and row["released_at"] is None and float(row["expires_at"])>now:raise RuntimeError("workspace lease is already active")
-                reserved,new_spent=_validated_budget_request(task,budget_reserved)
-                cur=self.db.execute("UPDATE tasks SET budget_spent=? WHERE task_id=?",(new_spent,task_id))
-                if cur.rowcount!=1:raise BudgetReservationError("BUDGET_STATE_INVALID","task budget state disappeared during reservation")
-                self.db.execute("""INSERT INTO workspace_leases(task_id,worktree_path,branch,owner_run_id,owner_epoch,claimed_at,heartbeat_at,expires_at,released_at,current_head,budget_reserved)
-                  VALUES(?,?,?,?,?,?,?,?,NULL,?,?)
-                  ON CONFLICT(task_id) DO UPDATE SET worktree_path=excluded.worktree_path,branch=excluded.branch,owner_run_id=excluded.owner_run_id,
-                  owner_epoch=excluded.owner_epoch,claimed_at=excluded.claimed_at,heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,
-                  released_at=NULL,current_head=excluded.current_head,budget_reserved=excluded.budget_reserved""",
-                  (task_id,worktree,branch,run_id,next_epoch,now,now,now+ttl_seconds,current_head,reserved))
-                self.db.execute("INSERT INTO task_runs(run_id,task_id,attempt,owner_epoch,runtime_id,status,started_at) VALUES(?,?,?,?,?,'running',?)",
-                                (run_id,task_id,1,next_epoch,runtime_id,now))
-                self.db.execute("UPDATE tasks SET status='running',revision=revision+1,current_step='workspace-claimed',assigned_runtime=?,updated_at=? WHERE task_id=?",
-                                (runtime_id,now,task_id))
-                self.event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head,"budgetReserved":reserved},task_id,run_id)
-                self.db.execute("COMMIT");begun=False
-                return self.get_lease(task_id)
-            except Exception:
-                if begun:
-                    try:self.db.execute("ROLLBACK")
-                    except Exception:pass
-                raise
+        with self._write_txn():
+            # Sampled only once the write lock is held: a clock read taken
+            # before the wait would judge lease expiry against a stale time
+            # and hand out a lease that is already short by the wait.
+            now=time.time()
+            task=self.get_task(task_id)
+            if not task: raise KeyError("task not found")
+            row=self.db.execute("SELECT owner_epoch,released_at,expires_at FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
+            next_epoch=(int(row["owner_epoch"])+1) if row else 1
+            if row and row["released_at"] is None and float(row["expires_at"])>now:raise RuntimeError("workspace lease is already active")
+            reserved,new_spent=_validated_budget_request(task,budget_reserved)
+            cur=self.db.execute("UPDATE tasks SET budget_spent=? WHERE task_id=?",(new_spent,task_id))
+            if cur.rowcount!=1:raise BudgetReservationError("BUDGET_STATE_INVALID","task budget state disappeared during reservation")
+            self.db.execute("""INSERT INTO workspace_leases(task_id,worktree_path,branch,owner_run_id,owner_epoch,claimed_at,heartbeat_at,expires_at,released_at,current_head,budget_reserved)
+              VALUES(?,?,?,?,?,?,?,?,NULL,?,?)
+              ON CONFLICT(task_id) DO UPDATE SET worktree_path=excluded.worktree_path,branch=excluded.branch,owner_run_id=excluded.owner_run_id,
+              owner_epoch=excluded.owner_epoch,claimed_at=excluded.claimed_at,heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,
+              released_at=NULL,current_head=excluded.current_head,budget_reserved=excluded.budget_reserved""",
+              (task_id,worktree,branch,run_id,next_epoch,now,now,now+ttl_seconds,current_head,reserved))
+            self.db.execute("INSERT INTO task_runs(run_id,task_id,attempt,owner_epoch,runtime_id,status,started_at) VALUES(?,?,?,?,?,'running',?)",
+                            (run_id,task_id,1,next_epoch,runtime_id,now))
+            self.db.execute("UPDATE tasks SET status='running',revision=revision+1,current_step='workspace-claimed',assigned_runtime=?,updated_at=? WHERE task_id=?",
+                            (runtime_id,now,task_id))
+            self.event("workspace.claimed",{"ownerEpoch":next_epoch,"worktreePath":worktree,"head":current_head,"budgetReserved":reserved},task_id,run_id)
+        return self.get_lease(task_id)
 
     def get_lease(self,task_id):
         row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
         return dict(row) if row else None
 
+    def _assert_writer_locked(self,task_id,run_id,owner_epoch,expected_head=None,now=None):
+        """Writer-authority check against `now`; the caller owns the serialisation."""
+        now=time.time() if now is None else float(now)
+        row=self.db.execute("""SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                            (task_id,run_id,int(owner_epoch))).fetchone()
+        if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
+        if float(row["expires_at"])<=now: raise PermissionError("writer authority lost: lease expired")
+        if expected_head and row["current_head"]!=expected_head:raise PermissionError("writer authority lost: expected head mismatch")
+        return dict(row)
+
     def assert_writer(self,task_id,run_id,owner_epoch,expected_head=None):
         with self._lock:
-            row=self.db.execute("""SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
-                                (task_id,run_id,int(owner_epoch))).fetchone()
-            if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
-            if float(row["expires_at"])<=time.time(): raise PermissionError("writer authority lost: lease expired")
-            if expected_head and row["current_head"]!=expected_head:raise PermissionError("writer authority lost: expected head mismatch")
-            return dict(row)
+            return self._assert_writer_locked(task_id,run_id,owner_epoch,expected_head)
 
     def heartbeat(self,task_id,run_id,owner_epoch,ttl_seconds=1200,current_head=None):
-        self.assert_writer(task_id,run_id,owner_epoch)
-        now=time.time()
-        with self._lock:
+        with self._write_txn():
+            # Authority check, clock and mutation all live inside the write lock:
+            # checking first and writing later lets a lease that expired during
+            # the wait be extended back to life on the strength of a stale check.
+            now=time.time()
+            self._assert_writer_locked(task_id,run_id,owner_epoch,now=now)
             cur=self.db.execute("""UPDATE workspace_leases SET heartbeat_at=?,expires_at=?,current_head=COALESCE(?,current_head)
-                WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
-                (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch)))
+                WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL AND expires_at>?""",
+                (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch),now))
             if cur.rowcount!=1: raise PermissionError("writer authority lost during heartbeat")
             self.event("workspace.heartbeat",{"ownerEpoch":int(owner_epoch)},task_id,run_id)
             return self.get_lease(task_id)
 
     def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released"):
-        self.assert_writer(task_id,run_id,owner_epoch)
-        now=time.time()
-        with self._lock:
+        outcome=str(outcome or "").strip()
+        if not outcome:raise ValueError("release outcome required")
+        if outcome.casefold() in NON_TERMINAL_STATUSES:
+            raise ValueError(f"release outcome {outcome!r} is a non-terminal lifecycle status")
+        with self._write_txn():
+            # Terminal transition, so it has to be exactly-once: the authority
+            # check, the clock and all four writes are one atomic unit, and the
+            # lease update re-asserts `released_at IS NULL` so a second caller
+            # racing on the same run/epoch loses instead of re-completing the run.
+            now=time.time()
+            self._assert_writer_locked(task_id,run_id,owner_epoch,now=now)
             # Claim grants are conservatively consumed in tasks.budget_spent and are not refunded here.
             # No authoritative actual-cost settlement path exists in this control-plane version.
-            self.db.execute("UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head) WHERE task_id=? AND owner_run_id=? AND owner_epoch=?",
-                            (now,result_head,task_id,run_id,int(owner_epoch)))
+            cur=self.db.execute("""UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head)
+                WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL AND expires_at>?""",
+                            (now,result_head,task_id,run_id,int(owner_epoch),now))
+            if cur.rowcount!=1: raise PermissionError("writer authority lost: lease already released")
             self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
             self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
                             (outcome,result_head,now,task_id))
             self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
 
     def snapshot(self):
-        return {"schemaVersion":SCHEMA_VERSION,
-          "tasks":[dict(r) for r in self.db.execute("SELECT * FROM tasks ORDER BY updated_at DESC LIMIT 100")],
-          "leases":[dict(r) for r in self.db.execute("SELECT * FROM workspace_leases WHERE released_at IS NULL ORDER BY heartbeat_at DESC")],
-          "workers":[dict(r) for r in self.db.execute("SELECT * FROM worker_instances ORDER BY last_seen_at DESC LIMIT 100")],
-          "lastEventSeq":int(self.db.execute("SELECT COALESCE(MAX(seq),0) v FROM task_events").fetchone()["v"])}
+        with self._read_txn():
+            return {"schemaVersion":SCHEMA_VERSION,
+              "tasks":[dict(r) for r in self.db.execute("SELECT * FROM tasks ORDER BY updated_at DESC LIMIT 100")],
+              "leases":[dict(r) for r in self.db.execute("SELECT * FROM workspace_leases WHERE released_at IS NULL ORDER BY heartbeat_at DESC")],
+              "workers":[dict(r) for r in self.db.execute("SELECT * FROM worker_instances ORDER BY last_seen_at DESC LIMIT 100")],
+              "lastEventSeq":int(self.db.execute("SELECT COALESCE(MAX(seq),0) v FROM task_events").fetchone()["v"])}
