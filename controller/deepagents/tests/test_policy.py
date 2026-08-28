@@ -23,6 +23,8 @@ class T(unittest.TestCase):
   with self.assertRaises(BudgetExceeded):self.w.write_text("tests/new.js","x")
  def test_command_denied(self):
   with self.assertRaises(SecurityDenial):self.w.run_command(["git","status"])
+ def test_python3_allowed(self):
+  self.w.run_command(["python3","-c","print(1)"])
  def test_command_budget(self):
   self.w.run_command([sys.executable,"-c","print(1)"]);self.w.run_command([sys.executable,"-c","print(2)"])
   with self.assertRaises(BudgetExceeded):self.w.run_command([sys.executable,"-c","print(3)"])

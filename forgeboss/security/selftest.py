@@ -14,7 +14,7 @@ checks["league wrapper"]="opencode_runner.js" in lg and 'run(["opencode","run"' 
 checks["league leases"]="executor_guard.py" in lg
 checks["tournament leases"]="issue_executor_lease" in tr
 checks["guard sensitive paths"]="FORBIDDEN_PREFIXES" in gd and '".git/"' in gd
-checks["guard symlinks"]="symlink changes denied" in gd
+checks["guard symlinks"]="symlink/junction changes denied" in gd
 checks["guard exact head"]="exact HEAD mismatch" in gd
 for k,v in checks.items():print(f"[{'PASS' if v else 'FAIL'}] {k}")
 print(f"UNIFIED SECURITY SELFTEST PASS={sum(checks.values())} FAIL={sum(not x for x in checks.values())}")

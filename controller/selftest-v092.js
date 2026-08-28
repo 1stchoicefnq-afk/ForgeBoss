@@ -15,6 +15,6 @@ ok('adapter.ambiguity_fails_closed',ps.includes('Ambiguous exact repair children
 ok('adapter.no_child_is_structured',ps.includes("status='NO_CURRENT_EXACT_REPAIR_CHILD'"));
 ok('adapter.bound_status',ps.includes("status='EXACT_REPAIR_CHILD_BOUND'"));
 ok('controller.accepts_structured_no_child',control.includes("binding.status==='EXACT_REPAIR_CHILD_BOUND'"));
-ok('main.actionable_no_child',main.includes('NO_CURRENT_EXACT_REPAIR_CHILD'));
-ok('main.uses_discovered_number',main.includes('c.repair_pr.number'));
+ok('main.actionable_no_child',main.includes("'repair.child.absent'"));
+ok('main.uses_discovered_number',main.includes('target.repair_pr')&&control.includes('repair_pr:control.repair_pr.number'));
 process.exit(fail?2:0);
