@@ -95,9 +95,9 @@ function Test-NoActiveWriter([string]$body){
 
 function Get-LatestExecutablePacketComment($token){
   $comments=GHGet "/repos/$($Config.Owner)/$($Config.Repo)/issues/$($Config.ControlIssue)/comments?per_page=100&sort=created&direction=desc" $token
-  $matches=@($comments | Where-Object { $_.body -match 'API_EXECUTABLE_PACKET_SCHEMA:\s*1' })
-  if($matches.Count -eq 0){ return $null }
-  $matches | Sort-Object {[DateTimeOffset]$_.created_at} -Descending | Select-Object -First 1
+  $matchingComments=@($comments | Where-Object { $_.body -match 'API_EXECUTABLE_PACKET_SCHEMA:\s*1' })
+  if($matchingComments.Count -eq 0){ return $null }
+  $matchingComments | Sort-Object {[DateTimeOffset]$_.created_at} -Descending | Select-Object -First 1
 }
 function Parse-PacketFromComment([string]$body){
   if($body -notmatch '(?s)API_EXECUTABLE_PACKET_JSON\s*```json\s*(\{.*?\})\s*```'){ return $null }

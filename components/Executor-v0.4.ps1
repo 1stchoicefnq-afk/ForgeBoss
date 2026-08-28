@@ -39,9 +39,9 @@ function Get-LatestPacket($token){
   # Keep v0.3 semantics: newest matching comment from the current first 100 comments returned by GitHub.
   # If #233 ever exceeds this packet transport, controller should publish a dedicated packet issue/API endpoint.
   $comments=GHGet "/repos/$($Config.Owner)/$($Config.Repo)/issues/$($Config.ControlIssue)/comments?per_page=100&sort=created&direction=desc" $token
-  $matches=@($comments | Where-Object { $_.body -match 'API_EXECUTABLE_PACKET_SCHEMA:\s*1' })
-  if($matches.Count -eq 0){ return $null }
-  $matches | Sort-Object {[DateTimeOffset]$_.created_at} -Descending | Select-Object -First 1
+  $matchingComments=@($comments | Where-Object { $_.body -match 'API_EXECUTABLE_PACKET_SCHEMA:\s*1' })
+  if($matchingComments.Count -eq 0){ return $null }
+  $matchingComments | Sort-Object {[DateTimeOffset]$_.created_at} -Descending | Select-Object -First 1
 }
 
 function Parse-Packet($body){
@@ -120,12 +120,12 @@ function Invoke-Git([string[]]$commandArgsLocal,[string]$workingDir=$null,[switc
     $ErrorActionPreference='Continue'
     if($workingDir){ Push-Location $workingDir }
     if($Capture){
-      $out=& git @args 2>&1
+      $out=& git @commandArgsLocal 2>&1
       $code=$LASTEXITCODE
       if($code -ne 0){ throw "git $($commandArgsLocal[0]) failed ($code): $($out -join ' ')" }
       return ($out -join "`n").Trim()
     } else {
-      & git @args
+      & git @commandArgsLocal
       $code=$LASTEXITCODE
       if($code -ne 0){ throw "git $($commandArgsLocal[0]) failed with exit code $code" }
     }

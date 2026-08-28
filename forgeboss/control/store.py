@@ -169,11 +169,20 @@ class ControlStore:
     def create_task(self,t):
         now=time.time()
         with self._lock:
-            self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
-              VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
-              (t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),
-               json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
-            self.event("task.created",{"status":"queued"},t["taskId"])
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
+                  (t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),
+                   json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
+                self.event("task.created",{"status":"queued"},t["taskId"])
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
         return self.get_task(t["taskId"])
 
     def get_task(self,task_id):
@@ -232,12 +241,25 @@ class ControlStore:
         self.assert_writer(task_id,run_id,owner_epoch)
         now=time.time()
         with self._lock:
-            cur=self.db.execute("""UPDATE workspace_leases SET heartbeat_at=?,expires_at=?,current_head=COALESCE(?,current_head)
-                WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
-                (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch)))
-            if cur.rowcount!=1: raise PermissionError("writer authority lost during heartbeat")
-            self.event("workspace.heartbeat",{"ownerEpoch":int(owner_epoch)},task_id,run_id)
-            return self.get_lease(task_id)
+            # Multi-statement mutation + event insert must be atomic: this connection is
+            # opened with isolation_level=None (autocommit), so without an explicit
+            # transaction a crash between statements can leave the lease heartbeat
+            # updated but no matching event recorded, or vice versa.
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                cur=self.db.execute("""UPDATE workspace_leases SET heartbeat_at=?,expires_at=?,current_head=COALESCE(?,current_head)
+                    WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                    (now,now+ttl_seconds,current_head,task_id,run_id,int(owner_epoch)))
+                if cur.rowcount!=1: raise PermissionError("writer authority lost during heartbeat")
+                self.event("workspace.heartbeat",{"ownerEpoch":int(owner_epoch)},task_id,run_id)
+                self.db.execute("COMMIT");begun=False
+                return self.get_lease(task_id)
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released"):
         self.assert_writer(task_id,run_id,owner_epoch)
@@ -245,12 +267,28 @@ class ControlStore:
         with self._lock:
             # Claim grants are conservatively consumed in tasks.budget_spent and are not refunded here.
             # No authoritative actual-cost settlement path exists in this control-plane version.
-            self.db.execute("UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head) WHERE task_id=? AND owner_run_id=? AND owner_epoch=?",
-                            (now,result_head,task_id,run_id,int(owner_epoch)))
-            self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
-            self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
-                            (outcome,result_head,now,task_id))
-            self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+            #
+            # As with heartbeat(), these statements must be atomic (see comment there);
+            # additionally the lease UPDATE requires "released_at IS NULL" and checks
+            # rowcount, mirroring heartbeat()'s guard, so two concurrent release() calls
+            # for the same lease can't both succeed and double-write task_events/tasks.revision.
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                cur=self.db.execute("""UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head)
+                    WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                    (now,result_head,task_id,run_id,int(owner_epoch)))
+                if cur.rowcount!=1: raise PermissionError("writer authority lost during release")
+                self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
+                self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
+                                (outcome,result_head,now,task_id))
+                self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def snapshot(self):
         return {"schemaVersion":SCHEMA_VERSION,

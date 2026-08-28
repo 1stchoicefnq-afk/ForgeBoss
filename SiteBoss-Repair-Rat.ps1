@@ -621,9 +621,9 @@ function Get-PatchSchema {
 function Get-LineMaterialization([string]$Full,[int]$LineStart,[int]$LineEnd){
   if($LineStart-lt1-or$LineEnd-lt$LineStart){throw "PATCH_LINE_RANGE_INVALID: $LineStart..$LineEnd"}
   $text=[IO.File]::ReadAllText($Full)
-  $matches=[regex]::Matches($text,'(?m)^.*(?:\r?\n|$)')
+  $lineTokens=[regex]::Matches($text,'(?m)^.*(?:\r?\n|$)')
   $lines=@()
-  foreach($m in $matches){if($m.Length-gt0){$lines+=$m.Value}}
+  foreach($m in $lineTokens){if($m.Length-gt0){$lines+=$m.Value}}
   if($LineEnd-gt$lines.Count){throw "PATCH_LINE_RANGE_INVALID: requested $LineStart..$LineEnd but file has $($lines.Count) lines"}
   $old=($lines[($LineStart-1)..($LineEnd-1)]-join'')
   if([string]::IsNullOrEmpty($old)){throw "PATCH_LINE_RANGE_INVALID: materialized range is empty"}
@@ -649,7 +649,7 @@ function Find-ContextualAnchor([string]$Text,[string]$Old,[string]$Before,[strin
   if($ReplaceAll){return [pscustomobject]@{all=$true;indexes=@($hits)}}
   if($hits.Count-eq1){return [pscustomobject]@{all=$false;index=$hits[0];contextual=$false}}
 
-  $matches=[System.Collections.Generic.List[int]]::new()
+  $contextualHits=[System.Collections.Generic.List[int]]::new()
   foreach($i in $hits){
     $leftOk=$true;$rightOk=$true
     if(-not[string]::IsNullOrEmpty($Before)){
@@ -667,16 +667,16 @@ function Find-ContextualAnchor([string]$Text,[string]$Old,[string]$Before,[strin
         $rightOk=($right-eq$After)
       }
     }
-    if($leftOk-and$rightOk){[void]$matches.Add($i)}
+    if($leftOk-and$rightOk){[void]$contextualHits.Add($i)}
   }
 
-  if($matches.Count-eq1){
-    return [pscustomobject]@{all=$false;index=$matches[0];contextual=$true}
+  if($contextualHits.Count-eq1){
+    return [pscustomobject]@{all=$false;index=$contextualHits[0];contextual=$true}
   }
-  if($matches.Count-eq0){
+  if($contextualHits.Count-eq0){
     throw "PATCH_CONTEXT_MISMATCH: old_text occurs $($hits.Count) times but supplied context identifies none"
   }
-  throw "AMBIGUOUS_EDIT_ANCHOR: old_text occurs $($hits.Count) times and supplied context still matches $($matches.Count) locations"
+  throw "AMBIGUOUS_EDIT_ANCHOR: old_text occurs $($hits.Count) times and supplied context still matches $($contextualHits.Count) locations"
 }
 
 function Resolve-CurrentSymbolRange([string]$Full,[string]$Hint,[object]$LineHint,[string]$Role='any',[string]$Locator=''){
@@ -1000,8 +1000,13 @@ function Resolve-RepairScope([string]$Repo,[string]$ManifestPath){
 
  if($source.Count-gt$manifestMaxSource){throw "Controller scope source count exceeds manifest limit $manifestMaxSource"}
  if($write.Count-gt$manifestMaxWrite){throw "Controller scope write count exceeds manifest limit $manifestMaxWrite"}
- foreach($rel in $source){if(-not($rel.StartsWith('src/')-or$rel.StartsWith('tests/'))){throw "Unsafe controller source path: $rel"};if(-not(Test-Path -LiteralPath (Join-Path $Repo $rel))){throw "Controller source path missing at exact head: $rel"}}
- foreach($rel in $write){if($source-notcontains$rel){throw "Controller write path is not included in source_paths: $rel"};if(-not($rel.StartsWith('src/')-or$rel.StartsWith('tests/'))){throw "Unsafe controller write path: $rel"}}
+ # StartsWith('src/') alone does not reject a manifest entry like
+ # 'src/../../../../etc/passwd' -- that string genuinely starts with 'src/' and
+ # would pass straight through to Join-Path/Test-Path below, reading (and, via
+ # write_allowlist, writing) outside the repository. Explicitly reject '..'
+ # segments here too, matching the containment check Apply-Patch already uses.
+ foreach($rel in $source){if($rel.Contains('..')-or$rel.StartsWith('/')){throw "Unsafe controller source path: $rel"};if(-not($rel.StartsWith('src/')-or$rel.StartsWith('tests/'))){throw "Unsafe controller source path: $rel"};if(-not(Test-Path -LiteralPath (Join-Path $Repo $rel))){throw "Controller source path missing at exact head: $rel"}}
+ foreach($rel in $write){if($source-notcontains$rel){throw "Controller write path is not included in source_paths: $rel"};if($rel.Contains('..')-or$rel.StartsWith('/')){throw "Unsafe controller write path: $rel"};if(-not($rel.StartsWith('src/')-or$rel.StartsWith('tests/'))){throw "Unsafe controller write path: $rel"}}
  [pscustomobject]@{source_paths=$source;write_allowlist=$write}
 }
 
@@ -1408,10 +1413,10 @@ function Test-FocusedTargetResolved($Acceptance,$FocusedPacket){
   if($targets.Count-lt1){return $false}
   $seen=0
   foreach($target in $targets){
-    $matches=@($Acceptance.runs|Where-Object{"$($_.name)"-eq"$target"})
-    if($matches.Count-lt1){continue}
+    $matchingRuns=@($Acceptance.runs|Where-Object{"$($_.name)"-eq"$target"})
+    if($matchingRuns.Count-lt1){continue}
     $seen++
-    if(@($matches|Where-Object{$_.exit_code-ne0}).Count-gt0){return $false}
+    if(@($matchingRuns|Where-Object{$_.exit_code-ne0}).Count-gt0){return $false}
   }
   return ($seen-gt0)
 }

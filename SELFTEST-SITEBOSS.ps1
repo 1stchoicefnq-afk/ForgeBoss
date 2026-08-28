@@ -89,12 +89,19 @@ if($repair -notmatch "GitUserName='SiteBoss Autopilot'"){
 
 
 # Reject assignments/parameters that collide with PowerShell automatic variables.
+$allScripts=@(Get-ChildItem -LiteralPath $root -Recurse -File|Where-Object{$_.Extension -in @('.ps1','.psm1')})
 $reservedAutomatic=@(
   'args','input','error','home','host','pid','profile','pwd','shellid','stacktrace',
-  'this','foreach','switch','matches','lastexitcode','psitem','_','null','true','false',
+  'this','foreach','switch','matches','lastexitcode','psitem','_','true','false',
   'ofs','nestedpromptlevel','event','eventargs','eventsubscriber','sender',
   'psboundparameters','myinvocation','executioncontext'
 )
+# 'null' is deliberately excluded: `$null = expr` is PowerShell's standard, documented
+# idiom for cheaply discarding pipeline output (faster than piping to Out-Null), and
+# assigning to $null never actually mutates it -- `$null = 5; $null -eq $null` is still
+# true. This check never actually ran until $allScripts (above) was fixed to be
+# non-empty, so this false positive was latent: e.g. BREAK-REPAIR-RAT.ps1's
+# `$null=$bad|ConvertFrom-Json` is ordinary, safe code, not a reserved-variable bug.
 
 foreach($scriptFile in $allScripts){
   $tokens2=$null

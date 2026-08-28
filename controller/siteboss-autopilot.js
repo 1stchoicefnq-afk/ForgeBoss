@@ -43,7 +43,21 @@ function withLock(cfg,name,fn){
  const p=paths(cfg);ensureDir(p.root);const run=createRun(p.root,name),log=createLogger(p.logs,run.run_id),lock=new ControllerLock(p.root,cfg.state.lock_timeout_seconds);let hb;
  try{
   const prev=lock.acquire(run.run_id);if(prev)log('warn','lock.recovered',{message:`recovered ${prev.run_id||'unknown'}`});
-  hb=setInterval(()=>lock.heartbeat(run.run_id),cfg.state.heartbeat_seconds*1000);if(hb.unref)hb.unref();
+  hb=setInterval(()=>{
+   try{lock.heartbeat(run.run_id);}
+   catch(e){
+    // lock.heartbeat() throws when ownership was lost (lock file deleted/stolen/
+    // rewritten by another process). That throw happens on the timer's own call
+    // stack, outside this function's try/catch, so previously it was an uncaught
+    // exception that killed the whole controller process mid-run without ever
+    // reaching the finally block below (no clearInterval, no lock.release(),
+    // no SAFE_STOP transition). Catch it here, log it, and stop heartbeating
+    // instead of crashing; fn() will still run to completion, but the run's
+    // own state/lock bookkeeping stays intact.
+    try{log('error','lock.heartbeat_failed',{message:e.message});}catch{}
+    if(hb){clearInterval(hb);hb=null;}
+   }
+  },cfg.state.heartbeat_seconds*1000);if(hb.unref)hb.unref();
   transition(run,'PREFLIGHT','controller lock acquired');saveRun(p.root,run);log('info','run.started',{message:name});
   return fn({run,log,p})??0;
  }catch(e){

@@ -1,5 +1,5 @@
 'use strict';
-const fs=require('fs'),os=require('os'),path=require('path');
+const fs=require('fs'),os=require('os'),path=require('path'),{spawnSync}=require('child_process');
 const {ControllerLock}=require('./lib/lock');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'forgeboss-lock-'));
 const file=path.join(root,'controller.lock.json');
@@ -30,6 +30,62 @@ try{
  const racing=new ControllerLock(root,1),inspect=racing.inspect.bind(racing);let inspections=0;
  racing.inspect=function(){const seen=inspect();inspections++;if(inspections===1)writeLock(baseLock({run_id:'race-replacement-live-local'}));return seen;};
  ok('stale cleanup revalidates before unlinking replacement lock',()=>held(racing)&&JSON.parse(fs.readFileSync(file,'utf8')).run_id==='race-replacement-live-local');
+
+ {
+  const ownershipRoot=path.join(root,'heartbeat-ownership');fs.mkdirSync(ownershipRoot,{recursive:true});
+  const ownershipFile=path.join(ownershipRoot,'controller.lock.json');
+  const hLock=new ControllerLock(ownershipRoot,60);
+  hLock.acquire('owner');
+  fs.writeFileSync(ownershipFile,JSON.stringify(baseLock({run_id:'thief'})));
+  ok('heartbeat() throws when lock ownership is lost',()=>{
+   try{hLock.heartbeat('owner');return false}
+   catch(e){return /ownership was lost/.test(e.message)}
+   finally{hLock.owned=false}
+  });
+ }
+
+ // Regression for the controller crash where withLock()'s setInterval called
+ // lock.heartbeat() unguarded: that throw happens on the timer's own call stack,
+ // outside any try/catch in the caller, so it was an uncaught exception that
+ // killed the whole Node process mid-run (no clearInterval, no lock.release(),
+ // no SAFE_STOP transition). Prove the guarded pattern survives and the
+ // unguarded pattern actually does crash, so this test would fail if the fix
+ // in controller/siteboss-autopilot.js were ever reverted.
+ {
+  const lockLib=JSON.stringify(path.resolve(__dirname,'lib/lock.js'));
+  // Each run gets its own fresh directory: the child process acquires the lock
+  // itself (real ownership), then after the interval is running, something
+  // else (simulated here by the child overwriting its own lock file) steals
+  // the lock -- mirroring another host/process reclaiming a stale-looking lock
+  // while this process is still alive but blocked in a long operation.
+  const scriptOf=(guarded,dir)=>`
+   const fs=require('fs'),path=require('path');
+   const {ControllerLock}=require(${lockLib});
+   const dir=${JSON.stringify(dir)};
+   const lockFile=path.join(dir,'controller.lock.json');
+   const lock=new ControllerLock(dir,60);
+   lock.acquire('run');
+   let hb=setInterval(()=>{
+    ${guarded?`
+    try{lock.heartbeat('run');}
+    catch(e){if(hb){clearInterval(hb);hb=null;}console.log('HEARTBEAT_FAILURE_CAUGHT');}
+    `:`
+    lock.heartbeat('run');
+    `}
+   },30);
+   setTimeout(()=>{
+    fs.writeFileSync(lockFile,JSON.stringify({schema:1,pid:1,host:'someone-else',run_id:'thief',created_at:new Date().toISOString(),heartbeat_at:new Date().toISOString()}));
+   },60);
+   setTimeout(()=>{console.log('SURVIVED');process.exit(0);},250);
+  `;
+  const guardedDir=path.join(root,'heartbeat-guarded');fs.mkdirSync(guardedDir,{recursive:true});
+  const guardedRun=spawnSync(process.execPath,['-e',scriptOf(true,guardedDir)],{encoding:'utf8'});
+  ok('guarded heartbeat timer survives lost lock ownership',()=>guardedRun.status===0&&/SURVIVED/.test(guardedRun.stdout)&&/HEARTBEAT_FAILURE_CAUGHT/.test(guardedRun.stdout));
+
+  const unguardedDir=path.join(root,'heartbeat-unguarded');fs.mkdirSync(unguardedDir,{recursive:true});
+  const unguardedRun=spawnSync(process.execPath,['-e',scriptOf(false,unguardedDir)],{encoding:'utf8'});
+  ok('unguarded heartbeat timer crashes the process on lost lock ownership (proves the guard is load-bearing)',()=>unguardedRun.status!==0&&!/SURVIVED/.test(unguardedRun.stdout));
+ }
 }finally{try{fs.rmSync(root,{recursive:true,force:true})}catch{}}
 console.log(`LOCK SELFTEST: PASS=${pass} FAIL=${fail}`);
 process.exit(fail?2:0);

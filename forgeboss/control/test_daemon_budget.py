@@ -119,6 +119,52 @@ class WorkspaceClaimBudgetTests(unittest.TestCase):
         self.assertEqual(s1.db.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],1)
         lease=s1.get_lease("T1");self.assertAlmostEqual(float(lease["budget_reserved"]),0.6);self.assertIsNone(lease["released_at"])
 
+    def test_release_is_atomic_on_mid_write_failure(self):
+        d=self.daemon(1.0,0.0);self.addCleanup(d.store.db.close)
+        first=d.dispatch(self.request(0.4,"ATOMIC"),True)
+        owner_epoch=int(first["lease"]["owner_epoch"])
+        events_before=d.store.db.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+        with mock.patch.object(d.store,"event",side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                d.store.release("T1","ATOMIC",owner_epoch,outcome="released")
+        # release() must roll back completely: the lease UPDATE and the task_runs/tasks
+        # UPDATEs run inside the same transaction as the event() insert, so a failure in
+        # event() must undo all of them rather than leaving the lease "released" while
+        # the task is still marked "running" and no event was ever recorded.
+        lease=d.store.get_lease("T1")
+        self.assertIsNone(lease["released_at"])
+        run=d.store.db.execute("SELECT status,finished_at FROM task_runs WHERE run_id='ATOMIC'").fetchone()
+        self.assertEqual(run["status"],"running");self.assertIsNone(run["finished_at"])
+        self.assertEqual(d.store.get_task("T1")["status"],"running")
+        events_after=d.store.db.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+        self.assertEqual(events_after,events_before)
+        # a real release afterward must still work (the failed transaction did not
+        # leave anything open/corrupted)
+        d.store.release("T1","ATOMIC",owner_epoch,outcome="released")
+        self.assertIsNotNone(d.store.get_lease("T1")["released_at"])
+
+    def test_concurrent_release_cannot_double_release(self):
+        db=self.root/(uuid.uuid4().hex+"-release.sqlite");s1=store_module.ControlStore(db);self.addCleanup(s1.db.close)
+        s1.create_task({"taskId":"T1","repository":"owner/repo","purpose":"release-race","baseSha":"a"*40,"allowedPaths":["src/a.js"],"requiredTests":[],"budgetUsd":1.0})
+        s2=store_module.ControlStore(db);self.addCleanup(s2.db.close)
+        d1=self.daemon(store=s1)
+        first=d1.dispatch(self.request(0.3,"RACE"),True)
+        owner_epoch=int(first["lease"]["owner_epoch"])
+        barrier=threading.Barrier(2);errors=[]
+        def release(store):
+            barrier.wait()
+            try:store.release("T1","RACE",owner_epoch,outcome="released")
+            except Exception as ex:errors.append(ex)
+        t1=threading.Thread(target=release,args=(s1,));t2=threading.Thread(target=release,args=(s2,))
+        t1.start();t2.start();t1.join(10);t2.join(10)
+        self.assertFalse(t1.is_alive() or t2.is_alive())
+        # exactly one of the two concurrent release() calls for the same lease may succeed
+        self.assertEqual(len(errors),1)
+        self.assertIsInstance(errors[0],PermissionError)
+        released_events=s1.db.execute("SELECT COUNT(*) FROM task_events WHERE event_type='workspace.released'").fetchone()[0]
+        self.assertEqual(released_events,1)
+        self.assertEqual(s1.get_task("T1")["revision"],3)
+
     def test_existing_v2_workspace_lease_schema_migrates_budget_reserved(self):
         db=self.root/(uuid.uuid4().hex+"-v2.sqlite");raw=sqlite3.connect(db)
         raw.execute("""CREATE TABLE workspace_leases(task_id TEXT PRIMARY KEY,worktree_path TEXT NOT NULL,branch TEXT,owner_run_id TEXT NOT NULL,owner_epoch INTEGER NOT NULL,claimed_at REAL NOT NULL,heartbeat_at REAL NOT NULL,expires_at REAL NOT NULL,released_at REAL,current_head TEXT NOT NULL)""")

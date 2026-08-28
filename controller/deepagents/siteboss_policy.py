@@ -45,7 +45,7 @@ class GuardedWorkspace:
  def run_command(self,argv,test=False):
   if self.command_count>=self.packet.max_commands:raise BudgetExceeded("max command count")
   if not argv:raise SecurityDenial("empty command")
-  if Path(argv[0]).name.lower() not in {"node","node.exe","npm","npm.cmd","npx","npx.cmd","python","python.exe","pytest","pytest.exe"}:raise SecurityDenial("command class denied")
+  if Path(argv[0]).name.lower() not in {"node","node.exe","npm","npm.cmd","npx","npx.cmd","python","python.exe","python3","python3.exe","pytest","pytest.exe"}:raise SecurityDenial("command class denied")
   self.command_count+=1
   r=subprocess.run(argv,cwd=self.root,text=True,capture_output=True,timeout=300,shell=False,env={"PATH":os.environ.get("PATH",""),"NODE_ENV":"test","SITEBOSS_SANDBOX":"1"})
   rec={"argv":argv,"exit_code":r.returncode,"stdout":r.stdout[-20000:],"stderr":r.stderr[-20000:]};self.evidence.commands_run.append(rec)

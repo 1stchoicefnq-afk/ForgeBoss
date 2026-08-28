@@ -42,4 +42,21 @@ class CostLedgerSettlementTests(unittest.TestCase):
   verify=CostLedger(path);rows=verify.db.execute("SELECT id,actual,status FROM reservations ORDER BY id").fetchall();verify.db.close()
   state={rid:(actual,status) for rid,actual,status in rows};self.assertEqual(state[r1],(.10,'settled'));self.assertEqual(state[r2],(None,'reserved'))
 
+ def test_reserve_on_unconfigured_scope_fails_closed(self):
+  # A scope that set_budget() was never called for (typo, wrong scope string, or
+  # a reserve() racing ahead of scope initialization) must be denied, not treated
+  # as an unlimited budget.
+  path=Path(tempfile.mkdtemp())/'costs.db';ledger=CostLedger(path)
+  with self.assertRaisesRegex(RuntimeError,'BUDGET_NOT_CONFIGURED'):ledger.reserve('nobody-configured-this-scope',1000000)
+  rows=ledger.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
+  self.assertEqual(rows,0)
+ def test_settle_on_scope_with_removed_budget_fails_closed(self):
+  # A reservation can outlive its scope's budget row (e.g. the cap is cleared
+  # between reserve() and settle()); settlement must still fail closed rather
+  # than silently accepting any amount.
+  _,ledger=self.ledger();rid=ledger.reserve('owner',.05)
+  ledger.db.execute("DELETE FROM budgets WHERE scope='owner'")
+  with self.assertRaisesRegex(RuntimeError,'BUDGET_NOT_CONFIGURED'):ledger.settle(rid,1000000)
+  self.assertEqual(self.row(ledger,rid),(.05,None,'reserved'))
+
 if __name__=='__main__':unittest.main()

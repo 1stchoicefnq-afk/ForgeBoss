@@ -4,7 +4,7 @@ $Root=$PSScriptRoot;$State=Join-Path $Root 'state\builder';New-Item -ItemType Di
 $Policy=Get-Content -LiteralPath (Join-Path $Root 'BUILDER-POLICY.json') -Raw|ConvertFrom-Json
 $Events=Join-Path $State 'events.jsonl';$Ledger=Join-Path $State 'cost-ledger.json'
 Import-Module (Join-Path $Root 'engines\State.psm1') -Force
-function Event([string]$E,[string]$D=''){& pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'engines\Event-Log.ps1') -Event $E -Detail $D -Path $Events|Out-Null}
+function Event([string]$E,[string]$D=''){& pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'engines\Event-Log.ps1') -EventName $E -Detail $D -Path $Events|Out-Null}
 function Stage([string]$N,[scriptblock]$B){
  Write-Host "`n=== $N ===" -ForegroundColor Cyan
  Event 'stage.start' $N
@@ -30,8 +30,23 @@ function LatestReport([string]$Pattern,[string]$StateName){
  if($files.Count){return $files[0].FullName};return $null
 }
 function PaidCallsToday {
- $result=& pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'engines\Cost-Ledger.ps1') -Mode read -LedgerPath $Ledger
- try{return [int]$result.today_paid_calls}catch{return 0}
+ # Cost-Ledger.ps1 runs as a separate child process, so its result must be parsed back
+ # from the JSON it prints on stdout -- treating the raw captured text as an object
+ # (the previous behavior) silently evaluated every property access to $null/0 and
+ # made the daily paid-call cap check a permanent no-op.
+ $raw=& pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'engines\Cost-Ledger.ps1') -Mode read -LedgerPath $Ledger
+ if($LASTEXITCODE-ne0){
+  Write-Host "Cost ledger read failed (exit=$LASTEXITCODE); failing closed and treating the daily budget as exhausted." -ForegroundColor Red
+  return [int]::MaxValue
+ }
+ try{
+  $result=($raw-join"`n")|ConvertFrom-Json
+  if("$($result.ledger_status)"-eq'corrupt'){Write-Host 'Cost ledger reports a corrupt/unreadable ledger file; failing closed.' -ForegroundColor Red}
+  return [int]$result.today_paid_calls
+ }catch{
+  Write-Host "Cost ledger read result was unparseable; failing closed and treating the daily budget as exhausted." -ForegroundColor Red
+  return [int]::MaxValue
+ }
 }
 function Run-ChildPowerShell([string]$Name,[string]$File,[string[]]$CommandArgs,[string]$ExpectedArtifact=''){
  $display=[IO.Path]::GetFileName($File)
@@ -49,12 +64,22 @@ function RecordCalls([string]$Purpose,[string]$ReportPath){
  if(-not$ReportPath-or-not(Test-Path $ReportPath)){return}
  try{
   $j=Get-Content -LiteralPath $ReportPath -Raw|ConvertFrom-Json;$calls=0
-  try{$calls=[int]$j.api_calls}catch{}
+  try{$calls=[int]$j.api_calls}catch{
+   throw "RecordCalls could not read api_calls from $ReportPath :: $($_.Exception.Message)"
+  }
   if($calls-gt0){
    $provider=$(if($j.provider){"$($j.provider)"}elseif($j.reviewer_provider){"$($j.reviewer_provider)"}else{'configured'})
    & pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'engines\Cost-Ledger.ps1') -Mode record -Provider $provider -Purpose $Purpose -PaidCalls $calls -Artifact $ReportPath -LedgerPath $Ledger|Out-Null
+   if($LASTEXITCODE-ne0){throw "Cost-Ledger.ps1 -Mode record failed (exit=$LASTEXITCODE) while recording $calls paid call(s) for '$Purpose' from $ReportPath"}
   }
- }catch{}
+ }catch{
+  # A paid call already happened; if we cannot durably record it, the daily cap can no
+  # longer be trusted. Fail closed by surfacing this loudly and halting the cycle rather
+  # than silently continuing as if nothing was spent.
+  Write-Host "RecordCalls FAILED to record spend for '$Purpose' ($ReportPath): $($_.Exception.Message)" -ForegroundColor Red
+  Event 'cost.record.failed' "$Purpose :: $ReportPath :: $($_.Exception.Message)"
+  throw
+ }
 }
 Write-Host "`nSITEBOSS BUILDER v0.4.7-oneclick-hotfix" -ForegroundColor Cyan
 Write-Host 'Local-first engineering supervisor -> batch repair -> independent clean review -> draft PR only.' -ForegroundColor Green

@@ -534,19 +534,19 @@ function Get-LatestIntegrationAuthority($token,[int]$pr){
     if($page -gt 20){ throw 'Control-comment pagination exceeded safety bound' }
   }
 
-  $matches=@()
+  $authorityMatches=@()
   foreach($c in $comments){
     if("$($c.body)" -notmatch 'API_INTEGRATION_AUTHORITY_SCHEMA:\s*1'){ continue }
     if("$($c.body)" -notmatch '(?s)API_INTEGRATION_AUTHORITY_JSON\s*```json\s*(\{.*?\})\s*```'){ continue }
     try {
       $a=$Matches[1]|ConvertFrom-Json
       if([int]$a.pr_number -eq $pr){
-        $matches+=@{comment=$c;authority=$a}
+        $authorityMatches+=@{comment=$c;authority=$a}
       }
     } catch {}
   }
-  if($matches.Count -eq 0){ return $null }
-  $matches|Sort-Object {[DateTimeOffset]$_.comment.created_at} -Descending|Select-Object -First 1
+  if($authorityMatches.Count -eq 0){ return $null }
+  $authorityMatches|Sort-Object {[DateTimeOffset]$_.comment.created_at} -Descending|Select-Object -First 1
 }
 
 function Assert-AuthorityMatches($authority,[int]$pr,[string]$head,[string]$base,[string]$main,[int]$controlVersion){

@@ -109,9 +109,9 @@ function Get-GitRef([string]$branch,[string]$token){
     if($raw-is[System.Array]){$items=@($raw)}else{$items=@($raw)}
   }
   $exact="refs/heads/$branch"
-  $matches=@($items|Where-Object{"$($_.ref)"-eq$exact})
-  if($matches.Count-ne1){throw "Expected exactly one Git ref '$exact', found $($matches.Count)"}
-  $matches[0]
+  $refMatches=@($items|Where-Object{"$($_.ref)"-eq$exact})
+  if($refMatches.Count-ne1){throw "Expected exactly one Git ref '$exact', found $($refMatches.Count)"}
+  $refMatches[0]
 }
 
 function Update-GitRefFastForward([string]$branch,[string]$sha,[string]$token){
@@ -153,7 +153,7 @@ function Get-RepairChildren([int]$parentNumber,$parentPr,[string]$token){
     if($raw-is[System.Array]){$items=@($raw)}else{$items=@($raw)}
   }
   $prefix="autopilot/repair-pr$parentNumber-"
-  $matches=@()
+  $childMatches=@()
   foreach($pr in $items){
     $h=Get-OptionalProperty $pr 'head'
     $b=Get-OptionalProperty $pr 'base'
@@ -162,10 +162,10 @@ function Get-RepairChildren([int]$parentNumber,$parentPr,[string]$token){
     $bRef="$((Get-OptionalProperty $b 'ref'))"
     $bSha="$((Get-OptionalProperty $b 'sha'))"
     if($hRef.StartsWith($prefix,[StringComparison]::Ordinal)-and$bRef-eq$parentHead.ref-and$bSha-eq$parentHead.sha){
-      $matches+=$pr
+      $childMatches+=$pr
     }
   }
-  $matches
+  $childMatches
 }
 
 function Get-RepairChain([int]$root,[string]$token){

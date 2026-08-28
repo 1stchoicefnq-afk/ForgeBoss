@@ -34,6 +34,14 @@ def norm(p):
     if (len(x)>=2 and x[1]==":") or x.startswith(("/","//","~")):raise SecurityError("absolute/home path denied")
     pp=PurePosixPath(x)
     if ".." in pp.parts:raise SecurityError("parent traversal denied")
+    # Win32's CreateFile silently strips trailing dots/spaces from the final
+    # component of a path (e.g. ".env." and ".env " both resolve to ".env")
+    # unless the caller uses the \\?\ prefix. Without this check, a path like
+    # ".env." would pass the FORBIDDEN_EXACT check for ".env" here, then land
+    # on the real ".env" file once Windows normalizes it during the actual
+    # write -- silently defeating the sensitive-file denylist on Windows.
+    if any(part!=".." and part!="." and part[-1] in (".", " ") for part in pp.parts):
+        raise SecurityError("trailing dot/space path component denied")
     y=pp.as_posix()
     while y.startswith("./"):y=y[2:]
     if not y:raise SecurityError("empty normalized path")

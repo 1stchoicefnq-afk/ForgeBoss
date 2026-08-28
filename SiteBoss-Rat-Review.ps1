@@ -620,9 +620,13 @@ if($exactRef.Count-eq0){
 
 $headQuery=[Uri]::EscapeDataString("$($Config.Owner):$branch")
 $existing=GHGet "/repos/$($Config.Owner)/$($Config.Repo)/pulls?state=open&head=$headQuery&base=$([Uri]::EscapeDataString($baseBranch))&per_page=20" $token
-$matches=@($existing)
-if($matches.Count-gt0){
-  $script:PublishedPr=[int]$matches[0].number
+# Not named $matches: that's PowerShell's automatic variable populated by -match/
+# -imatch/-notmatch (used elsewhere in this file), and this array holds GitHub PR
+# objects, not regex match results -- reusing the automatic variable's name here
+# would silently corrupt or be corrupted by any nearby -match usage.
+$existingPulls=@($existing)
+if($existingPulls.Count-gt0){
+  $script:PublishedPr=[int]$existingPulls[0].number
   Log "DRAFT CHILD PR ALREADY EXISTS: #$($script:PublishedPr)" 'Green'
 }else{
   $body=@"

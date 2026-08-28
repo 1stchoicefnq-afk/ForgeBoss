@@ -12,5 +12,8 @@ if(-not(Test-Path -LiteralPath $MirrorPath)){$r=Run 'git.exe' @('clone','--mirro
 if($r.exit_code-ne0){throw "mirror update failed: $($r.stderr)"}
 $head=Run 'git.exe' @('rev-parse','refs/heads/main') $MirrorPath
 if($head.exit_code-ne0){$head=Run 'git.exe' @('rev-parse','HEAD') $MirrorPath}
-$out=[ordered]@{schema=1;mirror=$MirrorPath;updated_at=[DateTimeOffset]::UtcNow.ToString('o');main_sha=$head.stdout.Trim()}
+if($head.exit_code-ne0){throw "mirror head resolution failed (both refs/heads/main and HEAD): $($head.stderr)"}
+$sha=$head.stdout.Trim()
+if(-not $sha){throw 'mirror head resolution produced an empty SHA'}
+$out=[ordered]@{schema=1;mirror=$MirrorPath;updated_at=[DateTimeOffset]::UtcNow.ToString('o');main_sha=$sha}
 if($StatePath){Write-JsonAtomic $StatePath $out 20};$out
