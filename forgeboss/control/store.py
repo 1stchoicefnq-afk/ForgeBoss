@@ -240,17 +240,34 @@ class ControlStore:
             return self.get_lease(task_id)
 
     def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released"):
-        self.assert_writer(task_id,run_id,owner_epoch)
+        # Claim grants are conservatively consumed in tasks.budget_spent and are not refunded here.
+        # No authoritative actual-cost settlement path exists in this control-plane version.
         now=time.time()
         with self._lock:
-            # Claim grants are conservatively consumed in tasks.budget_spent and are not refunded here.
-            # No authoritative actual-cost settlement path exists in this control-plane version.
-            self.db.execute("UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head) WHERE task_id=? AND owner_run_id=? AND owner_epoch=?",
-                            (now,result_head,task_id,run_id,int(owner_epoch)))
-            self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
-            self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
-                            (outcome,result_head,now,task_id))
-            self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                row=self.db.execute("""SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                                    (task_id,run_id,int(owner_epoch))).fetchone()
+                if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
+                if float(row["expires_at"])<=now: raise PermissionError("writer authority lost: lease expired")
+                # released_at IS NULL is re-checked here (not just above) so a second, concurrent
+                # release for this same run/epoch cannot slip through the read-then-write gap and
+                # double-complete the task (duplicate events, double revision bump, clobbered outcome).
+                cur=self.db.execute("""UPDATE workspace_leases SET released_at=?,current_head=COALESCE(?,current_head)
+                    WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                                    (now,result_head,task_id,run_id,int(owner_epoch)))
+                if cur.rowcount!=1: raise PermissionError("writer authority lost: lease already released")
+                self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=?",(outcome,now,run_id))
+                self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=COALESCE(?,result_head),updated_at=? WHERE task_id=?",
+                                (outcome,result_head,now,task_id))
+                self.event("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":result_head},task_id,run_id)
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def snapshot(self):
         return {"schemaVersion":SCHEMA_VERSION,
