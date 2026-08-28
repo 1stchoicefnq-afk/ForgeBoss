@@ -30,6 +30,7 @@ def _physical_worktree_identity(path):
 
 _OWNER_RE=re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _REPO_RE=re.compile(r"^[A-Za-z0-9._-]+$")
+_GIT_OBJECT_ID_RE=re.compile(r"^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$")
 def _repository_identity(repository):
     if not isinstance(repository,str): raise WorkspaceCollisionError("REPOSITORY_STATE_INVALID","task repository authority must be owner/name")
     raw=repository
@@ -46,6 +47,11 @@ def _repository_identity(repository):
     if not _OWNER_RE.fullmatch(owner) or not _REPO_RE.fullmatch(repo):
         raise WorkspaceCollisionError("REPOSITORY_STATE_INVALID","task repository authority must be owner/name")
     return f"{owner.casefold()}/{repo.casefold()}"
+
+def _git_object_id(value):
+    if not isinstance(value,str) or value!=value.strip() or not _GIT_OBJECT_ID_RE.fullmatch(value):
+        raise WorkspaceCollisionError("BASE_SHA_INVALID","task baseSha authority must be an exact 40-hex SHA-1 or 64-hex SHA-256 object id")
+    return value.lower()
 
 def _scope_authorities(raw):
     if isinstance(raw,str):
@@ -129,13 +135,13 @@ class ControlStore:
         with self._lock: return self._event_locked(event_type,payload,task_id,run_id)
 
     def create_task(self,t):
-        _scope_authorities(t.get("allowedPaths",[]));_repository_identity(t.get("repository"))
+        _scope_authorities(t.get("allowedPaths",[]));_repository_identity(t.get("repository"));base_sha=_git_object_id(t.get("baseSha"))
         with self._lock:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
                 self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],t["baseSha"],t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
                 self._event_locked("task.created",{"status":"queued"},t["taskId"])
                 self.db.execute("COMMIT");begun=False
             except Exception:
@@ -149,14 +155,14 @@ class ControlStore:
         row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
     def _live_cross_task_conflicts_locked(self,task_id,repository,base_sha,worktree,scope,now):
-        worktree_id=_physical_worktree_identity(worktree);repository_id=_repository_identity(repository);base_id=str(base_sha or "")
+        worktree_id=_physical_worktree_identity(worktree);repository_id=_repository_identity(repository);base_id=_git_object_id(base_sha)
         rows=self.db.execute("""SELECT wl.task_id,wl.worktree_path,t.repository,t.base_sha,t.allowed_paths_json
           FROM workspace_leases wl JOIN tasks t ON t.task_id=wl.task_id
           WHERE wl.task_id<>? AND wl.released_at IS NULL AND wl.expires_at>?""",(task_id,now)).fetchall()
         for row in rows:
             other_task=str(row["task_id"])
             if _physical_worktree_identity(row["worktree_path"])==worktree_id: raise WorkspaceCollisionError("WORKTREE_COLLISION",f"physical worktree already owned by live task {other_task}")
-            if _repository_identity(row["repository"])!=repository_id or str(row["base_sha"] or "")!=base_id: continue
+            if _repository_identity(row["repository"])!=repository_id or _git_object_id(row["base_sha"])!=base_id: continue
             if _scope_overlap(scope,_scope_authorities(row["allowed_paths_json"])): raise WorkspaceCollisionError("WRITABLE_SCOPE_COLLISION",f"writable scope overlaps live task {other_task}")
 
     def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0):
