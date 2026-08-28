@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse,hashlib,json,math,os,re,secrets,subprocess,time
+import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
@@ -12,12 +12,16 @@ FORBIDDEN_EXACT={".git",".env",".env.local",".env.production",".npmrc",".pypirc"
 GIT_META_EXACT=("config","config.worktree","HEAD","packed-refs","shallow","info/attributes","info/exclude","objects/info/alternates")
 GIT_META_TREES=("refs","hooks")
 EXEC_CONFIG_EXACT={"core.askpass","core.editor","core.gitproxy","core.pager","core.sshcommand","diff.external","gpg.program","interactive.difffilter","sequence.editor"}
-EXEC_CONFIG_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),re.compile(r"^diff\..+\.(?:command|textconv)$",re.I),re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
+EXEC_CONFIG_PATTERNS=(re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
     ("ls-files","--stage","-z"),("remote",),
 }
+_WIN_GIT_REGISTRY_KEY=r"SOFTWARE\GitForWindows"
+_WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}
+_WIN_BROAD_WRITE_SIDS=("S-1-1-0","S-1-5-11","S-1-5-32-545")
+_WIN_WRITE_RIGHTS=0x500D0156
 
 def norm(p):
     if not isinstance(p,str) or not p.strip():raise SecurityError("empty path")
@@ -74,9 +78,128 @@ def _assert_local_git_args(args):
     if a in _LOCAL_GIT_EXACT:return
     if len(a)==4 and a[:3]==("config","--includes","--get-all") and a[3] and not any(c in a[3] for c in ("\x00","\r","\n")):return
     raise SecurityError("non-local/transport-capable Git command denied: "+" ".join(a))
+def _assert_posix_git_trust(resolved:Path):
+    cur=resolved
+    while True:
+        try:st=cur.stat()
+        except Exception as e:raise SecurityError("unable to inspect Git trust path: "+str(cur)) from e
+        if st.st_uid!=0:raise SecurityError("untrusted Git path owner: "+str(cur))
+        if st.st_mode & 0o022:raise SecurityError("writable Git trust path denied: "+str(cur))
+        if cur.parent==cur:break
+        cur=cur.parent
+def _windows_reparse(p:Path):
+    try:return bool(int(getattr(os.lstat(p),"st_file_attributes",0)) & 0x400)
+    except OSError:return True
+def _windows_trusted_roots(registry=None):
+    try:
+        if registry is None:
+            import winreg as registry
+        views=[]
+        for flag in (getattr(registry,"KEY_WOW64_64KEY",0),getattr(registry,"KEY_WOW64_32KEY",0)):
+            if flag not in views:views.append(flag)
+        roots=[];seen=set()
+        for view in views:
+            try:
+                with registry.OpenKey(registry.HKEY_LOCAL_MACHINE,_WIN_GIT_REGISTRY_KEY,0,registry.KEY_READ|view) as key:
+                    raw,typ=registry.QueryValueEx(key,"InstallPath")
+            except OSError:
+                continue
+            if typ!=registry.REG_SZ or not isinstance(raw,str) or not raw or raw.strip()!=raw:
+                raise SecurityError("Git-for-Windows HKLM InstallPath is invalid")
+            p=Path(raw)
+            if not p.is_absolute():raise SecurityError("Git-for-Windows HKLM InstallPath is not absolute")
+            if is_linklike(p) or _windows_reparse(p):raise SecurityError("linklike Git-for-Windows install root denied: "+str(p))
+            try:resolved=p.resolve(strict=True)
+            except Exception as e:raise SecurityError("unable to resolve Git-for-Windows HKLM InstallPath: "+str(e)) from e
+            if not resolved.is_dir() or is_linklike(resolved) or _windows_reparse(resolved):raise SecurityError("Git-for-Windows HKLM InstallPath is not a trusted directory")
+            k=os.path.normcase(os.path.normpath(str(resolved)))
+            if k not in seen:seen.add(k);roots.append(resolved)
+        if not roots:raise SecurityError("trusted Git-for-Windows HKLM install root unavailable")
+        return roots
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("trusted Git-for-Windows HKLM install root unavailable") from e
+def _windows_acl_facts(path:Path):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        adv=ctypes.WinDLL("advapi32",use_last_error=True);kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+        V=wintypes.LPVOID;D=wintypes.DWORD
+        class TRUSTEE(ctypes.Structure):pass
+        PTRUSTEE=ctypes.POINTER(TRUSTEE)
+        TRUSTEE._fields_=[("pMultipleTrustee",PTRUSTEE),("MultipleTrusteeOperation",ctypes.c_int),("TrusteeForm",ctypes.c_int),("TrusteeType",ctypes.c_int),("ptstrName",wintypes.LPWSTR)]
+        adv.GetNamedSecurityInfoW.argtypes=[wintypes.LPWSTR,D,D,ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V)];adv.GetNamedSecurityInfoW.restype=D
+        adv.ConvertSidToStringSidW.argtypes=[V,ctypes.POINTER(wintypes.LPWSTR)];adv.ConvertSidToStringSidW.restype=wintypes.BOOL
+        adv.ConvertStringSidToSidW.argtypes=[wintypes.LPCWSTR,ctypes.POINTER(V)];adv.ConvertStringSidToSidW.restype=wintypes.BOOL
+        adv.BuildTrusteeWithSidW.argtypes=[ctypes.POINTER(TRUSTEE),V];adv.BuildTrusteeWithSidW.restype=None
+        adv.GetEffectiveRightsFromAclW.argtypes=[V,ctypes.POINTER(TRUSTEE),ctypes.POINTER(D)];adv.GetEffectiveRightsFromAclW.restype=D
+        kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V
+        owner=V();dacl=V();sd=V()
+        rc=adv.GetNamedSecurityInfoW(str(path),1,0x1|0x4,ctypes.byref(owner),None,ctypes.byref(dacl),None,ctypes.byref(sd))
+        if rc!=0 or not owner.value or not dacl.value:raise SecurityError("unable to read Windows owner/DACL: "+str(path))
+        text=wintypes.LPWSTR()
+        if not adv.ConvertSidToStringSidW(owner,ctypes.byref(text)):raise SecurityError("unable to read Windows owner SID: "+str(path))
+        try:owner_sid=ctypes.wstring_at(text)
+        finally:kernel.LocalFree(text)
+        rights={}
+        for sid_text in _WIN_BROAD_WRITE_SIDS:
+            sid=V()
+            if not adv.ConvertStringSidToSidW(sid_text,ctypes.byref(sid)):raise SecurityError("unable to construct Windows trust SID")
+            try:
+                trustee=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(trustee),sid);mask=D(0)
+                rc=adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(mask))
+                if rc!=0:raise SecurityError("unable to evaluate Windows DACL: "+str(path))
+                rights[sid_text]=int(mask.value)
+            finally:kernel.LocalFree(sid)
+        return owner_sid,rights
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to inspect Windows Git ACL: "+str(path)) from e
+    finally:
+        try:
+            if 'sd' in locals() and sd.value:kernel.LocalFree(sd)
+        except Exception:pass
+def _assert_windows_acl_trust(path:Path):
+    owner,rights=_windows_acl_facts(path)
+    if str(owner).casefold() not in _WIN_TRUSTED_OWNER_SIDS:raise SecurityError("untrusted Windows Git path owner: "+str(path))
+    for sid,mask in rights.items():
+        if int(mask) & _WIN_WRITE_RIGHTS:raise SecurityError("broad principal has write-capable Git path rights: "+sid+" -> "+str(path))
+def _windows_path_key(p:Path):return os.path.normcase(os.path.normpath(str(p)))
+def _windows_within(path:Path,root:Path):
+    try:return os.path.commonpath([_windows_path_key(path),_windows_path_key(root)])==_windows_path_key(root)
+    except ValueError:return False
+def _assert_windows_git_trust(resolved:Path):
+    roots=_windows_trusted_roots();matches=[r for r in roots if _windows_within(resolved,r)]
+    if not matches:raise SecurityError("untrusted Git-for-Windows install path: "+str(resolved))
+    root=max(matches,key=lambda x:len(_windows_path_key(x)));cur=resolved
+    while True:
+        if is_linklike(cur) or _windows_reparse(cur):raise SecurityError("linklike Git trust path denied: "+str(cur))
+        _assert_windows_acl_trust(cur)
+        if _windows_path_key(cur)==_windows_path_key(root):break
+        if cur.parent==cur:raise SecurityError("Git executable escaped trusted install root")
+        cur=cur.parent
+def _resolve_git_executable():
+    name="git.exe" if os.name=="nt" else "git"
+    raw=shutil.which(name)
+    if not raw:raise SecurityError("Git executable unavailable: "+name)
+    p=Path(raw)
+    try:
+        if not p.is_absolute():raise SecurityError("Git executable resolution is not absolute: "+str(p))
+        if is_linklike(p):raise SecurityError("linklike Git executable denied: "+str(p))
+        resolved=p.resolve(strict=True)
+        if is_linklike(resolved):raise SecurityError("linklike Git executable denied: "+str(resolved))
+        if not resolved.is_file():raise SecurityError("Git executable is not a regular file: "+str(resolved))
+        if os.name!="nt" and not os.access(resolved,os.X_OK):raise SecurityError("Git executable is not executable: "+str(resolved))
+        if os.name=="nt":_assert_windows_git_trust(resolved)
+        else:_assert_posix_git_trust(resolved)
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to resolve Git executable: "+str(e)) from e
+    return resolved
+def _git_executable_identity():
+    p=_resolve_git_executable()
+    try:return {"kind":"executable","path":str(p),"sha256":fhash(p),"size":p.stat().st_size}
+    except Exception as e:raise SecurityError("unable to bind Git executable identity: "+str(e)) from e
 def git(work,*args):
-    _assert_local_git_args(args)
-    p=subprocess.run(["git.exe",*args],cwd=work,capture_output=True,text=True,timeout=60,creationflags=CNW)
+    _assert_local_git_args(args);exe=_resolve_git_executable()
+    p=subprocess.run([str(exe),*args],cwd=work,capture_output=True,text=True,timeout=60,creationflags=CNW)
     if p.returncode:raise SecurityError((p.stdout+p.stderr).strip() or "git failed")
     return p.stdout.strip()
 def _resolve_git_dir(work:Path,flag:str):
@@ -141,12 +264,12 @@ def _assert_safe_execution_config(work:Path,gitdir:Path,common:Path):
     elif "protocol.allow" in names:
         vals=[v.casefold() for v in _config_values(work,"protocol.allow")]
         if not vals or any(v!="never" for v in vals):raise SecurityError("execution-capable Git transport denied: protocol.allow")
-    for name in names:
+    for name in sorted(names):
         if name in EXEC_CONFIG_EXACT or any(rx.match(name) for rx in EXEC_CONFIG_PATTERNS):raise SecurityError("execution-capable Git config denied: "+name)
         if name.startswith("alias.") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
         if name.startswith("submodule.") and name.endswith(".update") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
 def git_metadata_snapshot(work):
-    work=Path(work).resolve();dotgit=work/".git";out={}
+    work=Path(work).resolve();dotgit=work/".git";out={};git_exe_before=_git_executable_identity()
     if not dotgit.exists() and not is_linklike(dotgit):return out
     if is_linklike(dotgit):raise SecurityError("linklike workspace .git denied")
     if dotgit.is_file():out[".git"]=_metadata_entry(dotgit,".git")
@@ -159,6 +282,9 @@ def git_metadata_snapshot(work):
     out["git:effective-config"]={"kind":"semantic","sha256":hashlib.sha256(effective.encode("utf-8")).hexdigest()}
     staged=git(work,"ls-files","--stage","-z")
     out["git:index:stage"]={"kind":"semantic","sha256":hashlib.sha256(staged.encode("utf-8")).hexdigest()}
+    git_exe_after=_git_executable_identity()
+    if git_exe_before!=git_exe_after:raise SecurityError("Git executable identity changed during metadata snapshot")
+    out["git:executable"]=git_exe_before
     return out
 def snapshot(work):
     work=Path(work).resolve();out={}
