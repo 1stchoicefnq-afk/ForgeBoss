@@ -1,4 +1,4 @@
-"""Hostile tests for the generation-bound process supervisor.
+﻿"""Hostile tests for the generation-bound process supervisor.
 
 The concurrency tests are deterministic: the fake process control blocks inside
 `signal` on an explicit gate, so a racing caller is guaranteed to observe the
@@ -716,6 +716,7 @@ class HostileToolResolutionTests(unittest.TestCase):
                 resolver.resolve("taskkill")
             self.assertEqual(ctx.exception.code, "TOOL_NOT_TRUSTED")
 
+    @unittest.skipIf(os.name == "nt", "POSIX symlink test not valid on standard Windows")
     def test_symlinked_tool_inside_a_trusted_directory_is_refused(self):
         real = self.dir / "real-tool"
         real.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -734,7 +735,7 @@ class HostileToolResolutionTests(unittest.TestCase):
         with self.assertRaises(ToolResolutionError):
             resolver.resolve("taskkill")
 
-    @unittest.skipIf(os.getuid() == 0, "cannot create a non-root-owned file as root")
+    @unittest.skipIf(not hasattr(os, "getuid") or os.getuid() == 0, "requires non-root POSIX user")
     def test_non_root_owned_tool_is_refused_on_posix(self):
         self._tool("taskkill", 0o755)
         resolver = NativeToolResolver(trusted_dirs=[str(self.dir)], windows=False)
@@ -791,6 +792,57 @@ class HostileToolResolutionTests(unittest.TestCase):
             control.signal(identity, probe, escalate=True)
         self.assertEqual(calls, [], "no command may run when tool resolution fails")
 
+
+
+    def test_windows_force_required_defers_to_bounded_escalation(self):
+        probe = FakeProbe([FakeProcess(4242)])
+
+        class Resolver:
+            def resolve(self, name):
+                if str(name).lower() != "taskkill.exe":
+                    raise AssertionError(f"unexpected tool: {name}")
+                return r"C:\Windows\System32\taskkill.exe"
+
+        calls = []
+
+        def runner(argv, timeout):
+            calls.append(tuple(argv))
+
+            if "/F" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="SUCCESS", stderr=""
+                )
+
+            return subprocess.CompletedProcess(
+                argv,
+                1,
+                stdout="",
+                stderr=(
+                    "ERROR: The process with PID 4242 could not be terminated.\n"
+                    "Reason: This process can only be terminated forcefully "
+                    "(with /F option)."
+                ),
+            )
+
+        control = WindowsProcessControl(
+            resolver=Resolver(),
+            runner=runner
+        )
+
+        identity = probe.identity(4242)
+
+        self.assertEqual(
+            control.signal(identity, probe, escalate=False),
+            "signalled"
+        )
+
+        self.assertEqual(
+            control.signal(identity, probe, escalate=True),
+            "escalated"
+        )
+
+        self.assertNotIn("/F", calls[0])
+        self.assertIn("/F", calls[1])
 
 # ---------------------------------------------------------------------------
 # Real OS behaviour (Linux /proc + native signalling)

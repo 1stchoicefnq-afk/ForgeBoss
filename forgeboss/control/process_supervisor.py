@@ -1,4 +1,4 @@
-"""Generation-bound process supervision for ForgeBoss worker slots.
+﻿"""Generation-bound process supervision for ForgeBoss worker slots.
 
 Authority model
 ---------------
@@ -630,9 +630,12 @@ class WindowsProcessControl:
             raise SupervisorError("SIGNAL_FAILED", f"cannot signal pid {identity.pid}: {ex}") from ex
         # 128 == process not found, which is the outcome we wanted anyway.
         if done.returncode not in (0, 128):
-            raise SupervisorError("SIGNAL_FAILED",
-                                  (done.stderr or done.stdout or f"taskkill exit {done.returncode}").strip())
-        return "escalated" if escalate else "signalled"
+            message = (done.stderr or done.stdout or f"taskkill exit {done.returncode}").strip()
+
+            if not escalate and "only be terminated forcefully" in message.lower():
+                return "signalled"
+
+            raise SupervisorError("SIGNAL_FAILED", message)
 
 
 def default_process_control():
