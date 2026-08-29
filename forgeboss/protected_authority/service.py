@@ -1,14 +1,25 @@
 from __future__ import annotations
 
-import sqlite3
+import re,sqlite3
 from pathlib import Path
 from typing import Any,Mapping
-
 from .boundary import FileSecretProvider,PeerContext,PlatformMachineBoundary
 from .github_backend import GitHubAppBackend
 from .protocol import AuthorityError,assert_public_result,canonical_digest,canonical_json,strict_loads,unsigned_request
 from .root_chain import assert_machine_anchored_root
 from .signing import ReceiptSigner
+_REPO_RE=re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+
+def _canonical_repository_map(values)->dict[str,str]:
+    if not values:raise AuthorityError('REPOSITORY_ALLOWLIST_INVALID')
+    out={}
+    for value in values:
+        if not isinstance(value,str) or not _REPO_RE.fullmatch(value):raise AuthorityError('REPOSITORY_ALLOWLIST_INVALID')
+        key=value.casefold()
+        if key in out and out[key]!=value:raise AuthorityError('REPOSITORY_ALLOWLIST_INVALID')
+        out[key]=value
+    if not out:raise AuthorityError('REPOSITORY_ALLOWLIST_INVALID')
+    return out
 
 class ReplayJournal:
     def __init__(self,root:Path):
@@ -34,16 +45,19 @@ class ReplayJournal:
         finally:db.close()
 
 class ProtectedAuthorityService:
-    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner):
+    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner,allowed_repositories):
         root=Path(protected_root)
         if not root.is_absolute():raise AuthorityError('PROTECTED_ROOT_INVALID')
         resolved=assert_machine_anchored_root(boundary,root)
         if receipt_signer is None:raise AuthorityError('RECEIPT_SIGNER_REQUIRED')
-        self.root=resolved;self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(resolved);self.journal=ReplayJournal(resolved)
+        self.root=resolved;self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.allowed_repositories=_canonical_repository_map(allowed_repositories);self.service_principal=boundary.assert_service_principal(resolved);self.journal=ReplayJournal(resolved)
     def handle_json(self,raw:str|bytes,*,peer_context:PeerContext)->bytes:return canonical_json(self.handle(unsigned_request(strict_loads(raw)),peer_context=peer_context))
     def handle(self,raw_request:Mapping[str,Any],*,peer_context:PeerContext)->dict:
         r=unsigned_request(raw_request)
         if not self.boundary.verify_peer(r['peerId'],r['requestDigest'],r['signature'],peer_context):raise AuthorityError('PEER_AUTH_DENIED')
+        canonical_repo=self.allowed_repositories.get(r['repository'].casefold())
+        if canonical_repo is None:raise AuthorityError('REPOSITORY_DENIED')
+        r=dict(r);r['repository']=canonical_repo
         self.journal.consume(r['requestId'],r['requestDigest']);private=[]
         try:
             if r['operation']=='verify_launch_authority':
@@ -60,7 +74,8 @@ class ProtectedAuthorityService:
         receipt={'schema':3,'operation':r['operation'],'requestId':r['requestId'],'peerId':r['peerId'],'peerPrincipal':peer_context.principal,'repository':r['repository'],'controlRevision':r['controlRevision'],'requestDigest':r['requestDigest'],'resultDigest':canonical_digest(public),'servicePrincipal':self.service_principal}
         signed=self.receipt_signer.sign(receipt);return {**signed,'result':public}
 
-def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,launch_trust_file:str,receipt_signing_key_file:str,trusted_storage_principals:set[str]|None=None)->ProtectedAuthorityService:
+def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,launch_trust_file:str,receipt_signing_key_file:str,allowed_repositories,trusted_storage_principals:set[str]|None=None)->ProtectedAuthorityService:
     root=Path(protected_root);boundary=PlatformMachineBoundary(expected_service_principal=expected_service_principal,peer_principals=peer_principals,peer_public_keys=peer_public_keys,trusted_storage_principals=trusted_storage_principals);root=assert_machine_anchored_root(boundary,root)
+    repos=_canonical_repository_map(allowed_repositories)
     secrets=FileSecretProvider(root=root,private_key_path=Path(github_private_key_file),launch_trust_path=Path(launch_trust_file),boundary=boundary);signer=ReceiptSigner.from_file(root=root,path=Path(receipt_signing_key_file),boundary=boundary);backend=GitHubAppBackend(app_id=github_app_id,installation_id=github_installation_id)
-    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer)
+    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values())
