@@ -1,0 +1,124 @@
+name: Workspace V6 patch builder
+on:
+  push:
+    branches: [forgeboss/worker-c-workspace-v6-patcher]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: forgeboss/worker-c-workspace-v6-build-temp
+      - name: Apply handle-bound V6 workspace patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('forgeboss/control/workspace.py');s=p.read_text()
+          def rf(name,new):
+              global s
+              pat=rf'(?ms)^def {re.escape(name)}\(.*?(?=^def |\Z)'
+              s2,n=re.subn(pat,new.rstrip()+'\n\n',s,count=1)
+              if n!=1: raise SystemExit(f'function replace failed {name}: {n}')
+              s=s2
+          rf('_path_identity', '''def _path_identity(path: Path, code: str = "WORKSPACE_IDENTITY_INVALID") -> dict:
+              _assert_no_link_components(path, code)
+              _assert_plain_existing_path(path, code)
+              try:
+                  st = path.stat(); resolved = path.resolve(strict=True)
+              except OSError as ex:
+                  raise WorkspaceProvisionError(code, f"cannot inspect workspace identity: {path}") from ex
+              if not stat.S_ISDIR(st.st_mode): raise WorkspaceProvisionError(code, "workspace generation must be a directory")
+              ino=int(getattr(st,"st_ino",0)); ctime_ns=int(getattr(st,"st_ctime_ns",int(st.st_ctime*1_000_000_000))); dev=int(getattr(st,"st_dev",-1))
+              if ino<=0 or ctime_ns<=0 or dev<0: raise WorkspaceProvisionError(code, "stable workspace file identity unavailable")
+              out={"resolved":str(resolved),"dev":dev,"ino":ino,"ctimeNs":ctime_ns,"mode":int(st.st_mode)}
+              if os.name=="nt":
+                  try:
+                      from .windows_cleanup import native_identity
+                      out["native"]=native_identity(path)
+                  except Exception as ex:
+                      raise WorkspaceProvisionError(code, f"cannot bind native Windows workspace identity: {path}: {ex}") from ex
+              return out''')
+          rf('_identity_shape_valid', '''def _identity_shape_valid(identity: dict | None) -> bool:
+              if not isinstance(identity,dict): return False
+              base={"resolved","dev","ino","ctimeNs","mode"}; keys=set(identity)
+              if keys not in (base,base|{"native"}): return False
+              if not isinstance(identity["resolved"],str) or not identity["resolved"]: return False
+              try:
+                  if not (int(identity["dev"])>=0 and int(identity["ino"])>0 and int(identity["ctimeNs"])>0 and int(identity["mode"])>0): return False
+              except (TypeError,ValueError): return False
+              if "native" in identity:
+                  n=identity["native"]
+                  if not isinstance(n,dict) or set(n)!={"volumeSerial","fileId"}: return False
+                  try: volume=int(n["volumeSerial"])
+                  except (TypeError,ValueError): return False
+                  fid=str(n["fileId"]).lower()
+                  if volume<0 or len(fid)!=32 or any(ch not in "0123456789abcdef" for ch in fid): return False
+              return True''')
+          rf('_same_live_object', '''def _same_live_object(before: dict, after: dict) -> bool:
+              if not (_identity_shape_valid(before) and _identity_shape_valid(after)): return False
+              if not all(int(before[k])==int(after[k]) for k in ("dev","ino","mode")): return False
+              if ("native" in before)!=("native" in after): return False
+              return before.get("native")==after.get("native")''')
+          rf('_identity_matches', '''def _identity_matches(path: Path, expected: dict | None) -> bool:
+              if not _identity_shape_valid(expected): return False
+              try: observed=_path_identity(path)
+              except WorkspaceProvisionError: return False
+              if observed["resolved"]!=expected["resolved"]: return False
+              for k in ("dev","ino","ctimeNs","mode"):
+                  if int(observed[k])!=int(expected[k]): return False
+              return observed.get("native")==expected.get("native")''')
+          rf('_rmtree_windows_safe', '''def _rmtree_windows_safe(path: Path, expected_identity: dict | None = None) -> None:
+              if os.name!="nt":
+                  shutil.rmtree(path); return
+              if not _identity_shape_valid(expected_identity) or "native" not in expected_identity:
+                  raise WorkspaceProvisionError("WORKSPACE_CLEANUP_DENIED","native Windows generation identity required for cleanup")
+              try:
+                  from .windows_cleanup import delete_tree_exact
+                  delete_tree_exact(path, expected_identity["native"])
+              except WorkspaceProvisionError: raise
+              except Exception as ex:
+                  raise WorkspaceProvisionError("WORKSPACE_CLEANUP_DENIED",f"handle-bound Windows cleanup failed: {ex}") from ex''')
+          rf('cleanup_workspace', '''def cleanup_workspace(workspace: str | os.PathLike[str], workspace_root: str | os.PathLike[str]) -> bool:
+              root,candidate=_candidate_under_root(workspace,workspace_root)
+              found=_record_for_target(root,candidate)
+              if found is not None: raise WorkspaceProvisionError("WORKSPACE_QUARANTINED","quarantined workspaces require generation-bound reconciliation",generation_id=found[1]["generation"])
+              if not candidate.exists() and not candidate.is_symlink() and not _is_reparse(candidate): return False
+              _assert_no_link_components(candidate,"WORKSPACE_CLEANUP_DENIED");_assert_plain_existing_path(candidate,"WORKSPACE_CLEANUP_DENIED")
+              expected=_path_identity(candidate,"WORKSPACE_CLEANUP_DENIED")
+              _rmtree_windows_safe(candidate,expected)
+              if candidate.exists() or candidate.is_symlink() or _is_reparse(candidate): raise WorkspaceProvisionError("WORKSPACE_CLEANUP_INCOMPLETE","workspace still exists after cleanup")
+              return True''')
+          if s.count('_rmtree_windows_safe(existing)')!=1: raise SystemExit('reconcile cleanup call mismatch')
+          s=s.replace('_rmtree_windows_safe(existing)','_rmtree_windows_safe(existing, record.get("identity"))')
+          if s.count('_rmtree_windows_safe(candidate)')!=1: raise SystemExit('failure cleanup call mismatch')
+          s=s.replace('_rmtree_windows_safe(candidate)','_rmtree_windows_safe(candidate, record.get("identity"))')
+          p.write_text(s)
+
+          t=Path('forgeboss/control/test_workspace.py');x=t.read_text()
+          x=x.replace('import shutil\n','import os\nimport shutil\nimport stat\n',1)
+          old='''        real = m.shutil.rmtree\n        def fail(path,*a,**kw):\n            if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")\n            return real(path,*a,**kw)\n        with mock.patch.object(m,"verify_workspace",side_effect=WorkspaceProvisionError("INJECTED","forced failure")), \\\n             mock.patch.object(m.shutil,"rmtree",side_effect=fail):'''
+          new='''        real = m._rmtree_windows_safe\n        def fail(path,*a,**kw):\n            if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")\n            return real(path,*a,**kw)\n        with mock.patch.object(m,"verify_workspace",side_effect=WorkspaceProvisionError("INJECTED","forced failure")), \\\n             mock.patch.object(m,"_rmtree_windows_safe",side_effect=fail):'''
+          if old not in x: raise SystemExit('quarantine fixture not found')
+          x=x.replace(old,new,1)
+          x=x.replace('m._rmtree_windows_safe(survivor); survivor.mkdir()','m._rmtree_windows_safe(survivor,m._path_identity(survivor)); survivor.mkdir()',1)
+          x=x.replace('mock.patch.object(m.shutil,"rmtree") as rm','mock.patch.object(m,"_rmtree_windows_safe") as rm',1)
+          extra='''\n    @unittest.skipUnless(os.name=="nt","native Windows cleanup proof")\n    def test_windows_handle_cleanup_removes_readonly_git_workspace(self):\n        target=self.workspaces/"worker-win"\n        provision_workspace(self.source,target,self.workspaces,self.base_sha,"task/win",self.git)\n        marker=target/"readonly-marker.txt";marker.write_text("locked\\n",encoding="utf-8");os.chmod(marker,stat.S_IREAD)\n        self.assertTrue(cleanup_workspace(target,self.workspaces));self.assertFalse(target.exists())\n\n    @unittest.skipUnless(os.name=="nt","native Windows reparse proof")\n    def test_windows_cleanup_rejects_child_reparse_swap_before_mutation(self):\n        from forgeboss.control import workspace as m\n        from forgeboss.control import windows_cleanup as wc\n        target=self.workspaces/"victim-root";target.mkdir();child=target/"victim";child.mkdir();(child/"inside.txt").write_text("inside")\n        outside=self.base/"outside-junction-target";outside.mkdir();keep=outside/"keep.txt";keep.write_text("keep")\n        real=wc._open_relative;swapped={"done":False}\n        def swap(parent,name):\n            if name=="victim" and not swapped["done"]:\n                shutil.rmtree(child)\n                cp=subprocess.run(["cmd.exe","/d","/c",f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)\n                if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)\n                swapped["done"]=True\n            return real(parent,name)\n        try:\n            with mock.patch.object(wc,"_open_relative",side_effect=swap):\n                with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)\n            self.assertTrue(keep.exists());self.assertTrue(swapped["done"])\n        finally:\n            if child.exists() and m._is_reparse(child): os.rmdir(child)\n'''
+          marker='\n\nif __name__ == "__main__": unittest.main()\n'
+          if marker not in x: raise SystemExit('test footer not found')
+          x=x.replace(marker,extra+marker,1);t.write_text(x)
+          PY
+          python -m py_compile forgeboss/control/workspace.py forgeboss/control/windows_cleanup.py forgeboss/control/test_workspace.py
+      - name: Publish patched temp branch
+        shell: bash
+        run: |
+          git config user.name 'Worker C Workspace V6'
+          git config user.email 'worker-c@users.noreply.github.com'
+          git checkout -b forgeboss/worker-c-workspace-v6-patched-temp
+          git add forgeboss/control/workspace.py forgeboss/control/test_workspace.py forgeboss/control/windows_cleanup.py
+          git commit -m 'Workspace V6: handle-bound Windows cleanup'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-workspace-v6-patched-temp
