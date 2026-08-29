@@ -118,6 +118,10 @@ def _windows_trusted_roots(registry=None):
         return roots
     except SecurityError:raise
     except Exception as e:raise SecurityError("trusted Git-for-Windows HKLM install root unavailable") from e
+def _windows_allow_ace_sid_offset(ace_type:int,object_flags:int=0):
+    if ace_type in (0,9):return 8
+    if ace_type in (5,11):return 12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)
+    return None
 def _windows_acl_facts(path:Path):
     try:
         import ctypes
@@ -154,14 +158,10 @@ def _windows_acl_facts(path:Path):
             ace=V()
             if not adv.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:raise SecurityError("unable to read Windows DACL ACE: "+str(path))
             header=ctypes.cast(ace,ctypes.POINTER(ACE_HEADER)).contents
-            ace_type=int(header.AceType)
-            if ace_type not in (0,5):continue
-            base=int(ace.value)
-            if ace_type==0:
-                sid_addr=base+8
-            else:
-                flags=ctypes.c_uint32.from_address(base+8).value
-                sid_addr=base+12+(16 if flags & 0x1 else 0)+(16 if flags & 0x2 else 0)
+            ace_type=int(header.AceType);base=int(ace.value);object_flags=ctypes.c_uint32.from_address(base+8).value if ace_type in (5,11) else 0
+            offset=_windows_allow_ace_sid_offset(ace_type,object_flags)
+            if offset is None:continue
+            sid_addr=base+offset
             sid=V(sid_addr);text=sid_text(sid)
             trustee_sids[text.casefold()]=(text,sid_addr)
         rights={}

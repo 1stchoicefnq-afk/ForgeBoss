@@ -456,6 +456,13 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             def OpenKey(self,*_):raise OSError("missing")
         with self.assertRaisesRegex(guard.SecurityError,"HKLM install root unavailable"):guard._windows_trusted_roots(Registry())
 
+    def test_windows_callback_allow_ace_offsets_are_recognized(self):
+        self.assertEqual(guard._windows_allow_ace_sid_offset(9),8)
+        self.assertEqual(guard._windows_allow_ace_sid_offset(11),12)
+        self.assertEqual(guard._windows_allow_ace_sid_offset(11,0x1),28)
+        self.assertEqual(guard._windows_allow_ace_sid_offset(11,0x3),44)
+        self.assertIsNone(guard._windows_allow_ace_sid_offset(1))
+
     def test_windows_acl_requires_trusted_owner_and_rejects_any_untrusted_writer(self):
         p=Path("/synthetic/git.exe")
         safe={"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}
