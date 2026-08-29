@@ -2,21 +2,24 @@
 const p=require('path').posix;const crypto=require('crypto');const {git}=require('./mirror');
 const lines=s=>String(s||'').split(/\r?\n/).filter(Boolean);
 const digest=v=>crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const WIN_DEVICE=/^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$/i;
 let pendingScopeAuthority=null;
 function canonicalRepoPath(value){
  const raw=String(value??'');
- if(!raw||raw!==raw.trim()||raw.includes('\\')||raw.startsWith('/')||raw.startsWith('//')||/^[A-Za-z]:/.test(raw)||/[\x00-\x1f\x7f]/.test(raw))throw new Error(`Unsafe controller scope path: ${raw}`);
+ if(!raw||raw!==raw.trim()||raw.includes('\\')||raw.startsWith('/')||raw.startsWith('//')||/^[A-Za-z]:/.test(raw)||/[\x00-\x1f\x7f]/.test(raw)||/[<>:"|?*~]/.test(raw))throw new Error(`Unsafe controller scope path: ${raw}`);
  const parts=raw.split('/');
- if(parts.some(x=>!x||x==='.'||x==='..'||x!==x.replace(/[ .]+$/,'')))throw new Error(`Unsafe controller scope path: ${raw}`);
+ if(parts.some(x=>!x||x==='.'||x==='..'||x!==x.replace(/[ .]+$/,'')||WIN_DEVICE.test(x)))throw new Error(`Unsafe controller scope path: ${raw}`);
  const norm=p.normalize(raw);
  if(norm!==raw||norm.startsWith('../')||norm==='..')throw new Error(`Non-canonical controller scope path: ${raw}`);
  return norm;
 }
-function consumeScopeAuthority(){
- if(!pendingScopeAuthority)throw new Error('Controller scope authority is unavailable or already consumed');
- const out=pendingScopeAuthority;pendingScopeAuthority=null;return out;
+function assertNoCaseCollisions(values,label='scope'){
+ const seen=new Map();
+ for(const input of values){const v=canonicalRepoPath(input),k=v.toLocaleLowerCase('en-US');if(seen.has(k)&&seen.get(k)!==v)throw new Error(`${label} contains Windows-case-colliding paths: ${seen.get(k)} <> ${v}`);seen.set(k,v);}
+ return values;
 }
-function inventory(mirror,sha){return new Set(lines(git(['--git-dir',mirror,'ls-tree','-r','--name-only',sha])).map(canonicalRepoPath));}
+function consumeScopeAuthority(){if(!pendingScopeAuthority)throw new Error('Controller scope authority is unavailable or already consumed');const out=pendingScopeAuthority;pendingScopeAuthority=null;return out;}
+function inventory(mirror,sha){const xs=lines(git(['--git-dir',mirror,'ls-tree','-r','--name-only',sha])).map(canonicalRepoPath);assertNoCaseCollisions(xs,'repository inventory');return new Set(xs);}
 function show(mirror,sha,file){try{return git(['--git-dir',mirror,'show',`${sha}:${file}`],undefined,30000);}catch{return '';}}
 function grepFiles(mirror,sha,pattern){try{return lines(git(['--git-dir',mirror,'grep','-l','-I','-E',pattern,sha,'--','src','tests'],undefined,60000)).map(canonicalRepoPath);}catch(e){if(e.git_exit===1)return [];return [];}}
 function importsOf(content){const out=[];for(const r of [/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,/\bfrom\s+['"]([^'"]+)['"]/g,/\bimport\s*\(\s*['"]([^'"]+)['"]/g]){let m;while((m=r.exec(content)))out.push(m[1]);}return [...new Set(out)];}
@@ -38,10 +41,12 @@ function buildScope(cfg,c,mi,target){
  for(const f of [...reasons.keys()]){const stem=p.basename(f).replace(/\.(integration\.)?test\.js$/,'').replace(/\.js$/,'');if(stem.length<5)continue;for(const ref of grepFiles(mirror,sha,stem))add(ref,`references:${stem}`);}
  let source=[...reasons.keys()].sort();
  if(source.length>(cfg.scope.max_source_files||48))source=source.map(f=>({f,score:(reasons.get(f)?.size||0)+(f.startsWith('src/')?2:1)+(diff.includes(f)?5:0)+(reasons.get(f)?.has('regression-seed')?20:0)+(reasons.get(f)?.has('configured-seed')?10:0)})).sort((a,b)=>b.score-a.score||a.f.localeCompare(b.f)).slice(0,cfg.scope.max_source_files||48).map(x=>x.f).sort();
+ assertNoCaseCollisions(source,'source_paths');
  const writableCandidates=source.filter(f=>(f.startsWith('src/')&&/\.(js|mjs|cjs)$/.test(f))||(f.startsWith('tests/')&&/\.test\.js$/.test(f)));
  const mustWrite=new Set((cfg.scope.must_write_paths||[]).map(canonicalRepoPath).filter(f=>writableCandidates.includes(f)));
  function writeScore(f){const rs=[...(reasons.get(f)||[])];let score=0;if(mustWrite.has(f))score+=1000;if(rs.includes('repair-pr-diff'))score+=250;if(rs.includes('configured-seed'))score+=200;if(rs.includes('regression-seed'))score+=240;for(const r of rs){if(/^grep:(withTransaction|SERIALIZABLE|40001|40P01|retry|statement_timeout|lock_timeout|idle_in_transaction_session_timeout|transaction timeout|timeout)$/i.test(r))score+=180;if(/^grep:(invitation|Invitation|businessInvitations|membership|Membership|businessMemberships|acceptInvitation|business invitation|invitation membership|recordQualification)$/i.test(r))score+=140;if(/^grep:(INTAKE_CONVERSION_CONFLICT|Trade pack fencing)$/i.test(r))score+=100;if(r.startsWith('imported-by:'))score+=70;if(r.startsWith('references:'))score+=50;}if(f.startsWith('src/'))score+=20;if(f.startsWith('tests/'))score+=10;if(/src\/persistence\/(postgres|postgresApplicationServices|platformStore)\.js$/.test(f))score+=300;if(f==='src/travis/conversation.js')score+=300;if(f==='src/intake/postgresApplication.js')score+=250;return score;}
  let write=writableCandidates.map(f=>({f,score:writeScore(f)})).sort((a,b)=>b.score-a.score||a.f.localeCompare(b.f)).slice(0,cfg.scope.max_write_files||24).map(x=>x.f).sort();
+ assertNoCaseCollisions(write,'write_allowlist');
  const droppedMustWrite=[...mustWrite].filter(f=>!write.includes(f));if(droppedMustWrite.length)throw new Error(`Write allowlist cap dropped required repair paths: ${droppedMustWrite.join(', ')}`);
  const why={};for(const f of source)why[f]=[...(reasons.get(f)||[])].sort();
  const m={schema:1,generated_at:new Date().toISOString(),repair_pr:target.repair_pr,root_pr:c.root_pr.number,target_mode:target.mode,exact_head:target.target_sha,exact_base:target.base_sha,source_paths:source.map(canonicalRepoPath),write_allowlist:write.map(canonicalRepoPath),reasons:why,write_selection:{strategy:'relevance-score-v2',must_write_paths:[...mustWrite].sort(),ranked_candidates:writableCandidates.map(f=>({path:f,score:writeScore(f)})).sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path))},limits:{max_source_files:cfg.scope.max_source_files,max_write_files:cfg.scope.max_write_files,max_dependency_depth:cfg.scope.max_dependency_depth}};
@@ -49,4 +54,4 @@ function buildScope(cfg,c,mi,target){
  pendingScopeAuthority=Object.freeze({schema:1,kind:'controller-scope',artifact_id:crypto.randomUUID(),scope_sha256:m.scope_sha256,exact_head:m.exact_head,exact_base:m.exact_base,root_pr:m.root_pr,repair_pr:m.repair_pr,control_invocation_id:controlArtifact.invocation_id,control_sha256:controlArtifact.sha256,control_root_node_id:controlArtifact.root_node_id,control_repair_node_id:controlArtifact.repair_node_id});
  return m;
 }
-module.exports={buildScope,importsOf,resolveImport,canonicalRepoPath,consumeScopeAuthority,_test:{digest}};
+module.exports={buildScope,importsOf,resolveImport,canonicalRepoPath,consumeScopeAuthority,_test:{digest,assertNoCaseCollisions,WIN_DEVICE}};
