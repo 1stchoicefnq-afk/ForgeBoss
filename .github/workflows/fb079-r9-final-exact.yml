@@ -1,0 +1,83 @@
+name: FB-079 R9 final exact proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r9-final-exact
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact R9 forgeboss tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          test "$(git rev-parse 7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run Linux metadata and paid-start suites
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact R9 forgeboss tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          test "$(git rev-parse 7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run Windows metadata and paid-start suites
+        shell: pwsh
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prove native stock Git and ancestor trust
+        shell: pwsh
+        run: |
+          @'
+          import shutil, subprocess, tempfile
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+
+          git=g._resolve_git_executable()
+          print('R9_FINAL_GIT',git)
+          print('R9_FINAL_GIT_VERSION',subprocess.run([str(git),'--version'],capture_output=True,text=True,check=True).stdout.strip())
+          roots=g._windows_trusted_roots()
+          install=max([r for r in roots if g._windows_within(git,r)],key=lambda p:len(str(p)))
+          print('R9_FINAL_INSTALL_ROOT',install)
+          g._assert_windows_git_trust(git)
+          program_files=install.parent
+          g._assert_windows_acl_trust(program_files)
+          volume=Path(install.anchor)
+          g._assert_windows_parent_replacement_trust(volume)
+          print('R9_FINAL_PROGRAM_FILES_TRUST_PASS',program_files)
+          print('R9_FINAL_VOLUME_REPLACEMENT_TRUST_PASS',volume)
+
+          with tempfile.TemporaryDirectory() as td:
+              work=Path(td)
+              subprocess.run([str(git),'init','-q'],cwd=work,check=True)
+              subprocess.run([str(git),'config','user.email','r9@example.invalid'],cwd=work,check=True)
+              subprocess.run([str(git),'config','user.name','R9'],cwd=work,check=True)
+              (work/'allowed.txt').write_text('ok\n',encoding='utf-8')
+              subprocess.run([str(git),'add','allowed.txt'],cwd=work,check=True)
+              subprocess.run([str(git),'commit','-qm','base'],cwd=work,check=True)
+              snap=g.git_metadata_snapshot(work)
+              assert 'git:executable' in snap and 'git:effective-config' in snap
+              print('R9_FINAL_WINDOWS_STOCK_GIT_ANCESTOR_PASS',len(snap))
+          '@ | python -
