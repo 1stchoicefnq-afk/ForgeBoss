@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -38,12 +40,12 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
 
     def _make_quarantine(self, target):
         from forgeboss.control import workspace as m
-        real = m.shutil.rmtree
+        real = m._rmtree_windows_safe
         def fail(path,*a,**kw):
             if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")
             return real(path,*a,**kw)
         with mock.patch.object(m,"verify_workspace",side_effect=WorkspaceProvisionError("INJECTED","forced failure")), \
-             mock.patch.object(m.shutil,"rmtree",side_effect=fail):
+             mock.patch.object(m,"_rmtree_windows_safe",side_effect=fail):
             with self.assertRaises(WorkspaceProvisionError) as cm:
                 provision_workspace(self.source,target,self.workspaces,self.base_sha,"task/one",self.git)
         return cm.exception, real
@@ -118,7 +120,7 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,"0"*32)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH")
         s=quarantine_status(target,self.workspaces); survivor=target if target.exists() else Path(s["stage"]); from forgeboss.control import workspace as m
-        m._rmtree_windows_safe(survivor); survivor.mkdir(); (survivor/"newer").write_text("x")
+        m._rmtree_windows_safe(survivor,m._path_identity(survivor)); survivor.mkdir(); (survivor/"newer").write_text("x")
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,gen)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH"); self.assertTrue((survivor/"newer").exists())
 
@@ -131,7 +133,7 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         def observed(path,*a,**kw):
             if Path(path)==survivor: return dict(forged)
             return real_identity(path,*a,**kw)
-        with mock.patch.object(m,"_path_identity",side_effect=observed), mock.patch.object(m.shutil,"rmtree") as rm:
+        with mock.patch.object(m,"_path_identity",side_effect=observed), mock.patch.object(m,"_rmtree_windows_safe") as rm:
             with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,gen)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH"); rm.assert_not_called()
 
@@ -153,6 +155,34 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         except (OSError,NotImplementedError): self.skipTest("symlink unavailable")
         with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(link,self.workspaces)
         self.assertTrue(target.exists())
+
+    @unittest.skipUnless(os.name=="nt","native Windows cleanup proof")
+    def test_windows_handle_cleanup_removes_readonly_git_workspace(self):
+        target=self.workspaces/"worker-win"
+        provision_workspace(self.source,target,self.workspaces,self.base_sha,"task/win",self.git)
+        marker=target/"readonly-marker.txt";marker.write_text("locked\n",encoding="utf-8");os.chmod(marker,stat.S_IREAD)
+        self.assertTrue(cleanup_workspace(target,self.workspaces));self.assertFalse(target.exists())
+
+    @unittest.skipUnless(os.name=="nt","native Windows reparse proof")
+    def test_windows_cleanup_rejects_child_reparse_swap_before_mutation(self):
+        from forgeboss.control import workspace as m
+        from forgeboss.control import windows_cleanup as wc
+        target=self.workspaces/"victim-root";target.mkdir();child=target/"victim";child.mkdir();(child/"inside.txt").write_text("inside")
+        outside=self.base/"outside-junction-target";outside.mkdir();keep=outside/"keep.txt";keep.write_text("keep")
+        real=wc._open_relative;swapped={"done":False}
+        def swap(parent,name):
+            if name=="victim" and not swapped["done"]:
+                shutil.rmtree(child)
+                cp=subprocess.run(["cmd.exe","/d","/c",f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)
+                if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)
+                swapped["done"]=True
+            return real(parent,name)
+        try:
+            with mock.patch.object(wc,"_open_relative",side_effect=swap):
+                with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)
+            self.assertTrue(keep.exists());self.assertTrue(swapped["done"])
+        finally:
+            if child.exists() and m._is_reparse(child): os.rmdir(child)
 
 
 if __name__ == "__main__": unittest.main()

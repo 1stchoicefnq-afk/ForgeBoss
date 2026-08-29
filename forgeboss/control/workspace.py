@@ -197,59 +197,52 @@ def _path_identity(path: Path, code: str = "WORKSPACE_IDENTITY_INVALID") -> dict
     _assert_no_link_components(path, code)
     _assert_plain_existing_path(path, code)
     try:
-        st = path.stat()
-        resolved = path.resolve(strict=True)
+        st = path.stat(); resolved = path.resolve(strict=True)
     except OSError as ex:
         raise WorkspaceProvisionError(code, f"cannot inspect workspace identity: {path}") from ex
-    if not stat.S_ISDIR(st.st_mode):
-        raise WorkspaceProvisionError(code, "workspace generation must be a directory")
-    ino = int(getattr(st, "st_ino", 0))
-    ctime_ns = int(getattr(st, "st_ctime_ns", int(st.st_ctime * 1_000_000_000)))
-    dev = int(getattr(st, "st_dev", -1))
-    if ino <= 0 or ctime_ns <= 0 or dev < 0:
-        raise WorkspaceProvisionError(code, "stable workspace file identity unavailable")
-    return {
-        "resolved": str(resolved),
-        "dev": dev,
-        "ino": ino,
-        "ctimeNs": ctime_ns,
-        "mode": int(st.st_mode),
-    }
-
+    if not stat.S_ISDIR(st.st_mode): raise WorkspaceProvisionError(code, "workspace generation must be a directory")
+    ino=int(getattr(st,"st_ino",0)); ctime_ns=int(getattr(st,"st_ctime_ns",int(st.st_ctime*1_000_000_000))); dev=int(getattr(st,"st_dev",-1))
+    if ino<=0 or ctime_ns<=0 or dev<0: raise WorkspaceProvisionError(code, "stable workspace file identity unavailable")
+    out={"resolved":str(resolved),"dev":dev,"ino":ino,"ctimeNs":ctime_ns,"mode":int(st.st_mode)}
+    if os.name=="nt":
+        try:
+            from .windows_cleanup import native_identity
+            out["native"]=native_identity(path)
+        except Exception as ex:
+            raise WorkspaceProvisionError(code, f"cannot bind native Windows workspace identity: {path}: {ex}") from ex
+    return out
 
 def _identity_shape_valid(identity: dict | None) -> bool:
-    if not isinstance(identity, dict):
-        return False
-    required = {"resolved", "dev", "ino", "ctimeNs", "mode"}
-    if set(identity) != required:
-        return False
-    if not isinstance(identity["resolved"], str) or not identity["resolved"]:
-        return False
+    if not isinstance(identity,dict): return False
+    base={"resolved","dev","ino","ctimeNs","mode"}; keys=set(identity)
+    if keys not in (base,base|{"native"}): return False
+    if not isinstance(identity["resolved"],str) or not identity["resolved"]: return False
     try:
-        return int(identity["dev"]) >= 0 and int(identity["ino"]) > 0 and int(identity["ctimeNs"]) > 0 and int(identity["mode"]) > 0
-    except (TypeError, ValueError):
-        return False
-
+        if not (int(identity["dev"])>=0 and int(identity["ino"])>0 and int(identity["ctimeNs"])>0 and int(identity["mode"])>0): return False
+    except (TypeError,ValueError): return False
+    if "native" in identity:
+        n=identity["native"]
+        if not isinstance(n,dict) or set(n)!={"volumeSerial","fileId"}: return False
+        try: volume=int(n["volumeSerial"])
+        except (TypeError,ValueError): return False
+        fid=str(n["fileId"]).lower()
+        if volume<0 or len(fid)!=32 or any(ch not in "0123456789abcdef" for ch in fid): return False
+    return True
 
 def _same_live_object(before: dict, after: dict) -> bool:
-    """Continuity check during a live rename; ctime/resolved may legitimately change."""
-    if not (_identity_shape_valid(before) and _identity_shape_valid(after)):
-        return False
-    return all(int(before[k]) == int(after[k]) for k in ("dev", "ino", "mode"))
-
+    if not (_identity_shape_valid(before) and _identity_shape_valid(after)): return False
+    if not all(int(before[k])==int(after[k]) for k in ("dev","ino","mode")): return False
+    if ("native" in before)!=("native" in after): return False
+    return before.get("native")==after.get("native")
 
 def _identity_matches(path: Path, expected: dict | None) -> bool:
-    """Full persisted generation check; every stabilized discriminator must match."""
-    if not _identity_shape_valid(expected):
-        return False
-    try:
-        observed = _path_identity(path)
-    except WorkspaceProvisionError:
-        return False
-    if observed["resolved"] != expected["resolved"]:
-        return False
-    return all(int(observed[k]) == int(expected[k]) for k in ("dev", "ino", "ctimeNs", "mode"))
-
+    if not _identity_shape_valid(expected): return False
+    try: observed=_path_identity(path)
+    except WorkspaceProvisionError: return False
+    if observed["resolved"]!=expected["resolved"]: return False
+    for k in ("dev","ino","ctimeNs","mode"):
+        if int(observed[k])!=int(expected[k]): return False
+    return observed.get("native")==expected.get("native")
 
 def _record_for_target(root: Path, target: Path) -> tuple[Path, dict] | None:
     path = _record_path(root, target)
@@ -309,9 +302,17 @@ def discover_quarantined_workspaces(workspace_root: str | os.PathLike[str]) -> l
     return records
 
 
-def _rmtree_windows_safe(path: Path) -> None:
-    shutil.rmtree(path)
-
+def _rmtree_windows_safe(path: Path, expected_identity: dict | None = None) -> None:
+    if os.name!="nt":
+        shutil.rmtree(path); return
+    if not _identity_shape_valid(expected_identity) or "native" not in expected_identity:
+        raise WorkspaceProvisionError("WORKSPACE_CLEANUP_DENIED","native Windows generation identity required for cleanup")
+    try:
+        from .windows_cleanup import delete_tree_exact
+        delete_tree_exact(path, expected_identity["native"])
+    except WorkspaceProvisionError: raise
+    except Exception as ex:
+        raise WorkspaceProvisionError("WORKSPACE_CLEANUP_DENIED",f"handle-bound Windows cleanup failed: {ex}") from ex
 
 def _remove_record_after_absence(path: Path, target: Path, stage: Path) -> None:
     if target.exists() or target.is_symlink() or _is_reparse(target):
@@ -344,7 +345,7 @@ def reconcile_quarantined_workspace(workspace: str | os.PathLike[str], workspace
                                           "surviving workspace no longer matches quarantined generation identity",
                                           generation_id=generation_id)
         try:
-            _rmtree_windows_safe(existing)
+            _rmtree_windows_safe(existing, record.get("identity"))
         except Exception as ex:
             raise WorkspaceProvisionError("WORKSPACE_CLEANUP_FAILED", f"quarantined workspace cleanup failed: {ex}",
                                           cleanup_code=type(ex).__name__.upper(), generation_id=generation_id) from ex
@@ -503,18 +504,15 @@ def verify_workspace(workspace: str | os.PathLike[str], workspace_root: str | os
 
 
 def cleanup_workspace(workspace: str | os.PathLike[str], workspace_root: str | os.PathLike[str]) -> bool:
-    root, candidate = _candidate_under_root(workspace, workspace_root)
-    found = _record_for_target(root, candidate)
-    if found is not None:
-        raise WorkspaceProvisionError("WORKSPACE_QUARANTINED", "quarantined workspaces require generation-bound reconciliation",
-                                      generation_id=found[1]["generation"])
+    root,candidate=_candidate_under_root(workspace,workspace_root)
+    found=_record_for_target(root,candidate)
+    if found is not None: raise WorkspaceProvisionError("WORKSPACE_QUARANTINED","quarantined workspaces require generation-bound reconciliation",generation_id=found[1]["generation"])
     if not candidate.exists() and not candidate.is_symlink() and not _is_reparse(candidate): return False
-    _assert_no_link_components(candidate, "WORKSPACE_CLEANUP_DENIED"); _assert_plain_existing_path(candidate, "WORKSPACE_CLEANUP_DENIED")
-    _rmtree_windows_safe(candidate)
-    if candidate.exists() or candidate.is_symlink() or _is_reparse(candidate):
-        raise WorkspaceProvisionError("WORKSPACE_CLEANUP_INCOMPLETE", "workspace still exists after cleanup")
+    _assert_no_link_components(candidate,"WORKSPACE_CLEANUP_DENIED");_assert_plain_existing_path(candidate,"WORKSPACE_CLEANUP_DENIED")
+    expected=_path_identity(candidate,"WORKSPACE_CLEANUP_DENIED")
+    _rmtree_windows_safe(candidate,expected)
+    if candidate.exists() or candidate.is_symlink() or _is_reparse(candidate): raise WorkspaceProvisionError("WORKSPACE_CLEANUP_INCOMPLETE","workspace still exists after cleanup")
     return True
-
 
 def _exception_code(ex: BaseException) -> str:
     return ex.code if isinstance(ex, WorkspaceProvisionError) else type(ex).__name__.upper()
@@ -532,7 +530,7 @@ def _provision_failure_cleanup(root: Path, target: Path, stage: Path, record_pat
                 _write_record(record_path, record)
             elif not _identity_matches(candidate, record.get("identity")):
                 raise WorkspaceProvisionError("WORKSPACE_GENERATION_MISMATCH", "failed generation identity changed before cleanup")
-            _rmtree_windows_safe(candidate)
+            _rmtree_windows_safe(candidate, record.get("identity"))
         _remove_record_after_absence(record_path, target, stage)
     except BaseException as ex:
         cleanup_error = ex
