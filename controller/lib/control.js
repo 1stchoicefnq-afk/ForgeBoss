@@ -8,6 +8,12 @@ const CONTROL_MARKER='FORGEBOSS_CONTROL_RESULT_B64=';
 const SHA=/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const HEX64=/^[0-9a-f]{64}$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REPAIR_RUNTIME_ENV_KEYS=[
+ 'SITEBOSS_ALLOW_PAID_REPAIR','SITEBOSS_ALLOW_DRAFT_PUBLISH','SITEBOSS_TEST_IMAGE','SITEBOSS_REPAIR_PROVIDER','SITEBOSS_RAT_REVIEW_PROVIDER','SITEBOSS_REVIEW_PROVIDER',
+ 'SITEBOSS_OPENAI_MODEL','SITEBOSS_ANTHROPIC_MODEL','SITEBOSS_FORGEBOSS_DEBUG_FUNNEL','SITEBOSS_FORGEBOSS_RETAINED_FOUNDATION',
+ 'SITEBOSS_OPENAI_INPUT_USD_PER_M','SITEBOSS_OPENAI_CACHED_INPUT_USD_PER_M','SITEBOSS_OPENAI_OUTPUT_USD_PER_M','SITEBOSS_OPENAI_REASONING_EFFORT','SITEBOSS_OPENAI_MAX_OUTPUT_TOKENS',
+ 'OPENAI_API_KEY','ANTHROPIC_API_KEY','DOCKER_HOST','DOCKER_CONTEXT','DOCKER_CONFIG'
+];
 function sha256(buf){return crypto.createHash('sha256').update(buf).digest('hex');}
 function fail(msg,code='CONTROL_BINDING_MISMATCH'){const e=new Error(msg);e.code=code;throw e;}
 function str(v,name){if(typeof v!=='string'||!v||/[\x00-\x1f\x7f]/.test(v))fail(`${name} invalid`);return v;}
@@ -78,9 +84,11 @@ function minimalPowerShellEnv(exe,boundArgsB64){
  const keys=process.platform==='win32'
   ? ['SystemRoot','WINDIR','ComSpec','TEMP','TMP','ProgramData','USERPROFILE','LOCALAPPDATA','APPDATA','PSModulePath']
   : ['HOME','TMPDIR','LANG','LC_ALL','PSModulePath'];
+ if(boundArgsB64!==undefined)keys.push(...REPAIR_RUNTIME_ENV_KEYS);
  const env={};
  for(const k of keys){const v=process.env[k];if(typeof v==='string'&&v)env[k]=v;}
- env.PATH=path.dirname(path.resolve(exe));
+ const inherited=process.env.PATH||process.env.Path||process.env.path||'';
+ env.PATH=path.dirname(path.resolve(exe))+(inherited?path.delimiter+inherited:'');
  if(boundArgsB64!==undefined){if(typeof boundArgsB64!=='string'||!boundArgsB64)fail('bound PowerShell argument record invalid','POWERSHELL_ENV_INVALID');env.FORGEBOSS_BOUND_ARGS_B64=boundArgsB64;}
  return env;
 }
@@ -111,4 +119,4 @@ function selectRepairTarget(control){
  if(control?.binding?.status==='NO_CURRENT_EXACT_REPAIR_CHILD'&&control.root_pr)return{mode:'parent-head-local',root_pr:control.root_pr.number,repair_pr:null,target_sha:control.root_pr.head_sha,base_sha:control.root_pr.base_sha,target_ref:control.root_pr.head_ref,base_ref:control.root_pr.base_ref};
  throw new Error('Unable to derive repair target from control state');
 }
-module.exports={readControl,selectRepairTarget,trustedPowerShell,minimalPowerShellEnv,_test:{parseControlResult,validateControlResult,sha256,CONTROL_MARKER,decodeCanonicalBase64,assertNoLinksAbsolute,readBoundArtifact,trustedPowerShell,minimalPowerShellEnv}};
+module.exports={readControl,selectRepairTarget,trustedPowerShell,minimalPowerShellEnv,_test:{parseControlResult,validateControlResult,sha256,CONTROL_MARKER,decodeCanonicalBase64,assertNoLinksAbsolute,readBoundArtifact,trustedPowerShell,minimalPowerShellEnv,REPAIR_RUNTIME_ENV_KEYS}};
