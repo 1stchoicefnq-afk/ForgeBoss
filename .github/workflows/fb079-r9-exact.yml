@@ -1,0 +1,48 @@
+name: FB079 R9 exact proof
+on:
+  push:
+    branches: [forgeboss/controller-test-fb079-r9-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          test "$(git rev-parse 7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact candidate source Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'candidate not ancestor' }
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source changed' }
+          $a=(git rev-parse '7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Metadata suite
+        run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+      - name: Paid-start suite
+        run: python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+      - name: Native stock Git snapshot
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -c "from pathlib import Path; from forgeboss.security import executor_guard as g; p=g._resolve_git_executable(); g._assert_windows_git_trust(Path(p).resolve()); print('R9_WINDOWS_STOCK_GIT_SNAPSHOT_PASS',p)"
