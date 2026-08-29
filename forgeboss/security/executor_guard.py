@@ -13,6 +13,7 @@ GIT_META_EXACT=("config","config.worktree","HEAD","packed-refs","shallow","info/
 GIT_META_TREES=("refs","hooks")
 EXEC_CONFIG_EXACT={"core.askpass","core.editor","core.gitproxy","core.pager","core.sshcommand","diff.external","gpg.program","interactive.difffilter","sequence.editor"}
 EXEC_CONFIG_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),re.compile(r"^diff\..+\.(?:command|textconv)$",re.I),re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
+TRUSTED_SYSTEM_EXEC_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),re.compile(r"^diff\..+\.textconv$",re.I))
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
@@ -254,6 +255,35 @@ def _config_names(work:Path):
     raw=git(work,"config","--includes","--name-only","--list")
     return {line.strip().casefold() for line in raw.splitlines() if line.strip()}
 def _config_values(work:Path,name:str):return [x.strip() for x in git(work,"config","--includes","--get-all",name).splitlines() if x.strip()]
+def _parse_effective_config(raw:str):
+    if not isinstance(raw,str):raise SecurityError("effective Git config is not text")
+    parts=raw.split("\x00")
+    if parts and parts[-1]=="":parts.pop()
+    if len(parts)%3:raise SecurityError("effective Git config record framing invalid")
+    out=[]
+    for i in range(0,len(parts),3):
+        scope=parts[i].strip().casefold();origin=parts[i+1];record=parts[i+2]
+        name,sep,value=record.partition("\n")
+        name=name.strip().casefold()
+        if not scope or not origin or not name or not sep:raise SecurityError("effective Git config record invalid")
+        out.append({"scope":scope,"origin":origin,"name":name,"value":value})
+    return tuple(out)
+def _entry_values(entries,name):return [e["value"].strip() for e in entries if e["name"]==name and e["value"].strip()]
+def _assert_trusted_system_config_origin(entry):
+    if entry.get("scope")!="system":raise SecurityError("untrusted Git execution config scope: "+str(entry.get("scope") or ""))
+    origin=str(entry.get("origin") or "")
+    if not origin.startswith("file:"):raise SecurityError("untrusted Git execution config origin: "+origin)
+    p=Path(origin[5:])
+    try:
+        if not p.is_absolute():raise SecurityError("untrusted Git execution config origin: "+origin)
+        if is_linklike(p):raise SecurityError("linklike Git execution config origin denied: "+origin)
+        resolved=p.resolve(strict=True)
+        if not resolved.is_file() or is_linklike(resolved):raise SecurityError("Git execution config origin is not a trusted regular file: "+origin)
+        if os.name=="nt":_assert_windows_git_trust(resolved)
+        else:_assert_posix_git_trust(resolved)
+        return resolved
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to trust Git execution config origin: "+origin) from e
 def _resolve_effective_git_path(work:Path,*args):
     raw=git(work,*args)
     if not raw:raise SecurityError("empty Git execution target resolution")
@@ -271,24 +301,33 @@ def _assert_effective_worktree(work:Path):
     except SecurityError:raise
     except Exception as e:raise SecurityError("unable to resolve effective Git worktree identity: "+str(e)) from e
     if effective!=leased:raise SecurityError("effective Git worktree escapes leased workspace: "+str(effective))
-def _assert_safe_execution_config(work:Path,gitdir:Path,common:Path):
-    _assert_effective_worktree(work);names=_config_names(work)
+def _assert_safe_execution_config(work:Path,gitdir:Path,common:Path,entries):
+    _assert_effective_worktree(work);names={e["name"] for e in entries}
     if "core.hookspath" in names:
         target=_resolve_effective_git_path(work,"rev-parse","--git-path","hooks");trusted={(gitdir/"hooks").resolve(strict=False),(common/"hooks").resolve(strict=False)}
         if target not in trusted:raise SecurityError("external Git execution target denied: core.hooksPath -> "+str(target))
     if "core.fsmonitor" in names:
-        vals=[v.casefold() for v in _config_values(work,"core.fsmonitor")]
+        vals=[v.casefold() for v in _entry_values(entries,"core.fsmonitor")]
         if any(v not in ("true","false") for v in vals):raise SecurityError("external Git execution target denied: core.fsmonitor")
     if "protocol.ext.allow" in names:
-        vals=[v.casefold() for v in _config_values(work,"protocol.ext.allow")]
+        vals=[v.casefold() for v in _entry_values(entries,"protocol.ext.allow")]
         if not vals or any(v!="never" for v in vals):raise SecurityError("execution-capable Git transport denied: protocol.ext.allow")
     elif "protocol.allow" in names:
-        vals=[v.casefold() for v in _config_values(work,"protocol.allow")]
+        vals=[v.casefold() for v in _entry_values(entries,"protocol.allow")]
         if not vals or any(v!="never" for v in vals):raise SecurityError("execution-capable Git transport denied: protocol.allow")
-    for name in sorted(names):
-        if name in EXEC_CONFIG_EXACT or any(rx.match(name) for rx in EXEC_CONFIG_PATTERNS):raise SecurityError("execution-capable Git config denied: "+name)
-        if name.startswith("alias.") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
-        if name.startswith("submodule.") and name.endswith(".update") and any(v.lstrip().startswith("!") for v in _config_values(work,name)):raise SecurityError("execution-capable Git config denied: "+name)
+    for entry in sorted(entries,key=lambda e:(e["name"],e["scope"],e["origin"],e["value"])):
+        name=entry["name"];value=entry["value"]
+        if name in EXEC_CONFIG_EXACT:raise SecurityError("execution-capable Git config denied: "+name)
+        matched=any(rx.match(name) for rx in EXEC_CONFIG_PATTERNS)
+        if matched:
+            if any(rx.match(name) for rx in TRUSTED_SYSTEM_EXEC_PATTERNS):
+                if entry.get("scope")!="system":raise SecurityError("execution-capable Git config denied: "+name+" from "+str(entry.get("scope") or ""))
+                try:_assert_trusted_system_config_origin(entry)
+                except SecurityError as e:raise SecurityError("execution-capable Git config denied: "+name+" from "+entry["scope"]+" "+entry["origin"]+" ("+str(e)+")") from e
+                continue
+            raise SecurityError("execution-capable Git config denied: "+name)
+        if name.startswith("alias.") and value.lstrip().startswith("!"):raise SecurityError("execution-capable Git config denied: "+name)
+        if name.startswith("submodule.") and name.endswith(".update") and value.lstrip().startswith("!"):raise SecurityError("execution-capable Git config denied: "+name)
 def git_metadata_snapshot(work):
     work=Path(work).resolve();dotgit=work/".git";out={};git_exe_before=_git_executable_identity()
     if not dotgit.exists() and not is_linklike(dotgit):return out
@@ -298,8 +337,8 @@ def git_metadata_snapshot(work):
     gitdir=_resolve_git_dir(work,"--git-dir");common=_resolve_git_dir(work,"--git-common-dir")
     _snapshot_metadata_root(gitdir,"gitdir/",out)
     if common!=gitdir:_snapshot_metadata_root(common,"common/",out)
-    _assert_safe_execution_config(work,gitdir,common)
-    effective=git(work,"config","--includes","--show-origin","--show-scope","-z","--list")
+    effective=git(work,"config","--includes","--show-origin","--show-scope","-z","--list");entries=_parse_effective_config(effective)
+    _assert_safe_execution_config(work,gitdir,common,entries)
     out["git:effective-config"]={"kind":"semantic","sha256":hashlib.sha256(effective.encode("utf-8")).hexdigest()}
     staged=git(work,"ls-files","--stage","-z")
     out["git:index:stage"]={"kind":"semantic","sha256":hashlib.sha256(staged.encode("utf-8")).hexdigest()}

@@ -512,4 +512,66 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
                 guard._assert_windows_git_trust(exe.resolve())
         finally:td.cleanup()
 
+class ExecutorGuardTrustedConfigOriginTests(unittest.TestCase):
+    def _git(self,work,*args):
+        cp=subprocess.run(["git",*args],cwd=work,capture_output=True,text=True,check=True)
+        return cp.stdout.strip()
+    def _ordinary(self):
+        td=tempfile.TemporaryDirectory();work=Path(td.name)
+        self._git(work,"init","-q");self._git(work,"config","user.email","test@example.com");self._git(work,"config","user.name","Test")
+        (work/"allowed.txt").write_text("before",encoding="utf-8");self._git(work,"add","allowed.txt");self._git(work,"commit","-qm","base")
+        return td,work
+    def _real_guard_git(self,work,*args):return self._git(Path(work),*args)
+    def _system_cfg(self,work):
+        p=work.parent/(work.name+"-system.cfg")
+        p.write_text('[diff "astextplain"]\n\ttextconv = astextplain\n[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n',encoding="utf-8")
+        return p
+
+    def test_effective_config_parser_binds_scope_origin_name_value(self):
+        raw="system\x00file:/trusted/gitconfig\x00filter.lfs.clean\ngit-lfs clean -- %f\x00local\x00file:.git/config\x00user.name\nTest\x00"
+        entries=guard._parse_effective_config(raw)
+        self.assertEqual(entries[0],{"scope":"system","origin":"file:/trusted/gitconfig","name":"filter.lfs.clean","value":"git-lfs clean -- %f"})
+        self.assertEqual(entries[1]["scope"],"local");self.assertEqual(entries[1]["name"],"user.name")
+        with self.assertRaisesRegex(guard.SecurityError,"framing invalid"):guard._parse_effective_config("system\x00file:/x\x00")
+
+    def test_trusted_system_lfs_and_textconv_are_allowed_and_origin_checked(self):
+        td,work=self._ordinary()
+        try:
+            system_cfg=self._system_cfg(work);env={"GIT_CONFIG_SYSTEM":str(system_cfg),"GIT_CONFIG_GLOBAL":os.devnull}
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git),patch.object(guard,"_assert_trusted_system_config_origin",return_value=system_cfg.resolve()) as trust:
+                snap=guard.git_metadata_snapshot(work)
+            self.assertIn("git:effective-config",snap);self.assertEqual(trust.call_count,4)
+            self.assertEqual({c.args[0]["scope"] for c in trust.call_args_list},{"system"})
+        finally:td.cleanup()
+
+    def test_local_override_of_trusted_system_filter_is_denied(self):
+        td,work=self._ordinary()
+        try:
+            system_cfg=self._system_cfg(work);self._git(work,"config","filter.lfs.clean","python evil.py")
+            env={"GIT_CONFIG_SYSTEM":str(system_cfg),"GIT_CONFIG_GLOBAL":os.devnull}
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git),patch.object(guard,"_assert_trusted_system_config_origin",return_value=system_cfg.resolve()):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: filter.lfs.clean from local"):guard.git_metadata_snapshot(work)
+        finally:td.cleanup()
+
+    def test_command_scope_override_is_denied_even_for_stock_lfs_value(self):
+        td,work=self._ordinary()
+        try:
+            env={"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"filter.lfs.clean","GIT_CONFIG_VALUE_0":"git-lfs clean -- %f"}
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: filter.lfs.clean from command"):guard.git_metadata_snapshot(work)
+        finally:td.cleanup()
+
+    def test_trusted_system_exception_does_not_allow_diff_command(self):
+        td,work=self._ordinary()
+        try:
+            entries=({"scope":"system","origin":"file:/trusted/gitconfig","name":"diff.bin.command","value":"external-diff"},)
+            with patch.object(guard,"_assert_effective_worktree"),patch.object(guard,"_assert_trusted_system_config_origin") as trust:
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.bin.command"):guard._assert_safe_execution_config(work,work/".git",work/".git",entries)
+                trust.assert_not_called()
+        finally:td.cleanup()
+
+    def test_trusted_origin_requires_system_file_scope(self):
+        for entry in ({"scope":"global","origin":"file:/trusted/gitconfig"},{"scope":"system","origin":"command line"}):
+            with self.subTest(entry=entry),self.assertRaises(guard.SecurityError):guard._assert_trusted_system_config_origin(entry)
+
 if __name__=="__main__":unittest.main()
