@@ -1,0 +1,27 @@
+name: FB031 final exact proof
+on:
+  push:
+    branches: [forgeboss/controller-test-fb031-final-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen FB031 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 339a8392dcf5bb9ca9d7747d10be0718ddc23533 HEAD
+          git diff --quiet 339a8392dcf5bb9ca9d7747d10be0718ddc23533 HEAD -- forgeboss
+          test "$(git rev-parse 339a8392dcf5bb9ca9d7747d10be0718ddc23533^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Focused persistence boundary
+        run: python -m unittest forgeboss.learning.test_store_policy_boundary -v
+      - name: Broad learning regressions
+        run: python -m unittest discover -s forgeboss/learning -p 'test_*.py' -v
