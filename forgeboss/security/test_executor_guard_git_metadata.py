@@ -58,14 +58,14 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
     def test_ordinary_git_config_mutation_fails(self):
         td,work=self._ordinary()
         try:
-            lease=self._lease(work);self._git(work,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(work,"config","--bool","core.filemode").casefold();self._git(work,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed"):self._postflight(work,lease)
         finally:td.cleanup()
 
     def test_linked_worktree_common_config_mutation_fails(self):
         td,repo,work=self._linked()
         try:
-            lease=self._lease(work);self._git(repo,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(repo,"config","--bool","core.filemode").casefold();self._git(repo,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed"):self._postflight(work,lease)
         finally:td.cleanup()
 
@@ -354,7 +354,7 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
     def test_verify_rejects_postlease_linked_common_metadata_change(self):
         td,repo,work=self._linked()
         try:
-            lease=self._lease(work);self._git(repo,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(repo,"config","--bool","core.filemode").casefold();self._git(repo,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed after lease before execution"):self._verify(work,lease)
         finally:td.cleanup()
 
