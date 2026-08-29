@@ -1,0 +1,49 @@
+name: Workspace V6 final builder current-main
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-workspace-v6-final-builder-current-main
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Construct final from accepted current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout f5a6af4e6433b84034e057cf9c70f5abc3a6ad76
+          git checkout 8c1d21dfba5ade416304849d4c479dcf2e19fcaf -- forgeboss/control/workspace.py forgeboss/control/test_workspace.py forgeboss/control/windows_cleanup.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('forgeboss/control/test_workspace.py')
+          s=p.read_text(encoding='utf-8')
+          old='any(name=="victim" for name,_,_ in entries)'
+          new='any(row[0]=="victim" for row in entries)'
+          if s.count(old)!=1:
+              raise SystemExit(f'expected one stale tuple assertion, got {s.count(old)}')
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          python -m py_compile forgeboss/control/workspace.py forgeboss/control/test_workspace.py forgeboss/control/windows_cleanup.py
+          python -m unittest forgeboss.control.test_workspace -v
+          git diff --name-only f5a6af4e6433b84034e057cf9c70f5abc3a6ad76 -- | tee /tmp/changed.txt
+          test "$(wc -l < /tmp/changed.txt)" -eq 3
+          grep -Fxq 'forgeboss/control/workspace.py' /tmp/changed.txt
+          grep -Fxq 'forgeboss/control/test_workspace.py' /tmp/changed.txt
+          grep -Fxq 'forgeboss/control/windows_cleanup.py' /tmp/changed.txt
+      - name: Publish one-commit final candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Worker C Workspace V6'
+          git config user.email 'worker-c@users.noreply.github.com'
+          git checkout -b forgeboss/worker-c-workspace-v6-final-current-main
+          git add forgeboss/control/workspace.py forgeboss/control/test_workspace.py forgeboss/control/windows_cleanup.py
+          git commit -m 'Workspace V6: crash-safe handle-bound cleanup final'
+          test "$(git rev-list --count f5a6af4e6433b84034e057cf9c70f5abc3a6ad76..HEAD)" -eq 1
+          git push origin HEAD:refs/heads/forgeboss/worker-c-workspace-v6-final-current-main
