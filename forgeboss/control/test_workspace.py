@@ -41,9 +41,10 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
     def _make_quarantine(self, target):
         from forgeboss.control import workspace as m
         real = m._rmtree_windows_safe
+        calls={"n":0}
         def fail(path,*a,**kw):
-            if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")
-            return real(path,*a,**kw)
+            calls["n"]+=1
+            raise PermissionError("cleanup denied")
         with mock.patch.object(m,"verify_workspace",side_effect=WorkspaceProvisionError("INJECTED","forced failure")), \
              mock.patch.object(m,"_rmtree_windows_safe",side_effect=fail):
             with self.assertRaises(WorkspaceProvisionError) as cm:
@@ -169,16 +170,17 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         from forgeboss.control import windows_cleanup as wc
         target=self.workspaces/"victim-root";target.mkdir();child=target/"victim";child.mkdir();(child/"inside.txt").write_text("inside")
         outside=self.base/"outside-junction-target";outside.mkdir();keep=outside/"keep.txt";keep.write_text("keep")
-        real=wc._open_relative;swapped={"done":False}
-        def swap(parent,name):
-            if name=="victim" and not swapped["done"]:
+        real_entries=wc._entries;swapped={"done":False}
+        def enumerate_then_swap(parent):
+            entries=real_entries(parent)
+            if not swapped["done"] and any(name=="victim" for name,_,_ in entries):
                 shutil.rmtree(child)
                 cp=subprocess.run(["cmd.exe","/d","/c",f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)
                 if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)
                 swapped["done"]=True
-            return real(parent,name)
+            return entries
         try:
-            with mock.patch.object(wc,"_open_relative",side_effect=swap):
+            with mock.patch.object(wc,"_entries",side_effect=enumerate_then_swap):
                 with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)
             self.assertTrue(keep.exists());self.assertTrue(swapped["done"])
         finally:
