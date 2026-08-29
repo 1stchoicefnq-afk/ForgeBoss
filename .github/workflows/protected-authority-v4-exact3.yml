@@ -1,0 +1,50 @@
+name: Protected Authority V4 exact3 Windows proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v4-exact3
+permissions:
+  contents: read
+jobs:
+  windows-ffi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source unchanged
+        shell: pwsh
+        run: |
+          git rev-parse --verify 63c836acd6c9852b586ab4ee55c526e8c4c1e1ed
+          git diff --exit-code 63c836acd6c9852b586ab4ee55c526e8c4c1e1ed -- forgeboss/protected_authority
+      - name: Compile protected authority
+        run: python -m compileall -q forgeboss/protected_authority
+      - name: Run native V4 Win32 FFI and pipe tests
+        run: python -m unittest forgeboss.protected_authority.test_v4 -v
+  linux-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source unchanged
+        run: |
+          git rev-parse --verify 63c836acd6c9852b586ab4ee55c526e8c4c1e1ed
+          git diff --exit-code 63c836acd6c9852b586ab4ee55c526e8c4c1e1ed -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - name: Run V3/V4 and unchanged V2 authority regressions
+        run: >-
+          python -m unittest
+          forgeboss.protected_authority.test_service
+          forgeboss.protected_authority.test_v2.BoundaryV2Tests
+          forgeboss.protected_authority.test_v2.ReplayV2Tests
+          forgeboss.protected_authority.test_v2.GitHubBackendV2Tests
+          forgeboss.protected_authority.test_v3
+          forgeboss.protected_authority.test_v4 -v
