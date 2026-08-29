@@ -6,11 +6,13 @@ const {run}=require('./process');
 
 const CONTROL_MARKER='FORGEBOSS_CONTROL_RESULT_B64=';
 const SHA=/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const HEX64=/^[0-9a-f]{64}$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function sha256(buf){return crypto.createHash('sha256').update(buf).digest('hex');}
 function fail(msg,code='CONTROL_BINDING_MISMATCH'){const e=new Error(msg);e.code=code;throw e;}
 function str(v,name){if(typeof v!=='string'||!v||/[\x00-\x1f\x7f]/.test(v))fail(`${name} invalid`);return v;}
 function oid(v,name){v=str(v,name);if(!SHA.test(v))fail(`${name} invalid`);return v;}
+function sameFsPath(a,b){const x=path.resolve(a),y=path.resolve(b);return process.platform==='win32'?x.toLowerCase()===y.toLowerCase():x===y;}
 function decodeCanonicalBase64(text,maxBytes=2*1024*1024){
  if(typeof text!=='string'||text.length===0||text.length%4!==0||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text))fail('authoritative control producer base64 is non-canonical','CONTROL_RESULT_INVALID');
  let raw;try{raw=Buffer.from(text,'base64');}catch(e){fail(`authoritative control producer base64 invalid: ${e.message}`,'CONTROL_RESULT_INVALID');}
@@ -56,6 +58,32 @@ function assertNoLinksAbsolute(target,code='CONTROL_ARTIFACT_LINK'){
  }
  return full;
 }
+function trustedPowerShell(spec){
+ if(!spec||typeof spec!=='object'||Array.isArray(spec))fail('trusted PowerShell configuration missing','POWERSHELL_AUTHORITY_INVALID');
+ const configured=str(spec.path,'PowerShell executable path');
+ if(!path.isAbsolute(configured))fail('PowerShell executable path must be absolute','POWERSHELL_AUTHORITY_INVALID');
+ const expected=str(spec.sha256,'PowerShell executable SHA256').toLowerCase();
+ if(!HEX64.test(expected))fail('PowerShell executable SHA256 invalid','POWERSHELL_AUTHORITY_INVALID');
+ const target=path.normalize(configured);
+ assertNoLinksAbsolute(target,'POWERSHELL_EXECUTABLE_LINK');
+ let st;try{st=fs.lstatSync(target);}catch(e){fail(`PowerShell executable unreadable: ${e.message}`,'POWERSHELL_EXECUTABLE_INVALID');}
+ if(!st.isFile()||st.isSymbolicLink())fail('PowerShell executable is not a regular file','POWERSHELL_EXECUTABLE_INVALID');
+ let real;try{real=fs.realpathSync.native?fs.realpathSync.native(target):fs.realpathSync(target);}catch(e){fail(`PowerShell executable cannot be resolved: ${e.message}`,'POWERSHELL_EXECUTABLE_INVALID');}
+ if(!sameFsPath(real,target))fail('PowerShell executable resolves through an alias/link','POWERSHELL_EXECUTABLE_LINK');
+ const actual=sha256(fs.readFileSync(target));
+ if(actual!==expected)fail(`PowerShell executable identity drift: expected ${expected} got ${actual}`,'POWERSHELL_EXECUTABLE_DRIFT');
+ return target;
+}
+function minimalPowerShellEnv(exe,boundArgsB64){
+ const keys=process.platform==='win32'
+  ? ['SystemRoot','WINDIR','ComSpec','TEMP','TMP','ProgramData','USERPROFILE','LOCALAPPDATA','APPDATA','PSModulePath']
+  : ['HOME','TMPDIR','LANG','LC_ALL','PSModulePath'];
+ const env={};
+ for(const k of keys){const v=process.env[k];if(typeof v==='string'&&v)env[k]=v;}
+ env.PATH=path.dirname(path.resolve(exe));
+ if(boundArgsB64!==undefined){if(typeof boundArgsB64!=='string'||!boundArgsB64)fail('bound PowerShell argument record invalid','POWERSHELL_ENV_INVALID');env.FORGEBOSS_BOUND_ARGS_B64=boundArgsB64;}
+ return env;
+}
 function readBoundArtifact(file,root){
  const base=assertNoLinksAbsolute(root),target=path.resolve(file),rel=path.relative(base,target);
  if(rel.startsWith('..')||path.isAbsolute(rel))fail('control artifact escapes protected root','CONTROL_ARTIFACT_PATH_INVALID');
@@ -67,9 +95,9 @@ function readControl(root,cfg,stateRoot){
  const invocationId=crypto.randomUUID();
  const artifactDir=path.join(stateRoot,'control-artifacts');fs.mkdirSync(artifactDir,{recursive:true});assertNoLinksAbsolute(artifactDir);
  const out=path.join(artifactDir,`control-${invocationId}.json`);if(fs.existsSync(out))fail('control artifact already exists','CONTROL_ARTIFACT_COLLISION');
- const a=cfg.control.github_app,exe=process.platform==='win32'?'pwsh.exe':'pwsh';
+ const a=cfg.control.github_app,exe=trustedPowerShell(cfg.control.powershell),env=minimalPowerShellEnv(exe);
  const args=['-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(root,'controller','adapters','Read-GitHub-Control.ps1'),'-Owner',cfg.control.owner,'-Repo',cfg.control.repo,'-RootPr',String(cfg.control.root_pr),'-PreferredRepairPr',String(cfg.control.preferred_repair_pr||0),'-AppId',String(a.app_id),'-InstallationId',String(a.installation_id),'-PemPath',String(a.pem_path),'-InvocationId',invocationId,'-Output',out];
- const r=run(exe,args,{cwd:root,timeoutMs:90000});
+ const r=run(exe,args,{cwd:root,timeoutMs:90000,env});
  if(r.exit_code!==0)throw new Error(`Authoritative control read failed: ${(r.stderr||r.stdout||r.error).trim()}`);
  const parsed=parseControlResult(r.stdout,invocationId),c=validateControlResult(parsed.obj,cfg,invocationId),digest=sha256(parsed.raw);
  const disk=readBoundArtifact(out,artifactDir);
@@ -83,4 +111,4 @@ function selectRepairTarget(control){
  if(control?.binding?.status==='NO_CURRENT_EXACT_REPAIR_CHILD'&&control.root_pr)return{mode:'parent-head-local',root_pr:control.root_pr.number,repair_pr:null,target_sha:control.root_pr.head_sha,base_sha:control.root_pr.base_sha,target_ref:control.root_pr.head_ref,base_ref:control.root_pr.base_ref};
  throw new Error('Unable to derive repair target from control state');
 }
-module.exports={readControl,selectRepairTarget,_test:{parseControlResult,validateControlResult,sha256,CONTROL_MARKER,decodeCanonicalBase64,assertNoLinksAbsolute,readBoundArtifact}};
+module.exports={readControl,selectRepairTarget,trustedPowerShell,minimalPowerShellEnv,_test:{parseControlResult,validateControlResult,sha256,CONTROL_MARKER,decodeCanonicalBase64,assertNoLinksAbsolute,readBoundArtifact,trustedPowerShell,minimalPowerShellEnv}};

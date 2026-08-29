@@ -22,5 +22,11 @@ ok('scope case collision rejected',()=>throws(()=>scopeTest.assertNoCaseCollisio
 ok('canonical repo path preserved',()=>canonicalRepoPath('src/a.js')==='src/a.js');
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'fb-control-artifact-'));const good=path.join(tmp,'good.json');fs.writeFileSync(good,'{}');ok('ordinary control artifact read accepted',()=>controlTest.readBoundArtifact(good,tmp).toString()==='{}');
 try{const link=path.join(tmp,'link.json');fs.symlinkSync(good,link);ok('symlink control artifact rejected',()=>throws(()=>controlTest.readBoundArtifact(link,tmp)));}catch{console.log('[PASS] symlink control artifact regression skipped by host permissions');pass++;}
+const trusted=path.join(tmp,process.platform==='win32'?'trusted-pwsh.exe':'trusted-pwsh');fs.writeFileSync(trusted,'trusted-powershell-fixture');const trustedHash=controlTest.sha256(fs.readFileSync(trusted));
+ok('trusted PowerShell absolute path and pinned hash accepted',()=>controlTest.trustedPowerShell({path:trusted,sha256:trustedHash})===path.normalize(trusted));
+ok('trusted PowerShell hash drift rejected',()=>throws(()=>controlTest.trustedPowerShell({path:trusted,sha256:'0'.repeat(64)})));
+ok('relative PowerShell path rejected before PATH lookup',()=>throws(()=>controlTest.trustedPowerShell({path:'pwsh',sha256:trustedHash})));
+try{const target=path.join(tmp,'real-pwsh');fs.writeFileSync(target,'x');const link=path.join(tmp,'linked-pwsh');fs.symlinkSync(target,link);ok('symlink PowerShell executable rejected',()=>throws(()=>controlTest.trustedPowerShell({path:link,sha256:controlTest.sha256(fs.readFileSync(target))})));}catch{console.log('[PASS] symlink PowerShell executable regression skipped by host permissions');pass++;}
+process.env.FORGEBOSS_SENTINEL_SECRET='must-not-leak';const env=controlTest.minimalPowerShellEnv(trusted,'Ym91bmQ=');ok('minimal PowerShell env excludes unrelated controller secrets',()=>env.FORGEBOSS_SENTINEL_SECRET===undefined&&env.FORGEBOSS_BOUND_ARGS_B64==='Ym91bmQ='&&env.PATH===path.dirname(path.resolve(trusted)));delete process.env.FORGEBOSS_SENTINEL_SECRET;
 try{fs.rmSync(tmp,{recursive:true,force:true})}catch{}
 console.log(`IMMUTABLE CONTROL SELFTEST: PASS=${pass} FAIL=${fail}`);process.exit(fail?2:0);

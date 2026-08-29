@@ -39,6 +39,10 @@
     "owner": "1stchoicefnq-afk",
     "repo": "siteboss-monster",
     "root_pr": 168,
+    "powershell": {
+      "path": "",
+      "sha256": ""
+    },
     "github_app": {
       "app_id": "4608230",
       "installation_id": "154040429",
