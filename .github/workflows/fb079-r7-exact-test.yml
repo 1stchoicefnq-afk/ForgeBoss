@@ -1,0 +1,28 @@
+name: FB-079 R7 exact tests
+
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r7-exact
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact R7 source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 4fc968ae1a1fc8fb5a72d48cfd3e6c6186ce6f76 HEAD
+          git diff --quiet 4fc968ae1a1fc8fb5a72d48cfd3e6c6186ce6f76 HEAD -- forgeboss
+          test "$(git rev-parse 4fc968ae1a1fc8fb5a72d48cfd3e6c6186ce6f76^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run exact FB-079 R7 tests
+        run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
