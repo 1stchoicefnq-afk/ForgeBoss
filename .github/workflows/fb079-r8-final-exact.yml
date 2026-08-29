@@ -1,0 +1,89 @@
+name: FB079 R8 final exact proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r8-final-exact
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact final R8 source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          final='ce42bed9de06f284d5bd0994eb625c974253878f'
+          r7='3782f8a1ef095087942b91b1d39e722f856607e5'
+          git merge-base --is-ancestor "$final" HEAD
+          git diff --quiet "$final" HEAD -- forgeboss
+          test "$(git rev-parse "$final^{tree}:forgeboss")" = "$(git rev-parse 'HEAD^{tree}:forgeboss')"
+          test "$(git rev-parse "$final^")" = "$r7"
+          files="$(git diff --name-only "$r7" "$final")"
+          test "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)" -eq 2
+          printf '%s\n' "$files" | grep -Fx 'forgeboss/security/executor_guard.py'
+          printf '%s\n' "$files" | grep -Fx 'forgeboss/security/test_executor_guard_git_metadata.py'
+      - name: Linux security suites
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact final R8 source tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $final='ce42bed9de06f284d5bd0994eb625c974253878f'
+          $r7='3782f8a1ef095087942b91b1d39e722f856607e5'
+          git merge-base --is-ancestor $final HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'final not ancestor' }
+          git diff --quiet $final HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss tree differs from final' }
+          $finalTree=(git rev-parse "$final`^{tree}:forgeboss").Trim()
+          $headTree=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($finalTree -ne $headTree) { throw 'forgeboss tree mismatch' }
+          if ((git rev-parse "$final^").Trim() -ne $r7) { throw 'final parent mismatch' }
+          $files=@(git diff --name-only $r7 $final)
+          if ($files.Count -ne 2 -or $files -notcontains 'forgeboss/security/executor_guard.py' -or $files -notcontains 'forgeboss/security/test_executor_guard_git_metadata.py') { throw "scope mismatch: $($files -join ',')" }
+      - name: Native Windows security suites
+        shell: pwsh
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native stock Git-for-Windows snapshot probe
+        shell: pwsh
+        run: |
+          @'
+          import subprocess,tempfile
+          from pathlib import Path
+          from forgeboss.security import executor_guard as guard
+          sid=guard._windows_lookup_account_sid(guard._WIN_TRUSTED_INSTALLER_ACCOUNT).casefold()
+          assert sid==guard._WIN_TRUSTED_INSTALLER_SID,(sid,guard._WIN_TRUSTED_INSTALLER_SID)
+          with tempfile.TemporaryDirectory() as td:
+              work=Path(td)
+              subprocess.run(['git','init','-q'],cwd=work,check=True)
+              subprocess.run(['git','config','user.email','r8-final@example.invalid'],cwd=work,check=True)
+              subprocess.run(['git','config','user.name','R8 Final'],cwd=work,check=True)
+              (work/'a.txt').write_text('x',encoding='utf-8')
+              subprocess.run(['git','add','a.txt'],cwd=work,check=True)
+              subprocess.run(['git','commit','-qm','base'],cwd=work,check=True)
+              snap=guard.git_metadata_snapshot(work)
+              assert 'git:effective-config' in snap and 'git:executable' in snap
+              print('R8_FINAL_WINDOWS_STOCK_GIT_SNAPSHOT_PASS',sid,snap['git:executable']['path'])
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
