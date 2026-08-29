@@ -158,15 +158,15 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             self.assertIn("gitdir/config",snap)
         finally:td.cleanup()
 
-    def test_filter_command_config_is_inert_for_local_metadata_allowlist_and_bound(self):
-        td,work=self._ordinary()
-        try:
-            self._git(work,"config","filter.evil.clean","python external.py")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
-            self._git(work,"config","filter.evil.clean","python changed.py")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
-            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
-        finally:td.cleanup()
+    def test_filter_clean_smudge_process_configs_are_denied_fail_closed(self):
+        for suffix in ("clean","smudge","process"):
+            with self.subTest(suffix=suffix):
+                td,work=self._ordinary()
+                try:
+                    self._git(work,"config",f"filter.evil.{suffix}","python external.py")
+                    with patch.object(guard,"git",side_effect=self._real_guard_git):
+                        with self.assertRaisesRegex(guard.SecurityError,f"execution-capable Git config denied: filter.evil.{suffix}"):guard.git_metadata_snapshot(work)
+                finally:td.cleanup()
 
     def test_fsmonitor_boolean_is_allowed_but_path_target_is_denied(self):
         td,work=self._ordinary()
@@ -229,24 +229,24 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
                 with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.external"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
-    def test_diff_textconv_config_is_inert_for_local_metadata_allowlist_and_bound(self):
-        td,work=self._ordinary()
-        try:
-            self._git(work,"config","diff.bin.textconv","external-one")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
-            self._git(work,"config","diff.bin.textconv","external-two")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
-            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
-        finally:td.cleanup()
+    def test_diff_command_and_textconv_configs_are_denied_fail_closed(self):
+        for suffix in ("command","textconv"):
+            with self.subTest(suffix=suffix):
+                td,work=self._ordinary()
+                try:
+                    self._git(work,"config",f"diff.bin.{suffix}","external-tool")
+                    with patch.object(guard,"git",side_effect=self._real_guard_git):
+                        with self.assertRaisesRegex(guard.SecurityError,f"execution-capable Git config denied: diff.bin.{suffix}"):guard.git_metadata_snapshot(work)
+                finally:td.cleanup()
 
-    def test_stock_git_for_windows_lfs_global_config_is_inert(self):
+    def test_stock_git_for_windows_lfs_global_config_is_denied_fail_closed(self):
         td,work=self._ordinary()
         try:
             global_cfg=work.parent/"git-for-windows-global.cfg"
             global_cfg.write_text('[diff "astextplain"]\n\ttextconv = astextplain\n[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n',encoding="utf-8")
             env={"GIT_CONFIG_GLOBAL":str(global_cfg),"GIT_CONFIG_NOSYSTEM":"1"}
-            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):snap=guard.git_metadata_snapshot(work)
-            self.assertIn("git:effective-config",snap)
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
     def test_local_git_allowlist_rejects_execution_capable_shapes_before_subprocess(self):

@@ -12,7 +12,14 @@ FORBIDDEN_EXACT={".git",".env",".env.local",".env.production",".npmrc",".pypirc"
 GIT_META_EXACT=("config","config.worktree","HEAD","packed-refs","shallow","info/attributes","info/exclude","objects/info/alternates")
 GIT_META_TREES=("refs","hooks")
 EXEC_CONFIG_EXACT={"core.askpass","core.editor","core.gitproxy","core.pager","core.sshcommand","diff.external","gpg.program","interactive.difffilter","sequence.editor"}
-EXEC_CONFIG_PATTERNS=(re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
+EXEC_CONFIG_PATTERNS=(
+    re.compile(r"^merge\..+\.driver$",re.I),
+    re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),
+    re.compile(r"^gpg\..+\.program$",re.I),
+    re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I),
+    re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),
+    re.compile(r"^diff\..+\.(?:command|textconv)$",re.I),
+)
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
