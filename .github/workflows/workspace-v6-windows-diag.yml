@@ -1,0 +1,54 @@
+name: Workspace V6 Windows diag
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-workspace-v6-windows-diag
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose native cleanup boundary
+        shell: pwsh
+        run: |
+          @'
+          import os,shutil,subprocess,tempfile
+          from pathlib import Path
+          from unittest import mock
+          from forgeboss.control import workspace as m
+          from forgeboss.control import windows_cleanup as wc
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td);root=base/'root';root.mkdir();child=root/'victim';child.mkdir();(child/'inside.txt').write_text('inside')
+              ident=m._path_identity(root);print('IDENT',ident)
+              real_entries=wc._entries;calls={'n':0}
+              def observe(parent):
+                  calls['n']+=1; entries=real_entries(parent);print('ENTRIES',entries);return entries
+              with mock.patch.object(wc,'_entries',side_effect=observe):
+                  wc.delete_tree_exact(root,ident['native'])
+              print('OBSERVE_CALLS',calls)
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td);root=base/'root';root.mkdir();child=root/'victim';child.mkdir();(child/'inside.txt').write_text('inside')
+              outside=base/'outside';outside.mkdir();keep=outside/'keep.txt';keep.write_text('keep')
+              ident=m._path_identity(root);real_entries=wc._entries;state={'done':False,'calls':0}
+              def swap(parent):
+                  state['calls']+=1; entries=real_entries(parent);print('SWAP_ENTRIES',entries)
+                  if not state['done'] and any(name=='victim' for name,_,_ in entries):
+                      shutil.rmtree(child)
+                      cp=subprocess.run(['cmd.exe','/d','/c',f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)
+                      print('MKLINK',cp.returncode,cp.stdout,cp.stderr)
+                      if cp.returncode: raise RuntimeError(cp.stderr)
+                      state['done']=True
+                  return entries
+              try:
+                  with mock.patch.object(wc,'_entries',side_effect=swap): wc.delete_tree_exact(root,ident['native'])
+              except Exception as e: print('SWAP_ERROR',type(e).__name__,str(e))
+              print('SWAP_STATE',state,'KEEP',keep.exists(),'CHILD',child.exists(),'REPARSE',m._is_reparse(child) if child.exists() else None)
+              if child.exists() and m._is_reparse(child): os.rmdir(child)
+          '@ | python -
