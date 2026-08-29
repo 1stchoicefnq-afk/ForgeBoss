@@ -507,6 +507,45 @@ class CleanupTests(SnapshotTestBase):
         self.assertTrue(os.path.isfile(os.path.join(self.source, "src", "app.py")))
         self.assertEqual(os.listdir(self.staging), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction test")
+    def test_cleanup_does_not_follow_windows_junction(self):
+        snap = self.make()
+
+        junction = str(snap.work_root / "junction_escape")
+
+        result = subprocess.run(
+            [
+                "cmd.exe",
+                "/c",
+                "mklink",
+                "/J",
+                junction,
+                self.outside,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            self.skipTest(
+                "could not create Windows junction: "
+                + (result.stderr or result.stdout).strip()
+            )
+
+        probe = getattr(os.path, "isjunction", None)
+        if probe is not None:
+            self.assertTrue(probe(junction))
+
+        snap.cleanup()
+
+        self.assertFalse(os.path.exists(str(snap.snapshot_dir)))
+        self.assertTrue(os.path.isdir(self.outside))
+        self.assertEqual(
+            self.read(self.outside, "keep.txt"),
+            b"host state\n",
+        )
+
     def test_cleanup_is_idempotent(self):
         snap = self.make()
         snap.cleanup()

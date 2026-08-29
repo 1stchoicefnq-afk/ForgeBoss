@@ -421,12 +421,44 @@ def _remove_dir_entry(path: str) -> None:
 
 
 def _rmtree_nofollow(root: str) -> None:
-    """Remove ``root`` bottom-up without ever following a link out of it."""
-    for dirpath, dirnames, filenames in os.walk(root, topdown=False, followlinks=False, onerror=_walk_error):
-        for name in sorted(filenames):
-            os.unlink(os.path.join(dirpath, name))
-        for name in sorted(dirnames):
-            _remove_dir_entry(os.path.join(dirpath, name))
+    """Remove ``root`` without traversing symlinks or Win32 junctions."""
+    if _is_link_like(root):
+        raise UnsafePathError(f"refusing to recurse through link-like root: {root}")
+
+    try:
+        entries = sorted(os.scandir(root), key=lambda entry: entry.name)
+    except OSError as ex:
+        raise IsolationError(f"cannot scan cleanup directory {root}: {ex}") from ex
+
+    for entry in entries:
+        path = entry.path
+
+        # Test link/junction status BEFORE asking whether this is a directory.
+        # On Windows, a junction is a directory reparse point and os.walk can
+        # otherwise enter its target even with followlinks=False.
+        if _is_link_like(path):
+            _remove_dir_entry(path)
+            continue
+
+        try:
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError as ex:
+            raise IsolationError(f"cannot inspect cleanup entry {path}: {ex}") from ex
+
+        if is_dir:
+            # Re-check immediately before recursion so a replaced directory
+            # cannot silently become a link/junction between observations.
+            if _is_link_like(path):
+                _remove_dir_entry(path)
+                continue
+
+            if not _contained(root, os.path.realpath(path)):
+                raise UnsafePathError(f"cleanup path resolves outside root: {path}")
+
+            _rmtree_nofollow(path)
+        else:
+            os.unlink(path)
+
     os.rmdir(root)
 
 
