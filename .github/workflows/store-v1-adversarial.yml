@@ -1,0 +1,94 @@
+name: Store V1 adversarial proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-store-v1-adversarial
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact Store V1 source tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD
+          git diff --quiet 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD -- forgeboss
+          test "$(git rev-parse 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Existing focused Store Authority tests
+        run: python -m unittest forgeboss.control.test_store_authority -v
+      - name: Reproduce branch-authority escape and revoked-token resurrection
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from forgeboss.control.store import ControlStore
+
+          def make_store(label):
+              td=tempfile.TemporaryDirectory()
+              base=Path(td.name)
+              root=base/'worktrees'; root.mkdir()
+              store=ControlStore(base/'state'/'control.sqlite3')
+              store.create_budget_run('GLOBAL', 10)
+              store.create_task({
+                  'taskId':'A','repository':'owner/repo','purpose':'fl1','baseSha':'a'*40,
+                  'branch':'assigned-branch','allowedPaths':['src/a.py'],
+                  'requiredTests':['python -m unittest'],'budgetUsd':10,
+              })
+              assignment=store.assign_builder('A','builder-a','GLOBAL')
+              return td,root,store,assignment
+
+          # REPRO 1: claim accepts a branch different from the branch authenticated by assignmentSha256.
+          td,root,store,a=make_store('branch')
+          try:
+              rev=int(store.get_budget_run('GLOBAL')['revision'])
+              lease=store.claim_workspace(
+                  'A','r-branch',root/'A','attacker-branch','a'*40,
+                  runtime_id='mini-swe',worktree_root=root,budget_reserved=1,
+                  builder_id=a['builderId'],assignment_token=a['assignmentToken'],
+                  assignment_generation=a['assignmentGeneration'],assignment_sha256=a['assignmentSha256'],
+                  budget_run_revision=rev,
+              )
+              assert store.get_task('A')['branch']=='assigned-branch'
+              assert lease['branch']=='attacker-branch'
+              print('BRANCH_AUTHORITY_ESCAPE_REPRODUCED')
+          finally:
+              store.db.close(); td.cleanup()
+
+          # REPRO 2: retry_task requeues without rotating/invalidating the revoked assignment.
+          td,root,store,a=make_store('retry')
+          try:
+              rev=int(store.get_budget_run('GLOBAL')['revision'])
+              first=store.claim_workspace(
+                  'A','r1',root/'A','assigned-branch','a'*40,
+                  runtime_id='mini-swe',worktree_root=root,budget_reserved=1,
+                  builder_id=a['builderId'],assignment_token=a['assignmentToken'],
+                  assignment_generation=a['assignmentGeneration'],assignment_sha256=a['assignmentSha256'],
+                  budget_run_revision=rev,
+              )
+              store.revoke_writer('A','r1',first['owner_epoch'],'stop')
+              old_generation=a['assignmentGeneration']
+              old_digest=a['assignmentSha256']
+              store.retry_task('A','replacement requested')
+              assert store.get_task('A')['assignment_generation']==old_generation
+              assert store.get_task('A')['assignment_sha256']==old_digest
+              rev2=int(store.get_budget_run('GLOBAL')['revision'])
+              second=store.claim_workspace(
+                  'A','r2',root/'A','assigned-branch','a'*40,
+                  runtime_id='mini-swe',worktree_root=root,budget_reserved=1,
+                  builder_id=a['builderId'],assignment_token=a['assignmentToken'],
+                  assignment_generation=a['assignmentGeneration'],assignment_sha256=a['assignmentSha256'],
+                  budget_run_revision=rev2,
+              )
+              assert second['owner_epoch']>first['owner_epoch']
+              print('REVOKED_ASSIGNMENT_RESURRECTION_REPRODUCED')
+          finally:
+              store.db.close(); td.cleanup()
+          PY
