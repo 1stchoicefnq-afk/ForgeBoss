@@ -127,6 +127,13 @@ def _token_hash(raw):
     if not isinstance(raw,str) or not raw:return ""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+def _assignment_bound(task):
+    return task["budget_run_id"] is not None or int(task["assignment_generation"] or 0)>0 or bool(task["assigned_builder_id"] or task["assignment_token_hash"] or task["assignment_sha256"])
+
+def _next_assignment_generation(task):
+    current=int(task["assignment_generation"] or 0)
+    return current+1 if _assignment_bound(task) else 0
+
 _WORKER_OUTCOMES=frozenset({"released","failed","cancelled"})
 _TERMINAL_RETRY_REQUIRED=frozenset({"released","failed","cancelled","completed","review-rejected","revoked","accepted","approved","validated"})
 
@@ -319,7 +326,7 @@ class ControlStore:
                 lease=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 if lease and lease["released_at"] is None and lease["revoked_at"] is None and float(lease["expires_at"])>now:
                     raise StoreAuthorityError("RETRY_ACTIVE_WRITER","cannot retry while writer is live")
-                generation=int(task["assignment_generation"] or 0)+1
+                generation=_next_assignment_generation(task)
                 cur=self.db.execute("""UPDATE tasks SET status='queued',current_step='retry-authorized',retry_reason=?,assigned_builder_id=NULL,
                     assignment_generation=?,assignment_token_hash=NULL,assignment_sha256=NULL,revision=revision+1,updated_at=? WHERE task_id=? AND revision=?""",
                     (reason.strip(),generation,now,task_id,int(task["revision"])))
@@ -345,7 +352,7 @@ class ControlStore:
             if _scope_overlap(scope,_scope_authorities(row["allowed_paths_json"])):raise WorkspaceCollisionError("WRITABLE_SCOPE_COLLISION",f"writable scope overlaps live task {other_task}")
 
     def _validate_assignment_locked(self,task,builder_id,assignment_token,assignment_generation,assignment_sha256):
-        bound=task["budget_run_id"] is not None or int(task["assignment_generation"] or 0)>0
+        bound=_assignment_bound(task)
         if not bound:return False
         if not task["assigned_builder_id"] or not task["assignment_token_hash"] or not task["assignment_sha256"]:
             raise StoreAuthorityError("ASSIGNMENT_REQUIRED","bound task requires fresh controller assignment authority")
@@ -493,7 +500,7 @@ class ControlStore:
                 if cur.rowcount!=1:raise PermissionError("writer authority lost during release")
                 cur=self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running' AND revoked_at IS NULL",(outcome,now,run_id,task_id,int(owner_epoch)))
                 if cur.rowcount!=1:raise PermissionError("run authority lost during release")
-                generation=int(task["assignment_generation"] or 0)+1
+                generation=_next_assignment_generation(task)
                 cur=self.db.execute("""UPDATE tasks SET status=?,revision=revision+1,result_head=?,terminal_outcome=?,assigned_builder_id=NULL,
                     assignment_generation=?,assignment_token_hash=NULL,assignment_sha256=NULL,updated_at=? WHERE task_id=? AND status='running' AND revision=?""",
                     (outcome,final_head,None if outcome=="released" else outcome,generation,now,task_id,int(task["revision"])))
@@ -527,7 +534,7 @@ class ControlStore:
                 if cur.rowcount!=1:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","run authority changed during revoke")
                 cur=self.db.execute("UPDATE workspace_leases SET revoked_at=?,revoke_reason=? WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL AND revoked_at IS NULL",(now,reason.strip(),task_id,run_id,int(owner_epoch)))
                 if cur.rowcount!=1:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","lease authority changed during revoke")
-                generation=int(task["assignment_generation"] or 0)+1
+                generation=_next_assignment_generation(task)
                 cur=self.db.execute("""UPDATE tasks SET status='revoked',terminal_outcome='revoked',assigned_builder_id=NULL,assignment_generation=?,
                     assignment_token_hash=NULL,assignment_sha256=NULL,revision=revision+1,updated_at=? WHERE task_id=? AND status='running' AND revision=?""",
                     (generation,now,task_id,int(task["revision"])))
