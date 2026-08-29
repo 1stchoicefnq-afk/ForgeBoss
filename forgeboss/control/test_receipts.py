@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 from forgeboss.control.receipts import (
     AssignmentIdentityReference, CandidateHandoff, ReviewerReceipt,
     ControllerAcceptanceReference, ReceiptError, canonical_money,
-    policy_path_key, receipt_digest, POLICY_PATH_KEY_VERSION
+    policy_path_key, receipt_digest, strict_loads, POLICY_PATH_KEY_VERSION
 )
 
 A40="a"*40
@@ -128,6 +128,10 @@ class HandoffTests(unittest.TestCase):
         z=CandidateHandoff.from_dict(handoff(measuredCostUsd="0"))
         self.assertNotEqual(u.digest,z.digest)
 
+    def test_empty_contributor_set_rejected(self):
+        with self.assertRaises(ReceiptError):
+            CandidateHandoff.from_dict(handoff(contributors=[]))
+
     def test_over_reserved_measured_rejected(self):
         with self.assertRaises(ReceiptError):
             CandidateHandoff.from_dict(handoff(measuredCostUsd="1.01",reservedCostUsd="1.00"))
@@ -186,6 +190,20 @@ class AcceptanceTests(unittest.TestCase):
         clone["candidateSha"]="f"*40
         with self.assertRaises(ReceiptError):
             ControllerAcceptanceReference.from_dict(clone,handoff=h,review=rr)
+
+
+class StrictJsonTests(unittest.TestCase):
+    def test_duplicate_key_rejected_before_mapping_construction(self):
+        with self.assertRaises(ReceiptError):
+            strict_loads('{"taskId":"a","taskId":"b"}')
+
+    def test_nonfinite_json_rejected(self):
+        for raw in ('{"x":NaN}','{"x":Infinity}','{"x":-Infinity}'):
+            with self.subTest(raw=raw),self.assertRaises(ReceiptError):
+                strict_loads(raw)
+
+    def test_valid_json_preserves_exact_text_values(self):
+        self.assertEqual(strict_loads(r'{"path":"src\\a.py"}')["path"], r"src\a.py")
 
 
 class CanonicalDigestTests(unittest.TestCase):
