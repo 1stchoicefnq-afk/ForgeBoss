@@ -1,0 +1,85 @@
+name: FB-079 R9 Windows ancestor ACL probe
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r9-ancestor-acl-probe
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen R8 source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor ce42bed9de06f284d5bd0994eb625c974253878f HEAD
+          git diff --quiet ce42bed9de06f284d5bd0994eb625c974253878f HEAD -- forgeboss
+          test "$(git rev-parse ce42bed9de06f284d5bd0994eb625c974253878f^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Probe real Windows ancestor ACL authority
+        shell: pwsh
+        run: |
+          @'
+          import ctypes
+          from ctypes import wintypes
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+
+          git = g._resolve_git_executable()
+          roots = g._windows_trusted_roots()
+          install = max([r for r in roots if g._windows_within(git, r)], key=lambda p: len(str(p)))
+          paths=[]
+          cur=git
+          while True:
+              if cur not in paths: paths.append(cur)
+              if cur.parent == cur: break
+              cur=cur.parent
+          print('R9_PROBE_GIT', git)
+          print('R9_PROBE_INSTALL', install)
+          for p in paths:
+              try:
+                  owner,rights=g._windows_acl_facts(p)
+                  print('R9_ACL',p,'OWNER',owner,'RIGHTS',[(sid,hex(mask)) for sid,mask in sorted(rights.items())])
+                  try:
+                      g._assert_windows_acl_trust(p)
+                      print('R9_FULL_TRUST_PASS',p)
+                  except Exception as e:
+                      print('R9_FULL_TRUST_FAIL',p,type(e).__name__,str(e))
+              except Exception as e:
+                  print('R9_ACL_READ_FAIL',p,type(e).__name__,str(e))
+
+          V=wintypes.LPVOID; D=wintypes.DWORD
+          class ACL_SIZE_INFORMATION(ctypes.Structure):
+              _fields_=[('AceCount',D),('AclBytesInUse',D),('AclBytesFree',D)]
+          class ACE_HEADER(ctypes.Structure):
+              _fields_=[('AceType',ctypes.c_ubyte),('AceFlags',ctypes.c_ubyte),('AceSize',wintypes.WORD)]
+          adv=ctypes.WinDLL('advapi32',use_last_error=True); kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+          adv.GetNamedSecurityInfoW.argtypes=[wintypes.LPWSTR,D,D,ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V)];adv.GetNamedSecurityInfoW.restype=D
+          adv.GetAclInformation.argtypes=[V,V,D,D];adv.GetAclInformation.restype=wintypes.BOOL
+          adv.GetAce.argtypes=[V,D,ctypes.POINTER(V)];adv.GetAce.restype=wintypes.BOOL
+          kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V
+          for p in paths:
+              dacl=V();sd=V()
+              rc=adv.GetNamedSecurityInfoW(str(p),1,0x4,None,None,ctypes.byref(dacl),None,ctypes.byref(sd))
+              if rc or not dacl.value:
+                  print('R9_RAW_DACL_FAIL',p,rc);continue
+              try:
+                  info=ACL_SIZE_INFORMATION()
+                  if not adv.GetAclInformation(dacl,ctypes.byref(info),ctypes.sizeof(info),2):
+                      print('R9_RAW_DACL_INFO_FAIL',p);continue
+                  types=[]
+                  for i in range(int(info.AceCount)):
+                      ace=V()
+                      if not adv.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:
+                          types.append(('ERR',i));continue
+                      h=ctypes.cast(ace,ctypes.POINTER(ACE_HEADER)).contents
+                      types.append((int(h.AceType),int(h.AceFlags),int(h.AceSize)))
+                  print('R9_RAW_ACE_TYPES',p,types)
+              finally:
+                  if sd.value: kernel.LocalFree(sd)
+          '@ | python -
