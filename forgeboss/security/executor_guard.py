@@ -168,7 +168,7 @@ def _windows_acl_facts(path:Path):
         rights={}
         for _,(text,sid_addr) in sorted(trustee_sids.items()):
             trustee=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(trustee),V(sid_addr));mask=D(0)
-            rc=adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(trustee),ctypes.byref(mask)) if False else adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(mask))
+            rc=adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(mask))
             if rc!=0:raise SecurityError("unable to evaluate Windows DACL: "+str(path))
             rights[text]=int(mask.value)
         return owner_sid,rights
@@ -321,6 +321,7 @@ def _assert_safe_execution_config(work:Path,gitdir:Path,common:Path,entries):
         matched=any(rx.match(name) for rx in EXEC_CONFIG_PATTERNS)
         if matched:
             if any(rx.match(name) for rx in TRUSTED_SYSTEM_EXEC_PATTERNS):
+                if entry.get("scope")!="system":raise SecurityError("execution-capable Git config denied: "+name+" from "+str(entry.get("scope") or ""))
                 try:_assert_trusted_system_config_origin(entry)
                 except SecurityError as e:raise SecurityError("execution-capable Git config denied: "+name+" from "+entry["scope"]+" "+entry["origin"]+" ("+str(e)+")") from e
                 continue
