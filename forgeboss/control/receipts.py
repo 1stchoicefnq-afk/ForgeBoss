@@ -113,6 +113,29 @@ def canonical_bytes(value: Any) -> bytes:
         raise ReceiptError("record is not canonical JSON") from ex
 
 
+def strict_loads(text: Any) -> Any:
+    if not isinstance(text, str):
+        raise ReceiptError("JSON input must be text")
+
+    def pairs(items):
+        out = {}
+        for key, value in items:
+            if key in out:
+                raise ReceiptError(f"duplicate JSON key: {key}")
+            out[key] = value
+        return out
+
+    def constant(name):
+        raise ReceiptError(f"non-finite JSON constant denied: {name}")
+
+    try:
+        return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+    except ReceiptError:
+        raise
+    except (TypeError, ValueError, json.JSONDecodeError) as ex:
+        raise ReceiptError("invalid JSON") from ex
+
+
 def receipt_digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
@@ -277,6 +300,9 @@ class CandidateHandoff:
         if not isinstance(uncertainties, (list, tuple)):
             raise ReceiptError("knownUncertainty must be an array")
         unc = tuple(_text(x, "knownUncertainty[]") for x in uncertainties)
+        contributors = _ids(r["contributors"], "contributors")
+        if not contributors:
+            raise ReceiptError("candidate handoff requires at least one contributor")
         return cls(
             assignment,
             _sha(r["candidateSha"], "candidateSha", assignment.object_format),
@@ -284,7 +310,7 @@ class CandidateHandoff:
             paths, tests, _digest(r["scopeDiffSha256"], "scopeDiffSha256"),
             _positive_int(r["additions"], "additions", allow_zero=True),
             _positive_int(r["deletions"], "deletions", allow_zero=True),
-            measured, reserved, _ids(r["contributors"], "contributors"), unc
+            measured, reserved, contributors, unc
         )
 
     def to_dict(self) -> dict:
