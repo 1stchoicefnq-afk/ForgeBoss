@@ -1,0 +1,52 @@
+name: Protected Authority V4 exact2 Windows proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v4-exact2
+permissions:
+  contents: read
+jobs:
+  windows-ffi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source unchanged
+        shell: pwsh
+        run: |
+          git cat-file -e a72550ea023e02afe7f21f6afdb7d87fd1e0bd6c^{commit}
+          git diff --exit-code a72550ea023e02afe7f21f6afdb7d87fd1e0bd6c -- forgeboss/protected_authority
+      - name: Compile protected authority
+        run: python -m compileall -q forgeboss/protected_authority
+      - name: Run native V4 Win32 FFI and pipe tests
+        run: python -m unittest forgeboss.protected_authority.test_v4 -v
+  linux-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install protected-authority test dependency
+        run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source unchanged
+        run: |
+          git cat-file -e a72550ea023e02afe7f21f6afdb7d87fd1e0bd6c^{commit}
+          git diff --exit-code a72550ea023e02afe7f21f6afdb7d87fd1e0bd6c -- forgeboss/protected_authority
+      - name: Compile protected authority
+        run: python -m compileall -q forgeboss/protected_authority
+      - name: Run V3/V4 and unchanged V2 authority regressions
+        run: >-
+          python -m unittest
+          forgeboss.protected_authority.test_service
+          forgeboss.protected_authority.test_v2.BoundaryV2Tests
+          forgeboss.protected_authority.test_v2.ReplayV2Tests
+          forgeboss.protected_authority.test_v2.GitHubBackendV2Tests
+          forgeboss.protected_authority.test_v3
+          forgeboss.protected_authority.test_v4 -v
