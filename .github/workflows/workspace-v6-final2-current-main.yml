@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor bd853cd6785a1c02df86a3297a155f80cf1b3871 HEAD
           git diff --quiet bd853cd6785a1c02df86a3297a155f80cf1b3871 HEAD -- forgeboss
-          test "$(git rev-parse bd853cd6785a1c02df86a3297a155f80cf1b3871^{tree})" = "$(git rev-parse HEAD^{tree}:.)"
+          test "$(git rev-parse bd853cd6785a1c02df86a3297a155f80cf1b3871^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
       - name: Verify exact candidate tree Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -35,5 +35,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'candidate not ancestor' }
           git diff --quiet bd853cd6785a1c02df86a3297a155f80cf1b3871 HEAD -- forgeboss
           if ($LASTEXITCODE -ne 0) { throw 'forgeboss tree changed' }
+          $a=(git rev-parse 'bd853cd6785a1c02df86a3297a155f80cf1b3871^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
       - name: Workspace V6 final2 focused suite
         run: python -m unittest forgeboss.control.test_workspace -v
