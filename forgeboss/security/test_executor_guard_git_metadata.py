@@ -158,14 +158,12 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             self.assertIn("gitdir/config",snap)
         finally:td.cleanup()
 
-    def test_filter_command_config_is_inert_for_local_metadata_allowlist_and_bound(self):
+    def test_filter_command_config_is_denied_fail_closed(self):
         td,work=self._ordinary()
         try:
             self._git(work,"config","filter.evil.clean","python external.py")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
-            self._git(work,"config","filter.evil.clean","python changed.py")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
-            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
+            with patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: filter.evil.clean"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
     def test_fsmonitor_boolean_is_allowed_but_path_target_is_denied(self):
@@ -229,24 +227,22 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
                 with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.external"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
-    def test_diff_textconv_config_is_inert_for_local_metadata_allowlist_and_bound(self):
+    def test_diff_textconv_is_denied_fail_closed(self):
         td,work=self._ordinary()
         try:
-            self._git(work,"config","diff.bin.textconv","external-one")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):first=guard.git_metadata_snapshot(work)
-            self._git(work,"config","diff.bin.textconv","external-two")
-            with patch.object(guard,"git",side_effect=self._real_guard_git):second=guard.git_metadata_snapshot(work)
-            self.assertNotEqual(first["git:effective-config"],second["git:effective-config"])
+            external=work.parent/"textconv.sh";external.write_text("#!/bin/sh\nexit 0\n",encoding="utf-8");self._git(work,"config","diff.bin.textconv",external.as_posix())
+            with patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied: diff.bin.textconv"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
-    def test_stock_git_for_windows_lfs_global_config_is_inert(self):
+    def test_untrusted_global_filter_and_textconv_override_is_denied_fail_closed(self):
         td,work=self._ordinary()
         try:
             global_cfg=work.parent/"git-for-windows-global.cfg"
             global_cfg.write_text('[diff "astextplain"]\n\ttextconv = astextplain\n[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n',encoding="utf-8")
             env={"GIT_CONFIG_GLOBAL":str(global_cfg),"GIT_CONFIG_NOSYSTEM":"1"}
-            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):snap=guard.git_metadata_snapshot(work)
-            self.assertIn("git:effective-config",snap)
+            with patch.dict(os.environ,env,clear=False),patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"execution-capable Git config denied"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
     def test_local_git_allowlist_rejects_execution_capable_shapes_before_subprocess(self):
@@ -460,21 +456,28 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             def OpenKey(self,*_):raise OSError("missing")
         with self.assertRaisesRegex(guard.SecurityError,"HKLM install root unavailable"):guard._windows_trusted_roots(Registry())
 
-    def test_windows_acl_requires_trusted_owner_and_no_broad_write_rights(self):
+    def test_windows_acl_requires_trusted_owner_and_rejects_any_untrusted_writer(self):
         p=Path("/synthetic/git.exe")
-        safe={sid:0x1200A9 for sid in guard._WIN_BROAD_WRITE_SIDS}
+        safe={"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}
         with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-18",safe)):guard._assert_windows_acl_trust(p)
         with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-545",safe)):
             with self.assertRaisesRegex(guard.SecurityError,"untrusted Windows Git path owner"):guard._assert_windows_acl_trust(p)
-        bad=dict(safe);bad["S-1-1-0"]|=0x2
-        with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",bad)):
-            with self.assertRaisesRegex(guard.SecurityError,"broad principal has write-capable"):guard._assert_windows_acl_trust(p)
+        for sid in ("S-1-5-21-111-222-333-1001","S-1-5-21-111-222-333-4242","S-1-1-0"):
+            with self.subTest(sid=sid):
+                bad=dict(safe);bad[sid]=guard._WIN_WRITE_RIGHTS
+                with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",bad)):
+                    with self.assertRaisesRegex(guard.SecurityError,"untrusted principal has write-capable"):guard._assert_windows_acl_trust(p)
+
+    def test_windows_acl_read_only_untrusted_principal_does_not_false_fail(self):
+        p=Path("/synthetic/git.exe")
+        rights={"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-21-111-222-333-1001":0x1200A9}
+        with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",rights)):guard._assert_windows_acl_trust(p)
 
     def test_windows_trusted_install_policy_rejects_outside_root_and_checks_full_chain(self):
         td=tempfile.TemporaryDirectory()
         try:
             root=Path(td.name);trusted=root/"Git";inside=trusted/"cmd"/"git.exe";inside.parent.mkdir(parents=True);inside.write_text("x");outside=root/"fake"/"git.exe";outside.parent.mkdir();outside.write_text("x")
-            safe={sid:0 for sid in guard._WIN_BROAD_WRITE_SIDS}
+            safe={"S-1-5-18":0,"S-1-5-32-544":0,"S-1-5-11":0x1200A9}
             with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-18",safe)) as facts:
                 guard._assert_windows_git_trust(inside.resolve())
                 self.assertEqual([c.args[0] for c in facts.call_args_list],[inside.resolve(),inside.parent.resolve(),trusted.resolve()])
@@ -485,19 +488,21 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
         td,temp=tempfile.TemporaryDirectory(),tempfile.TemporaryDirectory()
         try:
             root=Path(td.name);trusted=root/"Git";trusted.mkdir();fake_dir=Path(temp.name);fake=fake_dir/"git.exe";marker=fake_dir/"marker";fake.write_text("not executed",encoding="utf-8")
-            with patch.object(guard.os,"name","nt"),patch.object(guard.shutil,"which",return_value=str(fake.resolve())),patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard.subprocess,"run") as run:
+            with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]):
+                with self.assertRaisesRegex(guard.SecurityError,"untrusted Git-for-Windows install path"):guard._assert_windows_git_trust(fake.resolve())
+            with patch.object(guard,"_resolve_git_executable",side_effect=guard.SecurityError("untrusted Git-for-Windows install path")),patch.object(guard.subprocess,"run") as run:
                 with self.assertRaisesRegex(guard.SecurityError,"untrusted Git-for-Windows install path"):guard.git(root,"rev-parse","HEAD")
                 run.assert_not_called()
             self.assertFalse(marker.exists())
         finally:td.cleanup();temp.cleanup()
 
-    def test_windows_trusted_git_exe_can_resolve_when_registry_and_acl_are_trusted(self):
+    def test_windows_trusted_git_exe_policy_accepts_registry_and_acl_trusted_path(self):
         td=tempfile.TemporaryDirectory()
         try:
             root=Path(td.name);trusted=root/"Git";exe=trusted/"cmd"/"git.exe";exe.parent.mkdir(parents=True);exe.write_text("x")
-            safe={sid:0 for sid in guard._WIN_BROAD_WRITE_SIDS}
-            with patch.object(guard.os,"name","nt"),patch.object(guard.shutil,"which",return_value=str(exe.resolve())),patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",safe)):
-                self.assertEqual(guard._resolve_git_executable(),exe.resolve())
+            safe={"S-1-5-18":0,"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}
+            with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",safe)):
+                guard._assert_windows_git_trust(exe.resolve())
         finally:td.cleanup()
 
 if __name__=="__main__":unittest.main()

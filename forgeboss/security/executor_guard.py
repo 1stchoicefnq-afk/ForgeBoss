@@ -12,7 +12,7 @@ FORBIDDEN_EXACT={".git",".env",".env.local",".env.production",".npmrc",".pypirc"
 GIT_META_EXACT=("config","config.worktree","HEAD","packed-refs","shallow","info/attributes","info/exclude","objects/info/alternates")
 GIT_META_TREES=("refs","hooks")
 EXEC_CONFIG_EXACT={"core.askpass","core.editor","core.gitproxy","core.pager","core.sshcommand","diff.external","gpg.program","interactive.difffilter","sequence.editor"}
-EXEC_CONFIG_PATTERNS=(re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
+EXEC_CONFIG_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)$",re.I),re.compile(r"^diff\..+\.(?:command|textconv)$",re.I),re.compile(r"^merge\..+\.driver$",re.I),re.compile(r"^(?:diff|merge)tool\..+\.cmd$",re.I),re.compile(r"^gpg\..+\.program$",re.I),re.compile(r"^(?:pager|browser|man)\..+\.cmd$",re.I))
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
@@ -124,32 +124,52 @@ def _windows_acl_facts(path:Path):
         from ctypes import wintypes
         adv=ctypes.WinDLL("advapi32",use_last_error=True);kernel=ctypes.WinDLL("kernel32",use_last_error=True)
         V=wintypes.LPVOID;D=wintypes.DWORD
+        class ACL_SIZE_INFORMATION(ctypes.Structure):
+            _fields_=[("AceCount",D),("AclBytesInUse",D),("AclBytesFree",D)]
+        class ACE_HEADER(ctypes.Structure):
+            _fields_=[("AceType",ctypes.c_ubyte),("AceFlags",ctypes.c_ubyte),("AceSize",wintypes.WORD)]
         class TRUSTEE(ctypes.Structure):pass
         PTRUSTEE=ctypes.POINTER(TRUSTEE)
         TRUSTEE._fields_=[("pMultipleTrustee",PTRUSTEE),("MultipleTrusteeOperation",ctypes.c_int),("TrusteeForm",ctypes.c_int),("TrusteeType",ctypes.c_int),("ptstrName",wintypes.LPWSTR)]
         adv.GetNamedSecurityInfoW.argtypes=[wintypes.LPWSTR,D,D,ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V),ctypes.POINTER(V)];adv.GetNamedSecurityInfoW.restype=D
         adv.ConvertSidToStringSidW.argtypes=[V,ctypes.POINTER(wintypes.LPWSTR)];adv.ConvertSidToStringSidW.restype=wintypes.BOOL
-        adv.ConvertStringSidToSidW.argtypes=[wintypes.LPCWSTR,ctypes.POINTER(V)];adv.ConvertStringSidToSidW.restype=wintypes.BOOL
         adv.BuildTrusteeWithSidW.argtypes=[ctypes.POINTER(TRUSTEE),V];adv.BuildTrusteeWithSidW.restype=None
         adv.GetEffectiveRightsFromAclW.argtypes=[V,ctypes.POINTER(TRUSTEE),ctypes.POINTER(D)];adv.GetEffectiveRightsFromAclW.restype=D
+        adv.GetAclInformation.argtypes=[V,V,D,D];adv.GetAclInformation.restype=wintypes.BOOL
+        adv.GetAce.argtypes=[V,D,ctypes.POINTER(V)];adv.GetAce.restype=wintypes.BOOL
         kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V
         owner=V();dacl=V();sd=V()
         rc=adv.GetNamedSecurityInfoW(str(path),1,0x1|0x4,ctypes.byref(owner),None,ctypes.byref(dacl),None,ctypes.byref(sd))
         if rc!=0 or not owner.value or not dacl.value:raise SecurityError("unable to read Windows owner/DACL: "+str(path))
-        text=wintypes.LPWSTR()
-        if not adv.ConvertSidToStringSidW(owner,ctypes.byref(text)):raise SecurityError("unable to read Windows owner SID: "+str(path))
-        try:owner_sid=ctypes.wstring_at(text)
-        finally:kernel.LocalFree(text)
+        def sid_text(sid_ptr):
+            text=wintypes.LPWSTR()
+            if not adv.ConvertSidToStringSidW(sid_ptr,ctypes.byref(text)):raise SecurityError("unable to read Windows SID: "+str(path))
+            try:return ctypes.wstring_at(text)
+            finally:kernel.LocalFree(text)
+        owner_sid=sid_text(owner)
+        info=ACL_SIZE_INFORMATION()
+        if not adv.GetAclInformation(dacl,ctypes.byref(info),ctypes.sizeof(info),2):raise SecurityError("unable to enumerate Windows DACL: "+str(path))
+        trustee_sids={}
+        for i in range(int(info.AceCount)):
+            ace=V()
+            if not adv.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:raise SecurityError("unable to read Windows DACL ACE: "+str(path))
+            header=ctypes.cast(ace,ctypes.POINTER(ACE_HEADER)).contents
+            ace_type=int(header.AceType)
+            if ace_type not in (0,5):continue
+            base=int(ace.value)
+            if ace_type==0:
+                sid_addr=base+8
+            else:
+                flags=ctypes.c_uint32.from_address(base+8).value
+                sid_addr=base+12+(16 if flags & 0x1 else 0)+(16 if flags & 0x2 else 0)
+            sid=V(sid_addr);text=sid_text(sid)
+            trustee_sids[text.casefold()]=(text,sid_addr)
         rights={}
-        for sid_text in _WIN_BROAD_WRITE_SIDS:
-            sid=V()
-            if not adv.ConvertStringSidToSidW(sid_text,ctypes.byref(sid)):raise SecurityError("unable to construct Windows trust SID")
-            try:
-                trustee=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(trustee),sid);mask=D(0)
-                rc=adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(mask))
-                if rc!=0:raise SecurityError("unable to evaluate Windows DACL: "+str(path))
-                rights[sid_text]=int(mask.value)
-            finally:kernel.LocalFree(sid)
+        for _,(text,sid_addr) in sorted(trustee_sids.items()):
+            trustee=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(trustee),V(sid_addr));mask=D(0)
+            rc=adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(trustee),ctypes.byref(mask))
+            if rc!=0:raise SecurityError("unable to evaluate Windows DACL: "+str(path))
+            rights[text]=int(mask.value)
         return owner_sid,rights
     except SecurityError:raise
     except Exception as e:raise SecurityError("unable to inspect Windows Git ACL: "+str(path)) from e
@@ -161,7 +181,8 @@ def _assert_windows_acl_trust(path:Path):
     owner,rights=_windows_acl_facts(path)
     if str(owner).casefold() not in _WIN_TRUSTED_OWNER_SIDS:raise SecurityError("untrusted Windows Git path owner: "+str(path))
     for sid,mask in rights.items():
-        if int(mask) & _WIN_WRITE_RIGHTS:raise SecurityError("broad principal has write-capable Git path rights: "+sid+" -> "+str(path))
+        if str(sid).casefold() not in _WIN_TRUSTED_OWNER_SIDS and int(mask) & _WIN_WRITE_RIGHTS:
+            raise SecurityError("untrusted principal has write-capable Git path rights: "+str(sid)+" -> "+str(path))
 def _windows_path_key(p:Path):return os.path.normcase(os.path.normpath(str(p)))
 def _windows_within(path:Path,root:Path):
     try:return os.path.commonpath([_windows_path_key(path),_windows_path_key(root)])==_windows_path_key(root)
