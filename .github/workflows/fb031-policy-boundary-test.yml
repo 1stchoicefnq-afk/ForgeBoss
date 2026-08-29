@@ -1,0 +1,28 @@
+name: FB031 learning policy boundary tests
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-fb031-policy-boundary
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify working production tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor efff6e1683c8f24aabc9421be48b7f9dda6a13ff HEAD
+          git diff --quiet efff6e1683c8f24aabc9421be48b7f9dda6a13ff HEAD -- forgeboss
+          test "$(git rev-parse efff6e1683c8f24aabc9421be48b7f9dda6a13ff^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Focused persistence-boundary tests
+        run: python -m unittest forgeboss.learning.test_store_policy_boundary -v
+      - name: Learning package discovery
+        run: python -m unittest discover -s forgeboss/learning -p 'test_*.py' -v
