@@ -1,0 +1,27 @@
+name: Workspace V6 testfix patcher2
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-workspace-v6-testfix-patcher2
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout V6 temp source
+        run: git checkout ca644b6ef77643cd776e893297e47825f573965c
+      - name: Apply regression fixes
+        run: python .github/workspace_v6_testfix.py
+      - name: Validate and publish
+        run: |
+          python -m py_compile forgeboss/control/test_workspace.py
+          git config user.name "Worker C Workspace V6"
+          git config user.email "worker-c@users.noreply.github.com"
+          git checkout -b forgeboss/worker-c-workspace-v6-patched-temp2
+          git add forgeboss/control/test_workspace.py
+          git commit -m "test: fix Workspace V6 failure and swap regressions"
+          git push origin HEAD:refs/heads/forgeboss/worker-c-workspace-v6-patched-temp2
