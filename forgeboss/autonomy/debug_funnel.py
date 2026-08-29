@@ -1,6 +1,12 @@
 from __future__ import annotations
-import argparse, json, re, subprocess, hashlib
+import argparse, json, re, subprocess, sys, hashlib
 from pathlib import Path
+
+try:
+    from forgeboss.autonomy import state_store as ss
+except ImportError:
+    sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
+    from forgeboss.autonomy import state_store as ss
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"autonomy";STATE.mkdir(parents=True,exist_ok=True)
@@ -159,7 +165,9 @@ def main():
     }
     raw=json.dumps(obj,indent=2)
     obj["sha256"]=hashlib.sha256(raw.encode()).hexdigest()
-    p=STATE/"debug-funnel-last.json";p.write_text(json.dumps(obj,indent=2),encoding="utf-8")
+    # Unique-temp + fsync + atomic replace, stamped with the producing writer so
+    # one run's evidence cannot be silently attributed to another.
+    p=ss.publish_artifact(STATE/"debug-funnel-last.json",obj)
     print("FORGEBOSS_DEBUG_FUNNEL="+json.dumps({"category":cat,"files":len(snippets),"chars":obj["focused_source_chars"],"path":str(p)}))
     return 0
 if __name__=="__main__":raise SystemExit(main())

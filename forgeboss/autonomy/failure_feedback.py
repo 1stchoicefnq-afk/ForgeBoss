@@ -1,6 +1,12 @@
 from __future__ import annotations
-import argparse, hashlib, json, re, subprocess, time
+import argparse, hashlib, json, re, subprocess, sys, time
 from pathlib import Path
+
+try:
+    from forgeboss.autonomy import state_store as ss
+except ImportError:
+    sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
+    from forgeboss.autonomy import state_store as ss
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"autonomy";STATE.mkdir(parents=True,exist_ok=True)
@@ -145,8 +151,7 @@ def make(source:Path,kind:str):
       "model_calls":0,
       "github_writes":0
     }
-    p=STATE/"failure-feedback-last.json"
-    p.write_text(json.dumps(out,indent=2),encoding="utf-8")
+    p=ss.publish_artifact(STATE/"failure-feedback-last.json",out)
     print("FORGEBOSS_FAILURE_FEEDBACK="+json.dumps(out,separators=(",",":")))
     return 0
 
