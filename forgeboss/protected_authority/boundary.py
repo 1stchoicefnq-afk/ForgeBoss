@@ -1,100 +1,88 @@
 from __future__ import annotations
-
-import base64,os,socket,stat
+import base64,ctypes,os,socket,stat
 from dataclasses import dataclass
+from ctypes import wintypes
 from pathlib import Path
 from .protocol import AuthorityError
-
+from .win32_ffi import load_win32
 _WIN_TRUSTED_DEFAULT={'s-1-5-18','s-1-5-32-544'}
 _WIN_WRITE_RIGHTS=0x00040000|0x00080000|0x00010000|0x00000002|0x00000004|0x00000040|0x00000100|0x40000000|0x10000000
 _WIN_SECRET_RIGHTS=_WIN_WRITE_RIGHTS|0x00000001|0x00000008|0x00000080|0x00020000|0x80000000
-
 @dataclass(frozen=True)
 class PeerContext:
     platform:str
     principal:str
-
 def _ed25519_verify(public_key_b64:str,digest_hex:str,signature_b64:str)->bool:
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
         key=Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key_b64,validate=True));sig=base64.b64decode(signature_b64,validate=True);key.verify(sig,bytes.fromhex(digest_hex));return True
     except Exception:return False
-
 def unix_peer_context(sock:socket.socket)->PeerContext:
     if os.name=='nt' or not hasattr(socket,'SO_PEERCRED'):raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
     import struct
     try:_pid,uid,_gid=struct.unpack('3i',sock.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
     except Exception as e:raise AuthorityError('PEER_CONTEXT_UNAVAILABLE') from e
     return PeerContext('posix',f'uid:{uid}')
-
 def _windows_sid_text(sid_ptr)->str:
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32',use_last_error=True);text=wintypes.LPWSTR()
-    if not adv.ConvertSidToStringSidW(sid_ptr,ctypes.byref(text)):raise AuthorityError('WINDOWS_SID_INVALID')
+    api=load_win32();text=wintypes.LPWSTR()
+    if not api.advapi32.ConvertSidToStringSidW(sid_ptr,ctypes.byref(text)):raise AuthorityError('WINDOWS_SID_INVALID')
     try:return ctypes.wstring_at(text)
-    finally:kernel.LocalFree(text)
-
+    finally:api.kernel32.LocalFree(text)
 def _windows_token_sid(token)->str:
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True);needed=wintypes.DWORD(0);adv.GetTokenInformation(token,1,None,0,ctypes.byref(needed))
+    api=load_win32();needed=wintypes.DWORD(0);api.advapi32.GetTokenInformation(token,1,None,0,ctypes.byref(needed))
     if not needed.value:raise AuthorityError('WINDOWS_TOKEN_INVALID')
     buf=ctypes.create_string_buffer(needed.value)
-    if not adv.GetTokenInformation(token,1,buf,needed,ctypes.byref(needed)):raise AuthorityError('WINDOWS_TOKEN_INVALID')
-    return _windows_sid_text(ctypes.c_void_p.from_buffer(buf).value)
-
+    if not api.advapi32.GetTokenInformation(token,1,buf,needed,ctypes.byref(needed)):raise AuthorityError('WINDOWS_TOKEN_INVALID')
+    sid=ctypes.c_void_p.from_buffer(buf).value
+    if not sid:raise AuthorityError('WINDOWS_TOKEN_INVALID')
+    return _windows_sid_text(ctypes.c_void_p(sid))
 def windows_pipe_peer_context(pipe_handle:int)->PeerContext:
     if os.name!='nt':raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-    if not adv.ImpersonateNamedPipeClient(wintypes.HANDLE(pipe_handle)):raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
+    api=load_win32();handle=wintypes.HANDLE(pipe_handle)
+    if not api.advapi32.ImpersonateNamedPipeClient(handle):raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
     token=wintypes.HANDLE()
     try:
-        if not adv.OpenThreadToken(kernel.GetCurrentThread(),0x0008,True,ctypes.byref(token)):raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
+        if not api.advapi32.OpenThreadToken(api.kernel32.GetCurrentThread(),0x0008,True,ctypes.byref(token)):raise AuthorityError('PEER_CONTEXT_UNAVAILABLE')
         return PeerContext('windows',_windows_token_sid(token).casefold())
     finally:
-        if token:kernel.CloseHandle(token)
-        adv.RevertToSelf()
-
+        if token:api.kernel32.CloseHandle(token)
+        api.advapi32.RevertToSelf()
 def _windows_acl_facts(path:Path):
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32',use_last_error=True);V=wintypes.LPVOID;D=wintypes.DWORD
+    api=load_win32();V=wintypes.LPVOID;D=wintypes.DWORD
     class ACLINFO(ctypes.Structure):_fields_=[('AceCount',D),('AclBytesInUse',D),('AclBytesFree',D)]
     class ACEHDR(ctypes.Structure):_fields_=[('AceType',ctypes.c_ubyte),('AceFlags',ctypes.c_ubyte),('AceSize',wintypes.WORD)]
     class TRUSTEE(ctypes.Structure):pass
     PTR=ctypes.POINTER(TRUSTEE);TRUSTEE._fields_=[('pMultipleTrustee',PTR),('MultipleTrusteeOperation',ctypes.c_int),('TrusteeForm',ctypes.c_int),('TrusteeType',ctypes.c_int),('ptstrName',wintypes.LPWSTR)]
-    owner=V();dacl=V();sd=V();rc=adv.GetNamedSecurityInfoW(str(path),1,0x1|0x4,ctypes.byref(owner),None,ctypes.byref(dacl),None,ctypes.byref(sd))
+    owner=V();dacl=V();sd=V();rc=api.advapi32.GetNamedSecurityInfoW(str(path),1,0x1|0x4,ctypes.byref(owner),None,ctypes.byref(dacl),None,ctypes.byref(sd))
     if rc!=0 or not owner.value or not dacl.value:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
     try:
         owner_sid=_windows_sid_text(owner).casefold();info=ACLINFO()
-        if not adv.GetAclInformation(dacl,ctypes.byref(info),ctypes.sizeof(info),2):raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
+        if not api.advapi32.GetAclInformation(dacl,ctypes.byref(info),ctypes.sizeof(info),2):raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
         trustees={}
         for i in range(int(info.AceCount)):
             ace=V()
-            if not adv.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
+            if not api.advapi32.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
             h=ctypes.cast(ace,ctypes.POINTER(ACEHDR)).contents
             if int(h.AceSize)<8:raise AuthorityError('PROTECTED_PATH_ACL_UNKNOWN')
             t=int(h.AceType);base=int(ace.value)
             if t in (0,9):off=8
             elif t in (5,11):
                 if int(h.AceSize)<12:raise AuthorityError('PROTECTED_PATH_ACL_UNKNOWN')
-                flags=ctypes.c_uint32.from_address(base+8).value;off=12+(16 if flags&1 else 0)+(16 if flags&2 else 0)
-            elif t in (1,2,3,4,6,7,8,10,12,13,14,15,16,17):continue
+                flags=ctypes.c_uint32.from_address(base+8).value
+                if flags&~0x3:raise AuthorityError('PROTECTED_PATH_ACL_UNKNOWN')
+                off=12+(16 if flags&1 else 0)+(16 if flags&2 else 0)
+            elif t in (1,6,10,12):continue
             else:raise AuthorityError('PROTECTED_PATH_ACL_UNKNOWN')
             if off>=int(h.AceSize):raise AuthorityError('PROTECTED_PATH_ACL_UNKNOWN')
             sid_addr=base+off;sid=_windows_sid_text(V(sid_addr));trustees[sid.casefold()]=(sid,sid_addr)
         rights={}
         for k,(text,addr) in trustees.items():
-            tr=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(tr),V(addr));mask=D(0)
-            if adv.GetEffectiveRightsFromAclW(dacl,ctypes.byref(tr),ctypes.byref(mask))!=0:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
+            tr=TRUSTEE();api.advapi32.BuildTrusteeWithSidW(ctypes.byref(tr),V(addr));mask=D(0)
+            if api.advapi32.GetEffectiveRightsFromAclW(dacl,ctypes.byref(tr),ctypes.byref(mask))!=0:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
             rights[k]=int(mask.value)
         return owner_sid,rights
     finally:
-        if sd.value:kernel.LocalFree(sd)
-
+        if sd.value:api.kernel32.LocalFree(sd)
 class PlatformMachineBoundary:
     def __init__(self,*,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],trusted_storage_principals:set[str]|None=None):
         if not expected_service_principal or not peer_principals or set(peer_principals)!=set(peer_public_keys):raise AuthorityError('BOUNDARY_CONFIG_INVALID')
@@ -108,12 +96,10 @@ class PlatformMachineBoundary:
         if mode&0o022:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
         if (root_component or secret) and mode&0o077:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
     def _current_windows_sid(self)->str:
-        import ctypes
-        from ctypes import wintypes
-        adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32',use_last_error=True);token=wintypes.HANDLE()
-        if not adv.OpenProcessToken(kernel.GetCurrentProcess(),0x0008,ctypes.byref(token)):raise AuthorityError('SERVICE_PRINCIPAL_INVALID')
+        api=load_win32();token=wintypes.HANDLE()
+        if not api.advapi32.OpenProcessToken(api.kernel32.GetCurrentProcess(),0x0008,ctypes.byref(token)):raise AuthorityError('SERVICE_PRINCIPAL_INVALID')
         try:return _windows_token_sid(token).casefold()
-        finally:kernel.CloseHandle(token)
+        finally:api.kernel32.CloseHandle(token)
     def _assert_windows_component(self,path:Path,*,secret=False):
         owner,rights=_windows_acl_facts(path)
         if owner not in self.trusted_storage:raise AuthorityError('PROTECTED_PATH_PERMISSIONS')
@@ -132,8 +118,7 @@ class PlatformMachineBoundary:
             cur=parent
         for component in reversed(chain):
             if component.is_symlink():raise AuthorityError('PROTECTED_PATH_INVALID')
-            is_target=component.resolve(strict=True)==target.resolve(strict=True)
-            is_root=component.resolve(strict=True)==stop
+            is_target=component.resolve(strict=True)==target.resolve(strict=True);is_root=component.resolve(strict=True)==stop
             if os.name=='nt':self._assert_windows_component(component,secret=(secret and is_target))
             else:self._assert_posix_component(component,root_component=is_root,secret=(secret and is_target))
     def assert_service_principal(self,protected_root:Path)->str:
@@ -150,7 +135,6 @@ class PlatformMachineBoundary:
         if peer_context is None or peer_id not in self.peer_principals:return False
         if peer_context.platform!=('windows' if os.name=='nt' else 'posix') or peer_context.principal.casefold()!=self.peer_principals[peer_id]:return False
         return _ed25519_verify(self.peer_keys[peer_id],request_digest,signature)
-
 class FileSecretProvider:
     def __init__(self,*,root:Path,private_key_path:Path,launch_trust_path:Path,boundary:PlatformMachineBoundary):self.root=root.resolve(strict=True);self.private_key_path=private_key_path;self.launch_trust_path=launch_trust_path;self.boundary=boundary
     def _read(self,path:Path)->bytes:
