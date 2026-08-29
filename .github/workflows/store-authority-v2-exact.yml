@@ -1,0 +1,27 @@
+name: Store Authority V2 exact proof
+on:
+  push:
+    branches: [forgeboss/controller-test-store-authority-v2-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 2509311ee456dc75be60bc5c5cbf281e0e14fc17 HEAD
+          git diff --quiet 2509311ee456dc75be60bc5c5cbf281e0e14fc17 HEAD -- forgeboss
+          test "$(git rev-parse 2509311ee456dc75be60bc5c5cbf281e0e14fc17^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run Store Authority focused suites
+        run: python -m unittest forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions forgeboss.control.test_store_authority -v
+      - name: Run broad control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
