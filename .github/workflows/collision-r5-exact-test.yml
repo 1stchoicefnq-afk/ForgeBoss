@@ -11,13 +11,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Verify candidate parent
         shell: bash
         run: |
-          test "$(git rev-parse HEAD^)" = "6942fb627ea7291c0857039d271123869f38746c"
+          test "$(git rev-parse HEAD~2)" = "6942fb627ea7291c0857039d271123869f38746c"
           git diff --quiet 6942fb627ea7291c0857039d271123869f38746c HEAD -- forgeboss
       - name: Run exact Collision R5 suites
         run: python -m unittest forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions -v
