@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -38,12 +40,13 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
 
     def _make_quarantine(self, target):
         from forgeboss.control import workspace as m
-        real = m.shutil.rmtree
+        real = m._rmtree_windows_safe
+        calls={"n":0}
         def fail(path,*a,**kw):
-            if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")
-            return real(path,*a,**kw)
+            calls["n"]+=1
+            raise PermissionError("cleanup denied")
         with mock.patch.object(m,"verify_workspace",side_effect=WorkspaceProvisionError("INJECTED","forced failure")), \
-             mock.patch.object(m.shutil,"rmtree",side_effect=fail):
+             mock.patch.object(m,"_rmtree_windows_safe",side_effect=fail):
             with self.assertRaises(WorkspaceProvisionError) as cm:
                 provision_workspace(self.source,target,self.workspaces,self.base_sha,"task/one",self.git)
         return cm.exception, real
@@ -118,7 +121,7 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,"0"*32)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH")
         s=quarantine_status(target,self.workspaces); survivor=target if target.exists() else Path(s["stage"]); from forgeboss.control import workspace as m
-        m._rmtree_windows_safe(survivor); survivor.mkdir(); (survivor/"newer").write_text("x")
+        m._rmtree_windows_safe(survivor,m._path_identity(survivor)); survivor.mkdir(); (survivor/"newer").write_text("x")
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,gen)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH"); self.assertTrue((survivor/"newer").exists())
 
@@ -129,9 +132,9 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         from forgeboss.control import workspace as m
         real_identity=m._path_identity
         def observed(path,*a,**kw):
-            if Path(path)==survivor: return dict(forged)
+            if Path(path).resolve()==survivor.resolve(): return dict(forged)
             return real_identity(path,*a,**kw)
-        with mock.patch.object(m,"_path_identity",side_effect=observed), mock.patch.object(m.shutil,"rmtree") as rm:
+        with mock.patch.object(m,"_path_identity",side_effect=observed), mock.patch.object(m,"_rmtree_windows_safe") as rm:
             with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,gen)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH"); rm.assert_not_called()
 
@@ -153,6 +156,60 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         except (OSError,NotImplementedError): self.skipTest("symlink unavailable")
         with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(link,self.workspaces)
         self.assertTrue(target.exists())
+
+    @unittest.skipUnless(os.name=="nt","native Windows cleanup proof")
+    def test_windows_handle_cleanup_removes_readonly_git_workspace(self):
+        target=self.workspaces/"worker-win"
+        provision_workspace(self.source,target,self.workspaces,self.base_sha,"task/win",self.git)
+        marker=target/"readonly-marker.txt";marker.write_text("locked\n",encoding="utf-8");os.chmod(marker,stat.S_IREAD)
+        self.assertTrue(cleanup_workspace(target,self.workspaces));self.assertFalse(target.exists())
+
+    @unittest.skipUnless(os.name=="nt","native Windows reparse proof")
+    def test_windows_cleanup_rejects_child_reparse_swap_before_mutation(self):
+        from forgeboss.control import workspace as m
+        from forgeboss.control import windows_cleanup as wc
+        target=self.workspaces/"victim-root";target.mkdir();child=target/"victim";child.mkdir();(child/"inside.txt").write_text("inside")
+        outside=self.base/"outside-junction-target";outside.mkdir();keep=outside/"keep.txt";keep.write_text("keep")
+        real_entries=wc._entries;swapped={"done":False}
+        def enumerate_then_swap(parent):
+            entries=real_entries(parent)
+            if not swapped["done"] and any(name=="victim" for name,_,_ in entries):
+                shutil.rmtree(child)
+                cp=subprocess.run(["powershell.exe","-NoProfile","-NonInteractive","-Command","New-Item","-ItemType","Junction","-Path",str(child),"-Target",str(outside)],capture_output=True,text=True)
+                if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)
+                swapped["done"]=True
+            return entries
+        try:
+            with mock.patch.object(wc,"_entries",side_effect=enumerate_then_swap):
+                with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)
+            self.assertTrue(keep.exists());self.assertTrue(swapped["done"])
+        finally:
+            if child.exists() and m._is_reparse(child): os.rmdir(child)
+
+    def _seed_inflight_record(self,target,state="provisioning"):
+        from forgeboss.control import workspace as m
+        root,canonical=m._candidate_under_root(target,self.workspaces);generation="c"*32;stage=root/f"{STAGE_PREFIX}crash-{generation}";stage.mkdir()
+        record={"version":m.QUARANTINE_VERSION,"generation":generation,"target":str(canonical),"stage":str(stage),"identity":m._path_identity(stage),"state":state,"updatedAt":0.0}
+        m._write_record(m._record_path(root,canonical),record);return root,canonical,stage,generation,record
+
+    def test_restart_reconciles_inflight_provisioning_generation(self):
+        target=self.workspaces/"crash-provision";_,_,stage,generation,_=self._seed_inflight_record(target)
+        found=discover_quarantined_workspaces(self.workspaces);row=next(x for x in found if x.get("generation")==generation);self.assertEqual(row.get("recoveredFromState"),"provisioning")
+        out=reconcile_quarantined_workspace(target,self.workspaces,generation);self.assertTrue(out["reconciled"]);self.assertFalse(stage.exists());self.assertIsNone(quarantine_status(target,self.workspaces))
+
+    def test_restart_rejects_replaced_inflight_generation(self):
+        from forgeboss.control import workspace as m
+        target=self.workspaces/"crash-replaced";_,_,stage,generation,record=self._seed_inflight_record(target)
+        m._rmtree_windows_safe(stage,record["identity"]);stage.mkdir();(stage/"attacker.txt").write_text("new")
+        discover_quarantined_workspaces(self.workspaces)
+        with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,generation)
+        self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH");self.assertTrue((stage/"attacker.txt").exists())
+
+    def test_restart_reconciles_post_rename_generation(self):
+        from forgeboss.control import workspace as m
+        target=self.workspaces/"crash-rename";root,canonical,stage,generation,record=self._seed_inflight_record(target,"renaming");stage.rename(canonical)
+        found=discover_quarantined_workspaces(self.workspaces);row=next(x for x in found if x.get("generation")==generation);self.assertEqual(row.get("recoveredFromState"),"renaming")
+        out=reconcile_quarantined_workspace(target,self.workspaces,generation);self.assertTrue(out["reconciled"]);self.assertFalse(canonical.exists())
 
 
 if __name__ == "__main__": unittest.main()
