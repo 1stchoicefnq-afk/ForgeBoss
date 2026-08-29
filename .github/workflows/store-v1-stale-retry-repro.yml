@@ -44,11 +44,11 @@ jobs:
               s.retry_task('A','replacement')
               before=(s.get_task('A')['budget_spent'],s.db.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],s.db.execute("SELECT COUNT(*) FROM task_events WHERE event_type='workspace.claimed'").fetchone()[0])
               try:
-                  lease=claim('stale-r2')
+                  claim('stale-r2')
               except StoreAuthorityError as e:
                   print('SECURE_DENIAL',e.code,before)
                   raise SystemExit(0)
               after=(s.get_task('A')['budget_spent'],s.db.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],s.db.execute("SELECT COUNT(*) FROM task_events WHERE event_type='workspace.claimed'").fetchone()[0])
-              print('STALE_RETRY_BYPASS_REPRODUCED',lease['run_id'],before,after)
+              print('STALE_RETRY_BYPASS_REPRODUCED',before,after)
               raise SystemExit(42)
           PY
