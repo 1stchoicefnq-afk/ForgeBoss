@@ -39,8 +39,25 @@ jobs:
           if ($a -ne $b) { throw 'forgeboss tree mismatch' }
       - name: FB079 focused metadata suite
         run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
-      - name: Paid-start suite
-        run: python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+      - name: Paid-start suite when present
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          if [ -f forgeboss/security/test_executor_guard_paid_start.py ]; then
+            python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+          else
+            echo 'paid_start_test_absent_on_current_main=true'
+          fi
+      - name: Paid-start suite when present Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path 'forgeboss/security/test_executor_guard_paid_start.py') {
+            python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host 'paid_start_test_absent_on_current_main=true'
+          }
       - name: Broad security regression discovery
         run: python -m unittest discover -s forgeboss/security -p 'test_*.py' -v
       - name: Native stock Git trust probe
