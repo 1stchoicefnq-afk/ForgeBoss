@@ -1,0 +1,74 @@
+name: Workspace V6 testfix patcher
+on:
+  push:
+    branches: [forgeboss/worker-c-workspace-v6-testfix-patcher]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ca644b6ef77643cd776e893297e47825f573965c
+      - name: Refine exact V6 regressions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('forgeboss/control/test_workspace.py');s=p.read_text()
+          old='''        real = m._rmtree_windows_safe
+        def fail(path,*a,**kw):
+            if Path(path).name.startswith(STAGE_PREFIX) or Path(path)==target: raise PermissionError("cleanup denied")
+            return real(path,*a,**kw)'''
+          new='''        real = m._rmtree_windows_safe
+        calls={"n":0}
+        def fail(path,*a,**kw):
+            calls["n"]+=1
+            raise PermissionError("cleanup denied")'''
+          if old not in s: raise SystemExit('quarantine fixture block missing')
+          s=s.replace(old,new,1)
+          old2='''        real=wc._open_relative;swapped={"done":False}
+        def swap(parent,name):
+            if name=="victim" and not swapped["done"]:
+                shutil.rmtree(child)
+                cp=subprocess.run(["cmd.exe","/d","/c",f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)
+                if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)
+                swapped["done"]=True
+            return real(parent,name)
+        try:
+            with mock.patch.object(wc,"_open_relative",side_effect=swap):
+                with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)
+            self.assertTrue(keep.exists());self.assertTrue(swapped["done"])
+        finally:
+            if child.exists() and m._is_reparse(child): os.rmdir(child)'''
+          new2='''        real_entries=wc._entries;swapped={"done":False}
+        def enumerate_then_swap(parent):
+            entries=real_entries(parent)
+            if not swapped["done"] and any(name=="victim" for name,_,_ in entries):
+                shutil.rmtree(child)
+                cp=subprocess.run(["cmd.exe","/d","/c",f'mklink /J "{child}" "{outside}"'],capture_output=True,text=True)
+                if cp.returncode: raise unittest.SkipTest("junction creation unavailable: "+cp.stderr)
+                swapped["done"]=True
+            return entries
+        try:
+            with mock.patch.object(wc,"_entries",side_effect=enumerate_then_swap):
+                with self.assertRaises(WorkspaceProvisionError): cleanup_workspace(target,self.workspaces)
+            self.assertTrue(keep.exists());self.assertTrue(swapped["done"])
+        finally:
+            if child.exists() and m._is_reparse(child): os.rmdir(child)'''
+          if old2 not in s: raise SystemExit('reparse regression block missing')
+          s=s.replace(old2,new2,1)
+          p.write_text(s)
+          PY
+          python -m py_compile forgeboss/control/test_workspace.py
+      - name: Publish corrected temp branch
+        shell: bash
+        run: |
+          git config user.name 'Worker C Workspace V6'
+          git config user.email 'worker-c@users.noreply.github.com'
+          git checkout -b forgeboss/worker-c-workspace-v6-patched-temp2
+          git add forgeboss/control/test_workspace.py
+          git commit -m 'test: fix Workspace V6 failure and swap regressions'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-workspace-v6-patched-temp2
