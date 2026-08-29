@@ -1,0 +1,28 @@
+name: Collision R5 integration tests
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-collision-r5-integration
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact integration source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor b7bb084a87447f47d19efc3c8406f899b021a2d2 HEAD
+          git diff --quiet b7bb084a87447f47d19efc3c8406f899b021a2d2 HEAD -- forgeboss
+          test "$(git rev-parse b7bb084a87447f47d19efc3c8406f899b021a2d2^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run focused Collision R5 suites
+        run: python -m unittest forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions -v
+      - name: Run control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
