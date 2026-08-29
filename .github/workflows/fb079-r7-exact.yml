@@ -1,0 +1,41 @@
+name: FB079 R7 exact tests
+on:
+  push:
+    branches: [forgeboss/controller-test-fb079-r7-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 52ef282de8954c74b416e25583df579f7af03407 HEAD
+          git diff --quiet 52ef282de8954c74b416e25583df579f7af03407 HEAD -- forgeboss
+          test "$(git rev-parse 52ef282de8954c74b416e25583df579f7af03407^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact candidate source Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          git merge-base --is-ancestor 52ef282de8954c74b416e25583df579f7af03407 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'candidate is not ancestor' }
+          git diff --quiet 52ef282de8954c74b416e25583df579f7af03407 HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source changed' }
+          $a=(git rev-parse '52ef282de8954c74b416e25583df579f7af03407^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Run executor guard suite
+        run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
