@@ -24,16 +24,16 @@ jobs:
       - name: Native untrusted writer and delete-child denial
         shell: pwsh
         run: |
-          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $untrusted = "S-1-5-32-545"
           $root = Join-Path $env:RUNNER_TEMP "r9-native-acl"
           if (Test-Path $root) { Remove-Item -Recurse -Force $root }
           New-Item -ItemType Directory -Path $root | Out-Null
           $file = Join-Path $root "git.exe"
           Set-Content -Path $file -Value "x" -NoNewline
 
-          # Make owner + baseline ACL machine-trusted, with current user explicitly read/execute only.
+          # Machine-trusted owner/baseline with built-in Users explicitly read/execute only.
           icacls $root /inheritance:r | Out-Host
-          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($sid):(OI)(CI)(RX)" | Out-Host
+          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($untrusted):(OI)(CI)(RX)" | Out-Host
           icacls $root /setowner "*S-1-5-32-544" /T /C | Out-Host
           icacls $file /inheritance:e | Out-Host
           icacls $file /setowner "*S-1-5-32-544" | Out-Host
@@ -52,8 +52,8 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # Add explicit write-capable rights for the ordinary runner SID: must be rejected.
-          icacls $file /grant:r "*$($sid):(M)" | Out-Host
+          # Add explicit Modify to built-in Users: must be rejected.
+          icacls $file /grant:r "*$($untrusted):(M)" | Out-Host
           @'
           import os
           from pathlib import Path
@@ -68,8 +68,8 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # Parent DELETE_CHILD is replacement authority even if the child itself is protected.
-          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($sid):(DC)" | Out-Host
+          # Parent FILE_DELETE_CHILD is replacement authority even when child is protected.
+          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($untrusted):(DC)" | Out-Host
           $env:R9_ROOT = $root
           @'
           import os
