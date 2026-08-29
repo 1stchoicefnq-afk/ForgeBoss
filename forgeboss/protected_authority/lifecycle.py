@@ -1,18 +1,13 @@
 from __future__ import annotations
-
-import os,socket,stat,threading
+import ctypes,os,socket,stat,threading
+from ctypes import wintypes
 from pathlib import Path
-
 from .boundary import windows_pipe_peer_context
 from .ipc import serve_unix_once
 from .protocol import AuthorityError,MAX_REQUEST_BYTES
 from .root_chain import assert_machine_anchored_root
-
-FIXED_PIPE_NAME=r'\\.\pipe\ForgeBossAuthority'
-FIXED_SOCKET_NAME='authority.sock'
-FIXED_SERVICE_NAME='ForgeBossAuthoritySvc'
-
-
+from .win32_ffi import is_invalid_handle,load_win32
+FIXED_PIPE_NAME=r'\\.\pipe\ForgeBossAuthority';FIXED_SOCKET_NAME='authority.sock';FIXED_SERVICE_NAME='ForgeBossAuthoritySvc'
 def _assert_linux_endpoint_dir(path:Path,*,service_uid:int,allowed_gid:int)->Path:
     p=Path(path)
     if not p.is_absolute() or p.is_symlink():raise AuthorityError('IPC_ENDPOINT_DIR_INVALID')
@@ -27,7 +22,6 @@ def _assert_linux_endpoint_dir(path:Path,*,service_uid:int,allowed_gid:int)->Pat
         if cur.parent==cur:break
         cur=cur.parent
     return r
-
 class LinuxAuthorityDaemon:
     def __init__(self,*,service,boundary,protected_root:Path,endpoint_dir:Path,allowed_gid:int):
         if os.name=='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
@@ -58,7 +52,6 @@ class LinuxAuthorityDaemon:
         if self.listener is not None:self.listener.close();self.listener=None
         try:self.path.unlink()
         except FileNotFoundError:pass
-
 def _windows_sddl(allowed_peer_sids:set[str])->str:
     sids=[]
     for sid in sorted({str(x).upper() for x in allowed_peer_sids}):
@@ -66,79 +59,64 @@ def _windows_sddl(allowed_peer_sids:set[str])->str:
         sids.append(f'(A;;GRGW;;;{sid})')
     if not sids:raise AuthorityError('IPC_PEER_SID_INVALID')
     return 'D:P(A;;GA;;;SY)(A;;GA;;;BA)'+''.join(sids)
-
+class QSC(ctypes.Structure):_fields_=[('dwServiceType',wintypes.DWORD),('dwStartType',wintypes.DWORD),('dwErrorControl',wintypes.DWORD),('lpBinaryPathName',wintypes.LPWSTR),('lpLoadOrderGroup',wintypes.LPWSTR),('dwTagId',wintypes.DWORD),('lpDependencies',wintypes.LPWSTR),('lpServiceStartName',wintypes.LPWSTR),('lpDisplayName',wintypes.LPWSTR)]
 def assert_windows_scm_registration(*,service_name:str=FIXED_SERVICE_NAME,expected_image_command:str)->None:
     if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True);scm=adv.OpenSCManagerW(None,None,0x0001);svc=None
-    if not scm:raise AuthorityError('SCM_UNAVAILABLE')
+    api=load_win32();scm=api.advapi32.OpenSCManagerW(None,None,0x0001);svc=None
+    if is_invalid_handle(scm):raise AuthorityError('SCM_UNAVAILABLE')
     try:
-        svc=adv.OpenServiceW(scm,service_name,0x0001)
-        if not svc:raise AuthorityError('SCM_SERVICE_MISSING')
-        needed=wintypes.DWORD(0);adv.QueryServiceConfigW(svc,None,0,ctypes.byref(needed))
+        svc=api.advapi32.OpenServiceW(scm,service_name,0x0001)
+        if is_invalid_handle(svc):raise AuthorityError('SCM_SERVICE_MISSING')
+        needed=wintypes.DWORD(0);api.advapi32.QueryServiceConfigW(svc,None,0,ctypes.byref(needed))
         if not needed.value:raise AuthorityError('SCM_CONFIG_INVALID')
         buf=ctypes.create_string_buffer(needed.value)
-        if not adv.QueryServiceConfigW(svc,buf,needed,ctypes.byref(needed)):raise AuthorityError('SCM_CONFIG_INVALID')
-        class QSC(ctypes.Structure):_fields_=[('dwServiceType',wintypes.DWORD),('dwStartType',wintypes.DWORD),('dwErrorControl',wintypes.DWORD),('lpBinaryPathName',wintypes.LPWSTR),('lpLoadOrderGroup',wintypes.LPWSTR),('dwTagId',wintypes.DWORD),('lpDependencies',wintypes.LPWSTR),('lpServiceStartName',wintypes.LPWSTR),('lpDisplayName',wintypes.LPWSTR)]
+        if not api.advapi32.QueryServiceConfigW(svc,ctypes.cast(buf,wintypes.LPVOID),needed,ctypes.byref(needed)):raise AuthorityError('SCM_CONFIG_INVALID')
         cfg=ctypes.cast(buf,ctypes.POINTER(QSC)).contents;actual=' '.join(str(cfg.lpBinaryPathName or '').split());expected=' '.join(str(expected_image_command).split())
         if actual!=expected:raise AuthorityError('SCM_IMAGE_MISMATCH')
     finally:
-        if svc:adv.CloseServiceHandle(svc)
-        adv.CloseServiceHandle(scm)
-
+        if svc and not is_invalid_handle(svc):api.advapi32.CloseServiceHandle(svc)
+        if scm and not is_invalid_handle(scm):api.advapi32.CloseServiceHandle(scm)
+class SA(ctypes.Structure):_fields_=[('nLength',wintypes.DWORD),('lpSecurityDescriptor',wintypes.LPVOID),('bInheritHandle',wintypes.BOOL)]
 class WindowsNamedPipeServer:
     def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str]):
         if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
         self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.handle=None;self._sd=None
     def start(self):
         if self.handle is not None:raise AuthorityError('SERVICE_ALREADY_STARTED')
-        import ctypes
-        from ctypes import wintypes
-        adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32',use_last_error=True);V=wintypes.LPVOID
-        class SA(ctypes.Structure):_fields_=[('nLength',wintypes.DWORD),('lpSecurityDescriptor',V),('bInheritHandle',wintypes.BOOL)]
-        sd=V();sddl=_windows_sddl(self.allowed_peer_sids)
-        if not adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,ctypes.byref(sd),None):raise AuthorityError('IPC_ACL_INVALID')
-        sa=SA(ctypes.sizeof(SA),sd,False);h=kernel.CreateNamedPipeW(FIXED_PIPE_NAME,0x00000003|0x00080000,0x00000004|0x00000002|0x00000008,1,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,5000,ctypes.byref(sa))
-        if h in (0,-1):kernel.LocalFree(sd);raise AuthorityError('IPC_CREATE_FAILED')
+        api=load_win32();sd=wintypes.LPVOID();sddl=_windows_sddl(self.allowed_peer_sids)
+        if not api.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,ctypes.byref(sd),None):raise AuthorityError('IPC_ACL_INVALID')
+        sa=SA(ctypes.sizeof(SA),sd,False);h=api.kernel32.CreateNamedPipeW(FIXED_PIPE_NAME,0x00000003|0x00080000,0x00000004|0x00000002|0x00000008,1,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,5000,ctypes.byref(sa))
+        if is_invalid_handle(h):api.kernel32.LocalFree(sd);raise AuthorityError('IPC_CREATE_FAILED')
         self.handle=h;self._sd=sd;return h
     def serve_once(self):
         if self.handle is None:raise AuthorityError('SERVICE_NOT_STARTED')
-        import ctypes
-        from ctypes import wintypes
-        kernel=ctypes.WinDLL('kernel32',use_last_error=True);ok=kernel.ConnectNamedPipe(wintypes.HANDLE(self.handle),None)
+        api=load_win32();ok=api.kernel32.ConnectNamedPipe(self.handle,None)
         if not ok and ctypes.get_last_error()!=535:raise AuthorityError('IPC_CONNECT_FAILED')
         try:
-            ctx=windows_pipe_peer_context(self.handle);chunks=[];total=0
+            raw=int(ctypes.cast(self.handle,ctypes.c_void_p).value or 0);ctx=windows_pipe_peer_context(raw);chunks=[];total=0
             while True:
-                buf=ctypes.create_string_buffer(65536);read=wintypes.DWORD(0);ok=kernel.ReadFile(wintypes.HANDLE(self.handle),buf,len(buf),ctypes.byref(read),None);err=ctypes.get_last_error()
+                buf=ctypes.create_string_buffer(65536);read=wintypes.DWORD(0);ok=api.kernel32.ReadFile(self.handle,buf,len(buf),ctypes.byref(read),None);err=ctypes.get_last_error()
                 if read.value:chunks.append(buf.raw[:read.value]);total+=read.value
                 if total>MAX_REQUEST_BYTES:raise AuthorityError('REQUEST_SIZE_INVALID')
                 if ok:break
                 if err!=234:raise AuthorityError('IPC_READ_FAILED')
             out=self.service.handle_json(b''.join(chunks),peer_context=ctx);written=wintypes.DWORD(0)
-            if not kernel.WriteFile(wintypes.HANDLE(self.handle),out,len(out),ctypes.byref(written),None) or written.value!=len(out):raise AuthorityError('IPC_WRITE_FAILED')
+            if not api.kernel32.WriteFile(self.handle,out,len(out),ctypes.byref(written),None) or written.value!=len(out):raise AuthorityError('IPC_WRITE_FAILED')
             return out
-        finally:kernel.DisconnectNamedPipe(wintypes.HANDLE(self.handle))
+        finally:api.kernel32.DisconnectNamedPipe(self.handle)
     def close(self):
         if os.name!='nt':return
-        import ctypes
-        from ctypes import wintypes
-        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-        if self.handle is not None:kernel.CloseHandle(wintypes.HANDLE(self.handle));self.handle=None
-        if self._sd:kernel.LocalFree(self._sd);self._sd=None
-
+        api=load_win32()
+        if self.handle is not None:api.kernel32.CloseHandle(self.handle);self.handle=None
+        if self._sd:api.kernel32.LocalFree(self._sd);self._sd=None
 def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory):
     if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
-    import ctypes
-    from ctypes import wintypes
-    adv=ctypes.WinDLL('advapi32',use_last_error=True)
-    OWN=0x10;START_PENDING=2;STOP_PENDING=3;RUNNING=4;STOPPED=1;ACCEPT_STOP=1;ACCEPT_SHUTDOWN=4;CTRL_STOP=1;CTRL_SHUTDOWN=5
+    api=load_win32();OWN=0x10;START_PENDING=2;STOP_PENDING=3;RUNNING=4;STOPPED=1;ACCEPT_STOP=1;ACCEPT_SHUTDOWN=4;CTRL_STOP=1;CTRL_SHUTDOWN=5
     class STATUS(ctypes.Structure):_fields_=[('dwServiceType',wintypes.DWORD),('dwCurrentState',wintypes.DWORD),('dwControlsAccepted',wintypes.DWORD),('dwWin32ExitCode',wintypes.DWORD),('dwServiceSpecificExitCode',wintypes.DWORD),('dwCheckPoint',wintypes.DWORD),('dwWaitHint',wintypes.DWORD)]
     SERVICE_MAIN=ctypes.WINFUNCTYPE(None,wintypes.DWORD,ctypes.POINTER(wintypes.LPWSTR));HANDLER=ctypes.WINFUNCTYPE(None,wintypes.DWORD);state={'server':None,'handle':None,'stop':threading.Event()}
     def set_status(code,accepted=0):
         s=STATUS(OWN,code,accepted,0,0,0,0)
-        if state['handle'] and not adv.SetServiceStatus(state['handle'],ctypes.byref(s)):raise AuthorityError('SCM_STATUS_FAILED')
+        if state['handle'] and not api.advapi32.SetServiceStatus(state['handle'],ctypes.byref(s)):raise AuthorityError('SCM_STATUS_FAILED')
     @HANDLER
     def handler(control):
         if control in (CTRL_STOP,CTRL_SHUTDOWN):
@@ -150,7 +128,7 @@ def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory
             except Exception:pass
     @SERVICE_MAIN
     def service_main(_argc,_argv):
-        state['handle']=adv.RegisterServiceCtrlHandlerW(service_name,handler)
+        state['handle']=api.advapi32.RegisterServiceCtrlHandlerW(service_name,ctypes.cast(handler,wintypes.LPVOID))
         if not state['handle']:return
         try:
             set_status(START_PENDING);srv=server_factory();state['server']=srv;srv.start();set_status(RUNNING,ACCEPT_STOP|ACCEPT_SHUTDOWN)
@@ -165,4 +143,4 @@ def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory
             finally:set_status(STOPPED)
     class ENTRY(ctypes.Structure):_fields_=[('lpServiceName',wintypes.LPWSTR),('lpServiceProc',SERVICE_MAIN)]
     table=(ENTRY*2)();table[0]=ENTRY(service_name,service_main);table[1].lpServiceName=None
-    if not adv.StartServiceCtrlDispatcherW(table):raise AuthorityError('SCM_DISPATCH_FAILED')
+    if not api.advapi32.StartServiceCtrlDispatcherW(ctypes.cast(table,wintypes.LPVOID)):raise AuthorityError('SCM_DISPATCH_FAILED')
