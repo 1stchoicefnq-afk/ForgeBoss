@@ -15,8 +15,49 @@ def _sha(path: Path):return hashlib.sha256(path.read_bytes()).hexdigest()
 
 class ActivationTests(unittest.TestCase):
     def _identity(self,root:Path,revision="1"*40,verified=True):return {"verified":verified,"revision":revision if verified else None,"codeRoot":str(root.resolve()),"entrypoint":"daemon.py","manifestPath":str(root/"manifest.json"),"manifestSha256":"2"*64 if verified else None,"identitySha256":"3"*64 if verified else None,"files":{}}
-    def _candidate(self,base:Path,revision="a"*40):
-        root=base/"candidate";root.mkdir();entry=root/"daemon.py";entry.write_text("print('candidate')\n",encoding="utf-8");manifest=base/"candidate-manifest.json";manifest.write_text(json.dumps({"schema":1,"revision":revision,"codeRoot":str(root.resolve()),"entrypoint":"daemon.py","files":{"daemon.py":_sha(entry)}},sort_keys=True),encoding="utf-8");return root,manifest,revision
+    def _candidate(self, base: Path, revision="a" * 40):
+        root = base / "candidate"
+        root.mkdir()
+
+        pkg = root / "forgeboss"
+        pkg.mkdir()
+
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+
+        entry = pkg / "daemon.py"
+        entry.write_text("print('candidate')\n", encoding="utf-8")
+
+        from forgeboss.control.known_good import (
+            _authoritative_inventory,
+            _inventory_digest,
+        )
+
+        files = _authoritative_inventory(root)
+        tree = _inventory_digest(files)
+
+        manifest = base / "candidate-manifest.json"
+        payload = {
+            "schema": 1,
+            "inventoryMode": "forgeboss-package-v1",
+            "revision": revision,
+            "codeRoot": str(root.resolve()),
+            "entrypoint": "forgeboss/daemon.py",
+            "treeSha256": tree,
+            "files": files,
+        }
+
+        manifest.write_text(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        return root, manifest, revision
+
     def _manager(self,base:Path,verified=True):running=base/"running";running.mkdir();return ActivationManager(base/"state",self._identity(running,verified=verified))
     def _stage(self,manager,base):root,manifest,revision=self._candidate(base);state=manager.stage(root,manifest,revision,_sha(manifest));return root,manifest,revision,state
 

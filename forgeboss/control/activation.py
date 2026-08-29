@@ -116,26 +116,89 @@ def _wait_candidate_dead(expected,timeout=5.0):
     return not _same_process(expected,process_identity(int(expected["pid"])))
 
 
-def _win_terminate_verified(expected,timeout=5.0):
-    ctypes,wintypes,kernel=_win_api();handle=kernel.OpenProcess(0x1000|0x0001|0x00100000,False,int(expected["pid"]))
+def _win_terminate_verified(expected, timeout=5.0):
+    ctypes, wintypes, kernel = _win_api()
+    handle = kernel.OpenProcess(
+        0x1000 | 0x0001 | 0x00100000,
+        False,
+        int(expected["pid"]),
+    )
+
     if not handle:
-        err=ctypes.get_last_error()
-        if err==87:return True
-        raise ActivationError(f"cannot open candidate for termination: winerror={err}")
+        err = ctypes.get_last_error()
+        if err == 87:
+            return True
+        raise ActivationError(
+            f"cannot open candidate for termination: winerror={err}"
+        )
+
     try:
-        creation=wintypes.FILETIME();exit_ft=wintypes.FILETIME();kernel_ft=wintypes.FILETIME();user_ft=wintypes.FILETIME()
-        if not kernel.GetProcessTimes(handle,ctypes.byref(creation),ctypes.byref(exit_ft),ctypes.byref(kernel_ft),ctypes.byref(user_ft)):
-            raise ActivationError(f"cannot revalidate candidate creation time: winerror={ctypes.get_last_error()}")
-        token=str((int(creation.dwHighDateTime)<<32)|int(creation.dwLowDateTime))
-        if token!=str(expected.get("startToken")):return True
-        size=wintypes.DWORD(32768);buf=ctypes.create_unicode_buffer(size.value)
-        if not kernel.QueryFullProcessImageNameW(handle,0,buf,ctypes.byref(size)):
-            raise ActivationError(f"cannot revalidate candidate image: winerror={ctypes.get_last_error()}")
-        if os.path.normcase(os.path.realpath(buf.value))!=os.path.normcase(str(expected.get("exe") or "")):return True
-        if not kernel.TerminateProcess(handle,75):raise ActivationError(f"candidate termination failed: winerror={ctypes.get_last_error()}")
-        if kernel.WaitForSingleObject(handle,max(1,int(float(timeout)*1000)))==0x00000102:return False
-    finally:kernel.CloseHandle(handle)
-    return _wait_candidate_dead(expected,0.5)
+        creation = wintypes.FILETIME()
+        exit_ft = wintypes.FILETIME()
+        kernel_ft = wintypes.FILETIME()
+        user_ft = wintypes.FILETIME()
+
+        if not kernel.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_ft),
+            ctypes.byref(kernel_ft),
+            ctypes.byref(user_ft),
+        ):
+            raise ActivationError(
+                "cannot revalidate candidate creation time: "
+                f"winerror={ctypes.get_last_error()}"
+            )
+
+        token = str(
+            (int(creation.dwHighDateTime) << 32)
+            | int(creation.dwLowDateTime)
+        )
+
+        if token != str(expected.get("startToken")):
+            return True
+
+        size = wintypes.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+
+        if not kernel.QueryFullProcessImageNameW(
+            handle, 0, buf, ctypes.byref(size)
+        ):
+            raise ActivationError(
+                "cannot revalidate candidate image: "
+                f"winerror={ctypes.get_last_error()}"
+            )
+
+        if os.path.normcase(os.path.realpath(buf.value)) != os.path.normcase(
+            str(expected.get("exe") or "")
+        ):
+            return True
+
+        if not kernel.TerminateProcess(handle, 75):
+            raise ActivationError(
+                "candidate termination failed: "
+                f"winerror={ctypes.get_last_error()}"
+            )
+
+        wait_result = kernel.WaitForSingleObject(
+            handle,
+            max(1, int(float(timeout) * 1000)),
+        )
+
+        # WAIT_OBJECT_0 proves this exact validated process handle terminated.
+        if wait_result == 0x00000000:
+            return True
+
+        # WAIT_TIMEOUT means candidate is still alive.
+        if wait_result == 0x00000102:
+            return False
+
+        raise ActivationError(
+            f"candidate termination wait failed: result={wait_result}"
+        )
+
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _posix_terminate_verified(expected,timeout=5.0):
