@@ -1,0 +1,77 @@
+name: FB079 R7 native proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-fb079-r7-native
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 3782f8a1ef095087942b91b1d39e722f856607e5 HEAD
+          git diff --quiet 3782f8a1ef095087942b91b1d39e722f856607e5 HEAD -- forgeboss
+          test "$(git rev-parse 3782f8a1ef095087942b91b1d39e722f856607e5^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run exact security suite
+        run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen source tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          git merge-base --is-ancestor 3782f8a1ef095087942b91b1d39e722f856607e5 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'candidate is not ancestor' }
+          git diff --quiet 3782f8a1ef095087942b91b1d39e722f856607e5 HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source differs from frozen candidate' }
+          $a=(git rev-parse '3782f8a1ef095087942b91b1d39e722f856607e5^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Record native Git system configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          git --version
+          (Get-Command git.exe).Source
+          git config --system --show-origin --show-scope --list
+      - name: Run exact security suite on Windows
+        shell: pwsh
+        run: python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+      - name: Native stock Git-for-Windows snapshot probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import subprocess,tempfile
+          from pathlib import Path
+          from forgeboss.security.executor_guard import git_metadata_snapshot
+          with tempfile.TemporaryDirectory() as td:
+              p=Path(td)
+              subprocess.run(['git','init','-q'],cwd=p,check=True)
+              subprocess.run(['git','config','user.email','proof@example.com'],cwd=p,check=True)
+              subprocess.run(['git','config','user.name','Proof'],cwd=p,check=True)
+              (p/'a.txt').write_text('x',encoding='utf-8')
+              subprocess.run(['git','add','a.txt'],cwd=p,check=True)
+              subprocess.run(['git','commit','-qm','base'],cwd=p,check=True)
+              snap=git_metadata_snapshot(p)
+              assert 'git:effective-config' in snap
+              assert 'git:executable' in snap
+              print('NATIVE_WINDOWS_STOCK_SNAPSHOT_PASS')
+          '@ | python -
