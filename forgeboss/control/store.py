@@ -111,12 +111,24 @@ def _opaque(value,name):
         raise StoreAuthorityError("AUTHORITY_ID_INVALID",f"{name} must be a non-empty opaque identifier")
     return value
 
+def _branch_identity(value):
+    if not isinstance(value,str) or not value or value!=value.strip() or len(value)>255:
+        raise StoreAuthorityError("BRANCH_INVALID","branch authority must be a canonical Git branch name")
+    if value.startswith(("-","/")) or value.endswith(("/",".")) or "\\" in value or "//" in value or ".." in value or "@{" in value:
+        raise StoreAuthorityError("BRANCH_INVALID","branch authority must be a canonical Git branch name")
+    if any(ord(ch)<32 or ord(ch)==127 or ch in " ~^:?*[" for ch in value):
+        raise StoreAuthorityError("BRANCH_INVALID","branch authority must be a canonical Git branch name")
+    parts=value.split("/")
+    if any(not part or part.startswith(".") or part.endswith(".lock") for part in parts):
+        raise StoreAuthorityError("BRANCH_INVALID","branch authority must be a canonical Git branch name")
+    return value
+
 def _token_hash(raw):
     if not isinstance(raw,str) or not raw:return ""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 _WORKER_OUTCOMES=frozenset({"released","failed","cancelled"})
-_TERMINAL_RETRY_REQUIRED=frozenset({"failed","cancelled","completed","review-rejected","revoked","accepted","approved","validated"})
+_TERMINAL_RETRY_REQUIRED=frozenset({"released","failed","cancelled","completed","review-rejected","revoked","accepted","approved","validated"})
 
 class ControlStore:
     def __init__(self,path:Path):
@@ -182,14 +194,15 @@ class ControlStore:
         with self._lock:return self._event_locked(event_type,payload,task_id,run_id)
 
     def create_task(self,t):
-        scope=_scope_authorities(t.get("allowedPaths",[]));_repository_identity(t.get("repository"));base_sha=_git_object_id(t.get("baseSha"))
+        _scope_authorities(t.get("allowedPaths",[]));_repository_identity(t.get("repository"));base_sha=_git_object_id(t.get("baseSha"))
+        branch=t.get("branch");branch=_branch_identity(branch) if branch is not None else None
         cap=_budget_decimal(t.get("budgetUsd",0),"BUDGET_INVALID","task budget must be a finite non-negative number")
         with self._lock:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
                 self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,budget_spent,budget_cap_exact,budget_reserved_exact,created_at,updated_at)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(cap),0.0,_money_text(cap),"0",now,now))
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,branch,json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(cap),0.0,_money_text(cap),"0",now,now))
                 self._event_locked("task.created",{"status":"queued"},t["taskId"])
                 self.db.execute("COMMIT");begun=False
             except Exception:
@@ -200,7 +213,8 @@ class ControlStore:
         return self.get_task(t["taskId"])
 
     def get_task(self,task_id):
-        row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
+        with self._lock:
+            row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
     def create_budget_run(self,run_id,cap):
         run_id=_opaque(run_id,"budget run id");amount=_budget_decimal(cap,"GLOBAL_BUDGET_INVALID","global budget cap must be finite and non-negative")
@@ -219,10 +233,11 @@ class ControlStore:
         return self.get_budget_run(run_id)
 
     def get_budget_run(self,run_id):
-        row=self.db.execute("SELECT * FROM budget_runs WHERE run_id=?",(run_id,)).fetchone()
-        if not row:return None
-        out=dict(row);cap=_budget_decimal(out["cap_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid");reserved=_budget_decimal(out["reserved_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid")
-        out["remaining_exact"]=_money_text(cap-reserved);return out
+        with self._lock:
+            row=self.db.execute("SELECT * FROM budget_runs WHERE run_id=?",(run_id,)).fetchone()
+            if not row:return None
+            out=dict(row);cap=_budget_decimal(out["cap_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid");reserved=_budget_decimal(out["reserved_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid")
+            out["remaining_exact"]=_money_text(cap-reserved);return out
 
     def close_budget_run(self,run_id,expected_revision=None):
         run_id=_opaque(run_id,"budget run id")
@@ -251,8 +266,9 @@ class ControlStore:
         try:tests=json.loads(task["required_tests_json"])
         except Exception as ex:raise StoreAuthorityError("ASSIGNMENT_STATE_INVALID","required test authority is invalid") from ex
         if not isinstance(tests,list):raise StoreAuthorityError("ASSIGNMENT_STATE_INVALID","required test authority is invalid")
+        branch=_branch_identity(task["branch"])
         payload={"taskId":str(task["task_id"]),"repository":_repository_identity(task["repository"]),"baseSha":_git_object_id(task["base_sha"]),
-                 "branch":str(task["branch"] or ""),"allowedPaths":allowed,"requiredTests":sorted(str(x) for x in tests),
+                 "branch":branch,"allowedPaths":allowed,"requiredTests":sorted(str(x) for x in tests),
                  "taskBudgetUsd":str(task["budget_cap_exact"]),"budgetRunId":budget_run_id,"builderId":builder_id,"assignmentGeneration":int(generation)}
         encoded=json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -265,7 +281,7 @@ class ControlStore:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row:raise KeyError("task not found")
-                task=dict(task_row)
+                task=dict(task_row);_branch_identity(task["branch"])
                 if expected_task_revision is not None and int(expected_task_revision)!=int(task["revision"]):raise StoreAuthorityError("TASK_REVISION_MISMATCH","task revision mismatch")
                 lease=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 if lease and lease["released_at"] is None and lease["revoked_at"] is None and float(lease["expires_at"])>now:
@@ -303,9 +319,12 @@ class ControlStore:
                 lease=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 if lease and lease["released_at"] is None and lease["revoked_at"] is None and float(lease["expires_at"])>now:
                     raise StoreAuthorityError("RETRY_ACTIVE_WRITER","cannot retry while writer is live")
-                cur=self.db.execute("UPDATE tasks SET status='queued',current_step='retry-authorized',retry_reason=?,revision=revision+1,updated_at=? WHERE task_id=? AND revision=?",(reason.strip(),now,task_id,int(task["revision"])))
+                generation=int(task["assignment_generation"] or 0)+1
+                cur=self.db.execute("""UPDATE tasks SET status='queued',current_step='retry-authorized',retry_reason=?,assigned_builder_id=NULL,
+                    assignment_generation=?,assignment_token_hash=NULL,assignment_sha256=NULL,revision=revision+1,updated_at=? WHERE task_id=? AND revision=?""",
+                    (reason.strip(),generation,now,task_id,int(task["revision"])))
                 if cur.rowcount!=1:raise StoreAuthorityError("TASK_REVISION_MISMATCH","task authority changed during retry")
-                self._event_locked("task.retry_authorized",{"reason":reason.strip()},task_id)
+                self._event_locked("task.retry_authorized",{"reason":reason.strip(),"assignmentGeneration":generation},task_id)
                 self.db.execute("COMMIT");begun=False
                 return self.get_task(task_id)
             except Exception:
@@ -328,6 +347,8 @@ class ControlStore:
     def _validate_assignment_locked(self,task,builder_id,assignment_token,assignment_generation,assignment_sha256):
         bound=task["budget_run_id"] is not None or int(task["assignment_generation"] or 0)>0
         if not bound:return False
+        if not task["assigned_builder_id"] or not task["assignment_token_hash"] or not task["assignment_sha256"]:
+            raise StoreAuthorityError("ASSIGNMENT_REQUIRED","bound task requires fresh controller assignment authority")
         if builder_id is None or assignment_token is None or assignment_generation is None or assignment_sha256 is None:
             raise StoreAuthorityError("ASSIGNMENT_REQUIRED","bound task requires exact builder assignment authority")
         if str(builder_id)!=str(task["assigned_builder_id"]):raise StoreAuthorityError("BUILDER_MISMATCH","builder identity mismatch")
@@ -371,6 +392,10 @@ class ControlStore:
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
                 if str(task["status"]) in _TERMINAL_RETRY_REQUIRED:raise StoreAuthorityError("TASK_RETRY_REQUIRED","terminal task requires explicit controller retry")
                 bound=self._validate_assignment_locked(task,builder_id,assignment_token,assignment_generation,assignment_sha256)
+                if bound:
+                    assigned_branch=_branch_identity(task["branch"]);claim_branch=_branch_identity(branch)
+                    if claim_branch!=assigned_branch:raise StoreAuthorityError("ASSIGNMENT_BRANCH_MISMATCH","workspace claim branch does not match durable assignment branch")
+                    branch=assigned_branch
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and row["revoked_at"] is None and float(row["expires_at"])>now:raise RuntimeError("workspace lease is already active")
@@ -410,7 +435,8 @@ class ControlStore:
                 raise
 
     def get_lease(self,task_id):
-        row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
+        with self._lock:
+            row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
     def _writer_locked(self,task_id,run_id,owner_epoch,now):
         row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL",(task_id,run_id,int(owner_epoch))).fetchone()
@@ -457,6 +483,8 @@ class ControlStore:
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
                 row,_=self._writer_locked(task_id,run_id,owner_epoch,now)
+                task=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not task:raise KeyError("task not found")
                 old_head=str(row["current_head"])
                 if expected_head is not None and old_head!=str(expected_head):raise PermissionError("writer authority lost: expected head mismatch")
                 final_head=old_head if result_head is None else str(result_head)
@@ -465,9 +493,12 @@ class ControlStore:
                 if cur.rowcount!=1:raise PermissionError("writer authority lost during release")
                 cur=self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running' AND revoked_at IS NULL",(outcome,now,run_id,task_id,int(owner_epoch)))
                 if cur.rowcount!=1:raise PermissionError("run authority lost during release")
-                cur=self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=?,terminal_outcome=?,updated_at=? WHERE task_id=? AND status='running'",(outcome,final_head,None if outcome=="released" else outcome,now,task_id))
+                generation=int(task["assignment_generation"] or 0)+1
+                cur=self.db.execute("""UPDATE tasks SET status=?,revision=revision+1,result_head=?,terminal_outcome=?,assigned_builder_id=NULL,
+                    assignment_generation=?,assignment_token_hash=NULL,assignment_sha256=NULL,updated_at=? WHERE task_id=? AND status='running' AND revision=?""",
+                    (outcome,final_head,None if outcome=="released" else outcome,generation,now,task_id,int(task["revision"])))
                 if cur.rowcount!=1:raise PermissionError("task authority lost during release")
-                self._event_locked("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":final_head},task_id,run_id)
+                self._event_locked("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":final_head,"assignmentGeneration":generation},task_id,run_id)
                 self.db.execute("COMMIT");begun=False
             except Exception:
                 if begun:
@@ -490,13 +521,18 @@ class ControlStore:
                 if not lease or str(lease["owner_run_id"])!=str(run_id) or int(lease["owner_epoch"])!=int(owner_epoch):
                     raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","stale writer cannot revoke newer owner")
                 if lease["released_at"] is not None:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","released writer cannot be revoked")
+                task=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not task:raise KeyError("task not found")
                 cur=self.db.execute("UPDATE task_runs SET status='revoked',revoked_at=?,revoke_reason=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND revoked_at IS NULL",(now,reason.strip(),now,run_id,task_id,int(owner_epoch)))
                 if cur.rowcount!=1:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","run authority changed during revoke")
                 cur=self.db.execute("UPDATE workspace_leases SET revoked_at=?,revoke_reason=? WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL AND revoked_at IS NULL",(now,reason.strip(),task_id,run_id,int(owner_epoch)))
                 if cur.rowcount!=1:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","lease authority changed during revoke")
-                cur=self.db.execute("UPDATE tasks SET status='revoked',terminal_outcome='revoked',revision=revision+1,updated_at=? WHERE task_id=? AND status='running'",(now,task_id))
+                generation=int(task["assignment_generation"] or 0)+1
+                cur=self.db.execute("""UPDATE tasks SET status='revoked',terminal_outcome='revoked',assigned_builder_id=NULL,assignment_generation=?,
+                    assignment_token_hash=NULL,assignment_sha256=NULL,revision=revision+1,updated_at=? WHERE task_id=? AND status='running' AND revision=?""",
+                    (generation,now,task_id,int(task["revision"])))
                 if cur.rowcount!=1:raise StoreAuthorityError("REVOKE_STALE_AUTHORITY","task authority changed during revoke")
-                self._event_locked("workspace.revoked",{"ownerEpoch":int(owner_epoch),"reason":reason.strip()},task_id,run_id)
+                self._event_locked("workspace.revoked",{"ownerEpoch":int(owner_epoch),"reason":reason.strip(),"assignmentGeneration":generation},task_id,run_id)
                 self.db.execute("COMMIT");begun=False
                 return dict(self.db.execute("SELECT * FROM task_runs WHERE run_id=?",(run_id,)).fetchone())
             except Exception:
@@ -506,24 +542,25 @@ class ControlStore:
                 raise
 
     def snapshot(self):
-        budgets=[]
-        for r in self.db.execute("SELECT * FROM budget_runs ORDER BY created_at DESC LIMIT 100"):
-            d=dict(r)
-            try:
-                cap=_budget_decimal(d["cap_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid");reserved=_budget_decimal(d["reserved_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid")
-                d["remaining_exact"]=_money_text(cap-reserved)
-            except Exception:d["remaining_exact"]=None
-            budgets.append(d)
-        tasks=[]
-        for r in self.db.execute("SELECT * FROM tasks ORDER BY updated_at DESC LIMIT 100"):
-            d=dict(r);d.pop("assignment_token_hash",None)
-            d.pop("budget_spent",None)
-            d["budgetCapExact"]=d.get("budget_cap_exact")
-            d["budgetReservedExact"]=d.get("budget_reserved_exact")
-            tasks.append(d)
-        return {"schemaVersion":SCHEMA_VERSION,
-          "tasks":tasks,
-          "leases":[dict(r) for r in self.db.execute("SELECT * FROM workspace_leases WHERE released_at IS NULL ORDER BY heartbeat_at DESC")],
-          "workers":[dict(r) for r in self.db.execute("SELECT * FROM worker_instances ORDER BY last_seen_at DESC LIMIT 100")],
-          "budgetRuns":budgets,
-          "lastEventSeq":int(self.db.execute("SELECT COALESCE(MAX(seq),0) v FROM task_events").fetchone()["v"])}
+        with self._lock:
+            budgets=[]
+            for r in self.db.execute("SELECT * FROM budget_runs ORDER BY created_at DESC LIMIT 100"):
+                d=dict(r)
+                try:
+                    cap=_budget_decimal(d["cap_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid");reserved=_budget_decimal(d["reserved_exact"],"GLOBAL_BUDGET_STATE_INVALID","global budget state invalid")
+                    d["remaining_exact"]=_money_text(cap-reserved)
+                except Exception:d["remaining_exact"]=None
+                budgets.append(d)
+            tasks=[]
+            for r in self.db.execute("SELECT * FROM tasks ORDER BY updated_at DESC LIMIT 100"):
+                d=dict(r);d.pop("assignment_token_hash",None)
+                d.pop("budget_spent",None)
+                d["budgetCapExact"]=d.get("budget_cap_exact")
+                d["budgetReservedExact"]=d.get("budget_reserved_exact")
+                tasks.append(d)
+            return {"schemaVersion":SCHEMA_VERSION,
+              "tasks":tasks,
+              "leases":[dict(r) for r in self.db.execute("SELECT * FROM workspace_leases WHERE released_at IS NULL ORDER BY heartbeat_at DESC")],
+              "workers":[dict(r) for r in self.db.execute("SELECT * FROM worker_instances ORDER BY last_seen_at DESC LIMIT 100")],
+              "budgetRuns":budgets,
+              "lastEventSeq":int(self.db.execute("SELECT COALESCE(MAX(seq),0) v FROM task_events").fetchone()["v"])}
