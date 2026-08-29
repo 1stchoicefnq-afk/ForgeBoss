@@ -1,0 +1,31 @@
+name: FB032 FB033 final exact proof
+on:
+  push:
+    branches: [forgeboss/controller-test-fb032-fb033-final-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 0ebf788c2e24f3c795fc32376c70437652ea7702 HEAD
+          git diff --quiet 0ebf788c2e24f3c795fc32376c70437652ea7702 HEAD -- forgeboss
+          test "$(git rev-parse 0ebf788c2e24f3c795fc32376c70437652ea7702^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Focused report hardening tests
+        run: python -m unittest forgeboss.reports.test_build_run_report -v
+      - name: Broad reports regressions
+        run: python -m unittest discover -s forgeboss/reports -p 'test_*.py' -v
