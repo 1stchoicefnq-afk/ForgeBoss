@@ -10,12 +10,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Verify candidate source unchanged
         shell: pwsh
         run: |
+          git cat-file -e 6189bbb2bbc1e516b4f7cd9e0d32f13c51c4bb8b^{commit}
           git diff --exit-code 6189bbb2bbc1e516b4f7cd9e0d32f13c51c4bb8b -- forgeboss/protected_authority
       - name: Compile protected authority
         run: python -m compileall -q forgeboss/protected_authority
@@ -25,11 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Verify candidate source unchanged
-        run: git diff --exit-code 6189bbb2bbc1e516b4f7cd9e0d32f13c51c4bb8b -- forgeboss/protected_authority
+        run: |
+          git cat-file -e 6189bbb2bbc1e516b4f7cd9e0d32f13c51c4bb8b^{commit}
+          git diff --exit-code 6189bbb2bbc1e516b4f7cd9e0d32f13c51c4bb8b -- forgeboss/protected_authority
       - name: Compile protected authority
         run: python -m compileall -q forgeboss/protected_authority
       - name: Run protected-authority portable regressions
