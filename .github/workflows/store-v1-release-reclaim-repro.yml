@@ -1,0 +1,58 @@
+name: Store V1 release reclaim repro
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-store-v1-release-reclaim
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact Store V1 forgeboss tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD
+          git diff --quiet 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD -- forgeboss
+          test "$(git rev-parse 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Reproduce released assignment reclaim
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from forgeboss.control.store import ControlStore
+
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td); root=base/'worktrees'; root.mkdir()
+              store=ControlStore(base/'state'/'control.sqlite3')
+              store.create_budget_run('GLOBAL',10)
+              store.create_task({
+                  'taskId':'A','repository':'owner/repo','purpose':'fl1',
+                  'baseSha':'a'*40,'branch':'b-A','allowedPaths':['src/a.py'],
+                  'requiredTests':['python -m unittest'],'budgetUsd':10,
+              })
+              a=store.assign_builder('A','builder-a','GLOBAL')
+              def claim(run,amount):
+                  rev=int(store.get_budget_run('GLOBAL')['revision'])
+                  return store.claim_workspace(
+                      'A',run,root/'A','b-A','a'*40,runtime_id='mini-swe',
+                      worktree_root=root,budget_reserved=amount,
+                      builder_id=a['builderId'],assignment_token=a['assignmentToken'],
+                      assignment_generation=a['assignmentGeneration'],
+                      assignment_sha256=a['assignmentSha256'],budget_run_revision=rev,
+                  )
+              first=claim('r1',1)
+              store.release('A','r1',first['owner_epoch'],outcome='released')
+              second=claim('r2',1)
+              assert second['assignment_generation']==a['assignmentGeneration']
+              assert second['builder_id']==a['builderId']
+              assert store.get_task('A')['status']=='running'
+              print('RELEASED_ASSIGNMENT_RECLAIM_REPRODUCED',second['owner_epoch'],second['attempt'])
+          PY
