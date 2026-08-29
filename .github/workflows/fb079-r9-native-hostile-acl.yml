@@ -1,0 +1,86 @@
+name: FB-079 R9 native hostile ACL proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r9-native-hostile-acl
+permissions:
+  contents: read
+jobs:
+  windows-hostile:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen R9 tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          test "$(git rev-parse 7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Native untrusted writer and delete-child denial
+        shell: pwsh
+        run: |
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $root = Join-Path $env:RUNNER_TEMP "r9-native-acl"
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $file = Join-Path $root "git.exe"
+          Set-Content -Path $file -Value "x" -NoNewline
+
+          # Make owner + baseline ACL machine-trusted, with current user explicitly read/execute only.
+          icacls $root /inheritance:r | Out-Host
+          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($sid):(OI)(CI)(RX)" | Out-Host
+          icacls $root /setowner "*S-1-5-32-544" /T /C | Out-Host
+          icacls $file /inheritance:e | Out-Host
+          icacls $file /setowner "*S-1-5-32-544" | Out-Host
+
+          $env:R9_FILE = $file
+          @'
+          import os
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+          p=Path(os.environ['R9_FILE'])
+          owner,rights=g._windows_acl_facts(p)
+          print('R9_NATIVE_READONLY_OWNER',owner)
+          print('R9_NATIVE_READONLY_RIGHTS',sorted((k,hex(v)) for k,v in rights.items()))
+          g._assert_windows_acl_trust(p)
+          print('R9_NATIVE_READONLY_PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Add explicit write-capable rights for the ordinary runner SID: must be rejected.
+          icacls $file /grant:r "*$($sid):(M)" | Out-Host
+          @'
+          import os
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+          p=Path(os.environ['R9_FILE'])
+          try:
+              g._assert_windows_acl_trust(p)
+          except g.SecurityError as e:
+              print('R9_NATIVE_UNTRUSTED_WRITER_DENIED',str(e))
+          else:
+              raise SystemExit('untrusted writer unexpectedly accepted')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Parent DELETE_CHILD is replacement authority even if the child itself is protected.
+          icacls $root /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($sid):(DC)" | Out-Host
+          $env:R9_ROOT = $root
+          @'
+          import os
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+          p=Path(os.environ['R9_ROOT'])
+          try:
+              g._assert_windows_parent_replacement_trust(p)
+          except g.SecurityError as e:
+              print('R9_NATIVE_DELETE_CHILD_DENIED',str(e))
+          else:
+              raise SystemExit('untrusted FILE_DELETE_CHILD unexpectedly accepted')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
