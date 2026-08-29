@@ -1,0 +1,131 @@
+name: FB079 R8 build and native proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r8-build-native
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.out.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Checkout exact R8 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/forgeboss/worker-c-fb079-r8-protected-windows-principals:refs/remotes/origin/r8
+          test "$(git rev-parse refs/remotes/origin/r8)" = "3782f8a1ef095087942b91b1d39e722f856607e5"
+          git checkout -B r8 refs/remotes/origin/r8
+      - name: Apply exact R8 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          guard=Path('forgeboss/security/executor_guard.py')
+          text=guard.read_text(encoding='utf-8')
+          old='_WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}\n_WIN_BROAD_WRITE_SIDS=("S-1-1-0","S-1-5-11","S-1-5-32-545")'
+          new='_WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}\n_WIN_TRUSTED_INSTALLER_ACCOUNT=r"NT SERVICE\\TrustedInstaller"\n_WIN_TRUSTED_INSTALLER_SID="s-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"\n_WIN_BROAD_WRITE_SIDS=("S-1-1-0","S-1-5-11","S-1-5-32-545")'
+          if text.count(old)!=1: raise SystemExit('R8 constants anchor mismatch')
+          text=text.replace(old,new,1)
+
+          anchor='''def _windows_allow_ace_sid_offset(ace_type:int,object_flags:int=0):\n    if ace_type in (0,9):return 8\n    if ace_type in (5,11):return 12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)\n    return None\ndef _windows_acl_facts(path:Path):'''
+          replacement='''def _windows_allow_ace_sid_offset(ace_type:int,object_flags:int=0):\n    if ace_type in (0,9):return 8\n    if ace_type in (5,11):return 12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)\n    return None\ndef _windows_lookup_account_sid(account:str):\n    try:\n        import ctypes\n        from ctypes import wintypes\n        adv=ctypes.WinDLL("advapi32",use_last_error=True);kernel=ctypes.WinDLL("kernel32",use_last_error=True)\n        V=wintypes.LPVOID;D=wintypes.DWORD\n        adv.LookupAccountNameW.argtypes=[wintypes.LPCWSTR,wintypes.LPCWSTR,V,ctypes.POINTER(D),wintypes.LPWSTR,ctypes.POINTER(D),ctypes.POINTER(ctypes.c_int)];adv.LookupAccountNameW.restype=wintypes.BOOL\n        adv.ConvertSidToStringSidW.argtypes=[V,ctypes.POINTER(wintypes.LPWSTR)];adv.ConvertSidToStringSidW.restype=wintypes.BOOL\n        kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V\n        sid_size=D(0);domain_size=D(0);sid_use=ctypes.c_int(0)\n        ctypes.set_last_error(0)\n        ok=adv.LookupAccountNameW(None,account,None,ctypes.byref(sid_size),None,ctypes.byref(domain_size),ctypes.byref(sid_use))\n        err=ctypes.get_last_error()\n        if ok or err!=122 or int(sid_size.value)<=0:raise SecurityError("unable to resolve protected Windows service SID: "+account)\n        sid_buf=ctypes.create_string_buffer(int(sid_size.value));domain=ctypes.create_unicode_buffer(max(1,int(domain_size.value)))\n        if not adv.LookupAccountNameW(None,account,ctypes.cast(sid_buf,V),ctypes.byref(sid_size),domain,ctypes.byref(domain_size),ctypes.byref(sid_use)):\n            raise SecurityError("unable to resolve protected Windows service SID: "+account)\n        out=wintypes.LPWSTR()\n        if not adv.ConvertSidToStringSidW(ctypes.cast(sid_buf,V),ctypes.byref(out)):raise SecurityError("unable to stringify protected Windows service SID: "+account)\n        try:return ctypes.wstring_at(out)\n        finally:kernel.LocalFree(out)\n    except SecurityError:raise\n    except Exception as e:raise SecurityError("unable to resolve protected Windows service SID: "+account) from e\ndef _windows_trusted_principal_sids():\n    trusted=set(_WIN_TRUSTED_OWNER_SIDS)\n    if os.name!="nt":return frozenset(trusted)\n    resolved=_windows_lookup_account_sid(_WIN_TRUSTED_INSTALLER_ACCOUNT).casefold()\n    if resolved!=_WIN_TRUSTED_INSTALLER_SID:raise SecurityError("TrustedInstaller SID identity mismatch")\n    trusted.add(resolved);return frozenset(trusted)\ndef _windows_acl_facts(path:Path):'''
+          if text.count(anchor)!=1: raise SystemExit('R8 function anchor mismatch')
+          text=text.replace(anchor,replacement,1)
+
+          old_acl='''def _assert_windows_acl_trust(path:Path):\n    owner,rights=_windows_acl_facts(path)\n    if str(owner).casefold() not in _WIN_TRUSTED_OWNER_SIDS:raise SecurityError("untrusted Windows Git path owner: "+str(path))\n    for sid,mask in rights.items():\n        if str(sid).casefold() not in _WIN_TRUSTED_OWNER_SIDS and int(mask) & _WIN_WRITE_RIGHTS:\n            raise SecurityError("untrusted principal has write-capable Git path rights: "+str(sid)+" -> "+str(path))'''
+          new_acl='''def _assert_windows_acl_trust(path:Path):\n    owner,rights=_windows_acl_facts(path);trusted=_windows_trusted_principal_sids()\n    if str(owner).casefold() not in trusted:raise SecurityError("untrusted Windows Git path owner: "+str(path))\n    for sid,mask in rights.items():\n        if str(sid).casefold() not in trusted and int(mask) & _WIN_WRITE_RIGHTS:\n            raise SecurityError("untrusted principal has write-capable Git path rights: "+str(sid)+" -> "+str(path))'''
+          if text.count(old_acl)!=1: raise SystemExit('R8 ACL anchor mismatch')
+          text=text.replace(old_acl,new_acl,1)
+          guard.write_text(text,encoding='utf-8')
+
+          tests=Path('forgeboss/security/test_executor_guard_git_metadata.py')
+          t=tests.read_text(encoding='utf-8')
+          marker='class ExecutorGuardTrustedConfigOriginTests(unittest.TestCase):'
+          additions='''    def test_windows_trustedinstaller_resolution_is_exact_and_mismatch_fails_closed(self):\n        with patch.object(guard.os,"name","nt"),patch.object(guard,"_windows_lookup_account_sid",return_value=guard._WIN_TRUSTED_INSTALLER_SID.upper()):\n            trusted=guard._windows_trusted_principal_sids()\n        self.assertIn(guard._WIN_TRUSTED_INSTALLER_SID,trusted)\n        with patch.object(guard.os,"name","nt"),patch.object(guard,"_windows_lookup_account_sid",return_value="S-1-5-80-111-222-333-444-555"):\n            with self.assertRaisesRegex(guard.SecurityError,"TrustedInstaller SID identity mismatch"):guard._windows_trusted_principal_sids()\n\n    def test_windows_acl_accepts_verified_trustedinstaller_and_rejects_other_service_sid(self):\n        p=Path("/synthetic/git.exe");trusted=frozenset(set(guard._WIN_TRUSTED_OWNER_SIDS)|{guard._WIN_TRUSTED_INSTALLER_SID})\n        safe={"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,guard._WIN_TRUSTED_INSTALLER_SID.upper():guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}\n        with patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=(guard._WIN_TRUSTED_INSTALLER_SID.upper(),safe)):\n            guard._assert_windows_acl_trust(p)\n        bad=dict(safe);bad["S-1-5-80-111-222-333-444-555"]=guard._WIN_WRITE_RIGHTS\n        with patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",bad)):\n            with self.assertRaisesRegex(guard.SecurityError,"untrusted principal has write-capable"):guard._assert_windows_acl_trust(p)\n\n    def test_windows_native_trustedinstaller_lookup_matches_canonical_sid(self):\n        if os.name!="nt":self.skipTest("Windows only")\n        self.assertEqual(guard._windows_lookup_account_sid(guard._WIN_TRUSTED_INSTALLER_ACCOUNT).casefold(),guard._WIN_TRUSTED_INSTALLER_SID)\n\n'''
+          if t.count(marker)!=1: raise SystemExit('R8 test anchor mismatch')
+          t=t.replace(marker,additions+marker,1)
+          tests.write_text(t,encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- forgeboss/security/executor_guard.py forgeboss/security/test_executor_guard_git_metadata.py
+      - name: Run Linux security regressions
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+      - name: Commit and push R8 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only | wc -l)" -eq 2
+          git diff --name-only | grep -Fx 'forgeboss/security/executor_guard.py'
+          git diff --name-only | grep -Fx 'forgeboss/security/test_executor_guard_git_metadata.py'
+          git config user.name 'Jake | Building SiteBoss'
+          git config user.email '1stchoicefnq@gmail.com'
+          git add forgeboss/security/executor_guard.py forgeboss/security/test_executor_guard_git_metadata.py
+          git commit -m 'FB-079 R8: trust verified Windows servicing principal'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-fb079-r8-protected-windows-principals
+      - id: out
+        name: Record candidate SHA
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  windows:
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact R8 topology
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $base='3782f8a1ef095087942b91b1d39e722f856607e5'
+          $head=(git rev-parse HEAD).Trim()
+          if ($head -ne '${{ needs.build.outputs.sha }}') { throw 'wrong R8 SHA' }
+          $parent=(git rev-parse HEAD^).Trim()
+          if ($parent -ne $base) { throw "R8 parent mismatch: $parent" }
+          $files=@(git diff --name-only $base HEAD)
+          if ($files.Count -ne 2 -or $files -notcontains 'forgeboss/security/executor_guard.py' -or $files -notcontains 'forgeboss/security/test_executor_guard_git_metadata.py') { throw "R8 scope mismatch: $($files -join ',')" }
+      - name: Run native Windows security suites
+        shell: pwsh
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native stock Git-for-Windows snapshot probe
+        shell: pwsh
+        run: |
+          @'
+          import subprocess,tempfile
+          from pathlib import Path
+          from forgeboss.security import executor_guard as guard
+          sid=guard._windows_lookup_account_sid(guard._WIN_TRUSTED_INSTALLER_ACCOUNT).casefold()
+          assert sid==guard._WIN_TRUSTED_INSTALLER_SID,(sid,guard._WIN_TRUSTED_INSTALLER_SID)
+          with tempfile.TemporaryDirectory() as td:
+              work=Path(td)
+              subprocess.run(['git','init','-q'],cwd=work,check=True)
+              subprocess.run(['git','config','user.email','r8@example.invalid'],cwd=work,check=True)
+              subprocess.run(['git','config','user.name','R8'],cwd=work,check=True)
+              (work/'a.txt').write_text('x',encoding='utf-8')
+              subprocess.run(['git','add','a.txt'],cwd=work,check=True)
+              subprocess.run(['git','commit','-qm','base'],cwd=work,check=True)
+              snap=guard.git_metadata_snapshot(work)
+              assert 'git:effective-config' in snap and 'git:executable' in snap
+              print('R8_WINDOWS_STOCK_GIT_SNAPSHOT_PASS',sid,snap['git:executable']['path'])
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
