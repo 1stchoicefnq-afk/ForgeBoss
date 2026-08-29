@@ -2,7 +2,7 @@
 
 **Open-source multi-agent AI software engineering supervisor. Help us build it.**
 
-ForgeBoss coordinates multiple coding agents so they can work on the same software project without turning into an uncontrolled swarm. It is designed to give each worker a bounded task, isolated workspace, explicit write scope, budget authority, test requirements and independent review before code is accepted.
+ForgeBoss coordinates multiple coding agents so they can work on the same software project without turning into an uncontrolled swarm. Each worker gets a bounded task, isolated workspace, explicit write scope, budget authority, test requirements and independent review before code is accepted.
 
 > **Status:** active development. ForgeBoss is not yet production-ready. The current milestone is proving that ForgeBoss can safely build ForgeBoss itself with multiple agents in parallel.
 
@@ -28,6 +28,25 @@ The architecture follows a **reuse-before-build** rule: ForgeBoss should wrap st
 
 Current/upcoming worker engines include Claude Code, mini-SWE-agent, OpenHands, OpenCode and other maintained systems where they fit the safety contract.
 
+## Help wanted now
+
+You do **not** need to understand the whole project to contribute.
+
+Good places to start:
+
+- **#63** — verify and improve clean Windows setup instructions;
+- **#64** — document the fastest local smoke-test command;
+- **#66** — audit launcher duplication and document canonical entry points;
+- **#68** — test setup paths containing spaces;
+- **#65** — add Linux setup notes and a compatibility matrix;
+- **#67** — add a contributor architecture overview;
+- **#69** — improve missing-prerequisite error messages;
+- **#70** — add deterministic malformed-task-packet tests;
+- **#71** — test cancellation and restart behavior in one isolated module;
+- **#72** — propose one new upstream coding-engine adapter.
+
+Look for issues labelled **`good first issue`** and **`help wanted`**. Comment on an issue before starting so duplicate work can be avoided.
+
 ## The current finish line
 
 **Finish Line 1: ForgeBoss builds ForgeBoss.**
@@ -51,7 +70,7 @@ See **Issue #15** for the full self-build contract and **Issue #4** for the live
 
 ForgeBoss is an open-source community project under the MIT License.
 
-You do **not** need to understand the whole codebase to help. Good contributions include:
+Useful contributions include:
 
 - reproducing bugs;
 - improving Windows setup;
@@ -63,8 +82,6 @@ You do **not** need to understand the whole codebase to help. Good contributions
 - adding thin adapters for upstream coding engines;
 - improving developer experience;
 - testing clean installs and failure paths.
-
-Start with issues labelled **`good first issue`** or **`help wanted`**.
 
 Before contributing, read `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` and `SECURITY.md`.
 
@@ -86,7 +103,7 @@ From an extracted or cloned ForgeBoss folder:
 SETUP-FORGEBOSS-ENGINES.cmd
 ```
 
-Then useful entry points include:
+Useful entry points include:
 
 ```text
 START-FORGEBOSS.vbs
@@ -96,7 +113,7 @@ AUTOPILOT-DOCTOR.cmd
 START-HYBRID-TESTS.cmd
 ```
 
-The setup path is still being hardened. If a clean install fails or the instructions are unclear, please open an issue or pick up the clean-Windows setup task.
+The setup path is still being hardened. If a clean install fails or the instructions are unclear, open an issue or pick up the clean-Windows setup task.
 
 ## Safety model
 
