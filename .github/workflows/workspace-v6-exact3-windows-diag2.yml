@@ -1,0 +1,67 @@
+name: Workspace V6 exact3 Windows diag2
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-workspace-v6-exact3-windows-diag2
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose exact race boundary
+        shell: pwsh
+        run: |
+          @'
+          import os,shutil,subprocess,tempfile
+          from pathlib import Path
+          from unittest import mock
+          from forgeboss.control import workspace as m
+          from forgeboss.control import windows_cleanup as wc
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td); root=base/'root'; root.mkdir(); child=root/'victim'; child.mkdir(); (child/'inside.txt').write_text('inside')
+              outside=base/'outside'; outside.mkdir(); keep=outside/'keep.txt'; keep.write_text('keep')
+              ident=m._path_identity(root); print('IDENT',ident)
+              real_entries=wc._entries; state={'calls':0,'done':False}
+              def swap(parent):
+                  state['calls']+=1
+                  entries=real_entries(parent); print('ENTRIES',entries)
+                  if not state['done'] and any(row[0]=='victim' for row in entries):
+                      shutil.rmtree(child)
+                      cp=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command','New-Item','-ItemType','Junction','-Path',str(child),'-Target',str(outside)],capture_output=True,text=True)
+                      print('JUNCTION_RC',cp.returncode); print('JUNCTION_OUT',cp.stdout); print('JUNCTION_ERR',cp.stderr)
+                      if cp.returncode: raise RuntimeError(cp.stderr)
+                      state['done']=True
+                  return entries
+              try:
+                  with mock.patch.object(wc,'_entries',side_effect=swap):
+                      wc.delete_tree_exact(root,ident['native'])
+              except Exception as ex:
+                  print('DIRECT_ERROR',type(ex).__name__,str(ex))
+              print('DIRECT_STATE',state,'KEEP',keep.exists(),'CHILD',child.exists(),'REPARSE',m._is_reparse(child) if child.exists() else None)
+              if child.exists() and m._is_reparse(child): os.rmdir(child)
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td); workspace_root=base/'workspaces'; workspace_root.mkdir(); target=workspace_root/'root'; target.mkdir(); child=target/'victim'; child.mkdir(); (child/'inside.txt').write_text('inside')
+              outside=base/'outside'; outside.mkdir(); keep=outside/'keep.txt'; keep.write_text('keep')
+              real_entries=wc._entries; state={'calls':0,'done':False}
+              def swap2(parent):
+                  state['calls']+=1; entries=real_entries(parent); print('CLEAN_ENTRIES',entries)
+                  if not state['done'] and any(row[0]=='victim' for row in entries):
+                      shutil.rmtree(child)
+                      cp=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command','New-Item','-ItemType','Junction','-Path',str(child),'-Target',str(outside)],capture_output=True,text=True)
+                      print('CLEAN_JUNCTION_RC',cp.returncode); print('CLEAN_JUNCTION_ERR',cp.stderr)
+                      if cp.returncode: raise RuntimeError(cp.stderr)
+                      state['done']=True
+                  return entries
+              try:
+                  with mock.patch.object(wc,'_entries',side_effect=swap2):
+                      m.cleanup_workspace(target,workspace_root)
+              except Exception as ex:
+                  print('CLEAN_ERROR',type(ex).__name__,getattr(ex,'code',None),str(ex))
+              print('CLEAN_STATE',state,'KEEP',keep.exists(),'CHILD',child.exists(),'REPARSE',m._is_reparse(child) if child.exists() else None)
+              if child.exists() and m._is_reparse(child): os.rmdir(child)
+          '@ | python -
