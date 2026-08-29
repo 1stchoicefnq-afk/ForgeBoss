@@ -1,0 +1,54 @@
+name: Store V1 stale retry repro
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-store-v1-stale-retry
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact Store V1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD
+          git diff --quiet 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD -- forgeboss
+          test "$(git rev-parse 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Reproduce stale retry authority bypass
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from forgeboss.control.store import ControlStore, StoreAuthorityError
+          with tempfile.TemporaryDirectory() as td:
+              base=Path(td); root=base/'worktrees'; root.mkdir(); db=base/'state'/'control.sqlite3'
+              s=ControlStore(db)
+              s.create_budget_run('GLOBAL',10)
+              s.create_task({'taskId':'A','repository':'owner/repo','purpose':'fl1','baseSha':'a'*40,'branch':'b-A','allowedPaths':['src/a.py'],'requiredTests':['python -m unittest'],'budgetUsd':10})
+              a=s.assign_builder('A','builder-a','GLOBAL')
+              def claim(run):
+                  return s.claim_workspace('A',run,root/'A','b-A','a'*40,runtime_id='mini-swe',worktree_root=root,budget_reserved=1,
+                      builder_id=a['builderId'],assignment_token=a['assignmentToken'],assignment_generation=a['assignmentGeneration'],
+                      assignment_sha256=a['assignmentSha256'],budget_run_revision=int(s.get_budget_run('GLOBAL')['revision']))
+              l=claim('r1')
+              s.revoke_writer('A','r1',l['owner_epoch'],'stop')
+              s.retry_task('A','replacement')
+              before=(s.get_task('A')['budget_spent'],s.db.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],s.db.execute("SELECT COUNT(*) FROM task_events WHERE event_type='workspace.claimed'").fetchone()[0])
+              try:
+                  lease=claim('stale-r2')
+              except StoreAuthorityError as e:
+                  print('SECURE_DENIAL',e.code,before)
+                  raise SystemExit(0)
+              after=(s.get_task('A')['budget_spent'],s.db.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],s.db.execute("SELECT COUNT(*) FROM task_events WHERE event_type='workspace.claimed'").fetchone()[0])
+              print('STALE_RETRY_BYPASS_REPRODUCED',lease['run_id'],before,after)
+              raise SystemExit(42)
+          PY
