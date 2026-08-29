@@ -310,17 +310,7 @@ def discover_quarantined_workspaces(workspace_root: str | os.PathLike[str]) -> l
 
 
 def _rmtree_windows_safe(path: Path) -> None:
-    def onexc(func, name, exc):
-        if isinstance(exc, PermissionError):
-            try:
-                os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
-                func(name)
-                return
-            except Exception:
-                pass
-        raise exc
-
-    shutil.rmtree(path, onexc=onexc)
+    shutil.rmtree(path)
 
 
 def _remove_record_after_absence(path: Path, target: Path, stage: Path) -> None:
@@ -612,4 +602,3 @@ def _remove_record_after_absence_for_success(record_path: Path, stage: Path) -> 
     except FileNotFoundError:
         raise WorkspaceProvisionError("WORKSPACE_QUARANTINE_INVALID", "provision record disappeared before success commit")
     _fsync_dir(record_path.parent)
-
