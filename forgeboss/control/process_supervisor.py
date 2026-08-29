@@ -638,6 +638,8 @@ class WindowsProcessControl:
             raise SupervisorError("SIGNAL_FAILED", message)
 
 
+        return "escalated" if escalate else "signalled"
+
 def default_process_control():
     return WindowsProcessControl() if os.name == "nt" else PosixProcessControl()
 
