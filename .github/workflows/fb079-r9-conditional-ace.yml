@@ -1,0 +1,54 @@
+name: FB-079 R9 conditional callback ACE probe
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r9-conditional-ace
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen R9 tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD
+          git diff --quiet 7ba5e31afe062314cc314357a57e34f0e83c2ab3 HEAD -- forgeboss
+          test "$(git rev-parse 7ba5e31afe062314cc314357a57e34f0e83c2ab3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Apply conditional callback allow and probe trust
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "r9-conditional"
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $file = Join-Path $root "git.exe"
+          Set-Content -Path $file -Value "x" -NoNewline
+          $sddl = 'O:BAG:BAD:(A;;FA;;;BA)(A;;FA;;;SY)(XA;;FW;;;BU;(@User.Title == "R9_TEST"))'
+          $acl = New-Object System.Security.AccessControl.FileSecurity
+          $acl.SetSecurityDescriptorSddlForm($sddl)
+          Set-Acl -Path $file -AclObject $acl
+          $env:R9_CONDITIONAL_FILE = $file
+          @'
+          import os
+          from pathlib import Path
+          from forgeboss.security import executor_guard as g
+          p=Path(os.environ['R9_CONDITIONAL_FILE'])
+          try:
+              owner,rights=g._windows_acl_facts(p)
+              print('R9_CONDITIONAL_FACTS',owner,sorted((sid,hex(mask)) for sid,mask in rights.items()))
+              try:
+                  g._assert_windows_acl_trust(p)
+              except g.SecurityError as e:
+                  print('R9_CONDITIONAL_FAIL_CLOSED',str(e))
+              else:
+                  raise SystemExit('conditional write ACE was not rejected')
+          except g.SecurityError as e:
+              print('R9_CONDITIONAL_API_FAIL_CLOSED',str(e))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
