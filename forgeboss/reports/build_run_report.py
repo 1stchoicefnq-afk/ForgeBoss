@@ -1,14 +1,90 @@
 from __future__ import annotations
-import argparse, hashlib, json, subprocess, time
+import argparse, hashlib, json, os, re, subprocess, time, uuid
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
-STATE=ROOT/"state"/"run-reports";STATE.mkdir(parents=True,exist_ok=True)
+STATE=ROOT/"state"/"run-reports"
 CREATE_NO_WINDOW=getattr(subprocess,"CREATE_NO_WINDOW",0)
+_RUN_ID_RE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
-def load(p):
-    try:return json.loads(Path(p).read_text(encoding="utf-8-sig"))
-    except Exception:return {}
+class ReportEvidenceError(RuntimeError):
+    pass
+
+def load(p,label="evidence"):
+    path=Path(p)
+    try:
+        raw=path.read_text(encoding="utf-8-sig")
+    except Exception as ex:
+        raise ReportEvidenceError(f"{label} unreadable: {path}: {ex}") from ex
+    try:
+        value=json.loads(raw)
+    except Exception as ex:
+        raise ReportEvidenceError(f"{label} malformed JSON: {path}: {ex}") from ex
+    if not isinstance(value,dict):
+        raise ReportEvidenceError(f"{label} must be a JSON object: {path}")
+    return value
+
+def _validate_input(inp):
+    if not isinstance(inp,dict):
+        raise ReportEvidenceError("run evidence must be a JSON object")
+    if not isinstance(inp.get("session"),dict):
+        raise ReportEvidenceError("run evidence requires object session")
+    if not isinstance(inp.get("cycles"),list) or any(not isinstance(c,dict) for c in inp["cycles"]):
+        raise ReportEvidenceError("run evidence requires array cycles of objects")
+    return inp
+
+def _validate_run_id(value):
+    if not isinstance(value,str):
+        raise ReportEvidenceError("run_id must be a string")
+    rid=value
+    if not _RUN_ID_RE.fullmatch(rid):
+        raise ReportEvidenceError("run_id must be 1..128 ASCII letters/digits/underscore/hyphen and start alphanumeric")
+    return rid
+
+def _contained_path(root:Path,name:str)->Path:
+    base=root.resolve(strict=False)
+    candidate=(base/name).resolve(strict=False)
+    try:
+        common=Path(os.path.commonpath([str(base),str(candidate)]))
+    except ValueError as ex:
+        raise ReportEvidenceError("report output escapes run-report state directory") from ex
+    if common!=base or candidate==base:
+        raise ReportEvidenceError("report output escapes run-report state directory")
+    return candidate
+
+def _report_paths(root:Path,rid:str):
+    rid=_validate_run_id(rid)
+    return (_contained_path(root,f"{rid}.json"),_contained_path(root,f"{rid}.txt"),_contained_path(root,f"{rid}-github.md"),_contained_path(root,"last.json"))
+
+def _fsync_dir(path:Path):
+    try: fd=os.open(str(path),os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
+    except OSError:return
+    try: os.fsync(fd)
+    except OSError:pass
+    finally: os.close(fd)
+
+def _atomic_write_text(path:Path,text:str):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.parent/f".{path.name}.tmp-{uuid.uuid4().hex}"
+    flags=os.O_CREAT|os.O_EXCL|os.O_WRONLY|getattr(os,"O_NOFOLLOW",0)
+    fd=os.open(str(temp),flags,0o600)
+    try:
+        data=text.encode("utf-8")
+        view=memoryview(data)
+        while view:
+            n=os.write(fd,view)
+            if n<=0: raise OSError("short write")
+            view=view[n:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temp,path)
+        _fsync_dir(path.parent)
+    except Exception:
+        try: temp.unlink()
+        except FileNotFoundError: pass
+        raise
 
 def git(args,cwd):
     try:
@@ -39,7 +115,11 @@ def attempt_summary(report):
 
 def cycle_detail(c):
     rp=Path(c.get("report_path","")) if c.get("report_path") else None
-    report=load(rp) if rp and rp.exists() else {}
+    if rp is not None:
+        if not rp.exists(): raise ReportEvidenceError(f"cycle evidence missing: {rp}")
+        report=load(rp,"cycle evidence")
+    else:
+        report={}
     workspace=report.get("local_workspace")
     head=report.get("exact_head") or report.get("target_sha") or ""
     commit=report.get("local_commit") or ""
@@ -209,20 +289,22 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--input",required=True)
     ns=ap.parse_args()
-    inp=load(ns.input)
-    rid=inp.get("run_id") or time.strftime("%Y%m%d-%H%M%S")
-    cycles=[cycle_detail(c) for c in inp.get("cycles",[])]
+    inp=_validate_input(load(ns.input,"run evidence"))
+    raw_rid=inp["run_id"] if "run_id" in inp else time.strftime("%Y%m%d-%H%M%S")
+    rid=_validate_run_id(raw_rid)
+    cycles=[cycle_detail(c) for c in inp["cycles"]]
     obj={"schema":1,"kind":"forgeboss-run-report","run_id":rid,
          "generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
-         "session":inp.get("session",{}),"cycles":cycles}
+         "session":inp["session"],"cycles":cycles}
     text=render_text(obj)
     sha=hashlib.sha256(text.encode("utf-8")).hexdigest()
     obj["text_sha256"]=sha
-    jp=STATE/f"{rid}.json";tp=STATE/f"{rid}.txt";mp=STATE/f"{rid}-github.md"
-    jp.write_text(json.dumps(obj,indent=2),encoding="utf-8")
-    tp.write_text(text,encoding="utf-8")
-    mp.write_text(render_github(obj,sha),encoding="utf-8")
-    (STATE/"last.json").write_text(json.dumps({"run_id":rid,"json":str(jp),"text":str(tp),"github_markdown":str(mp),"sha256":sha},indent=2),encoding="utf-8")
-    print(json.dumps({"run_id":rid,"json":str(jp),"text":str(tp),"github_markdown":str(mp),"sha256":sha}))
+    jp,tp,mp,last=_report_paths(STATE,rid)
+    _atomic_write_text(jp,json.dumps(obj,indent=2))
+    _atomic_write_text(tp,text)
+    _atomic_write_text(mp,render_github(obj,sha))
+    pointer={"run_id":rid,"json":str(jp),"text":str(tp),"github_markdown":str(mp),"sha256":sha}
+    _atomic_write_text(last,json.dumps(pointer,indent=2))
+    print(json.dumps(pointer))
     return 0
 if __name__=="__main__":raise SystemExit(main())
