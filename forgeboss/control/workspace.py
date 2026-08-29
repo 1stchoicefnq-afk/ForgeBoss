@@ -309,6 +309,20 @@ def discover_quarantined_workspaces(workspace_root: str | os.PathLike[str]) -> l
     return records
 
 
+def _rmtree_windows_safe(path: Path) -> None:
+    def onexc(func, name, exc):
+        if isinstance(exc, PermissionError):
+            try:
+                os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
+                func(name)
+                return
+            except Exception:
+                pass
+        raise exc
+
+    shutil.rmtree(path, onexc=onexc)
+
+
 def _remove_record_after_absence(path: Path, target: Path, stage: Path) -> None:
     if target.exists() or target.is_symlink() or _is_reparse(target):
         raise WorkspaceProvisionError("WORKSPACE_CLEANUP_INCOMPLETE", "workspace target still exists after cleanup")
@@ -340,7 +354,7 @@ def reconcile_quarantined_workspace(workspace: str | os.PathLike[str], workspace
                                           "surviving workspace no longer matches quarantined generation identity",
                                           generation_id=generation_id)
         try:
-            shutil.rmtree(existing)
+            _rmtree_windows_safe(existing)
         except Exception as ex:
             raise WorkspaceProvisionError("WORKSPACE_CLEANUP_FAILED", f"quarantined workspace cleanup failed: {ex}",
                                           cleanup_code=type(ex).__name__.upper(), generation_id=generation_id) from ex
@@ -506,7 +520,7 @@ def cleanup_workspace(workspace: str | os.PathLike[str], workspace_root: str | o
                                       generation_id=found[1]["generation"])
     if not candidate.exists() and not candidate.is_symlink() and not _is_reparse(candidate): return False
     _assert_no_link_components(candidate, "WORKSPACE_CLEANUP_DENIED"); _assert_plain_existing_path(candidate, "WORKSPACE_CLEANUP_DENIED")
-    shutil.rmtree(candidate)
+    _rmtree_windows_safe(candidate)
     if candidate.exists() or candidate.is_symlink() or _is_reparse(candidate):
         raise WorkspaceProvisionError("WORKSPACE_CLEANUP_INCOMPLETE", "workspace still exists after cleanup")
     return True
@@ -528,7 +542,7 @@ def _provision_failure_cleanup(root: Path, target: Path, stage: Path, record_pat
                 _write_record(record_path, record)
             elif not _identity_matches(candidate, record.get("identity")):
                 raise WorkspaceProvisionError("WORKSPACE_GENERATION_MISMATCH", "failed generation identity changed before cleanup")
-            shutil.rmtree(candidate)
+            _rmtree_windows_safe(candidate)
         _remove_record_after_absence(record_path, target, stage)
     except BaseException as ex:
         cleanup_error = ex
@@ -598,3 +612,4 @@ def _remove_record_after_absence_for_success(record_path: Path, stage: Path) -> 
     except FileNotFoundError:
         raise WorkspaceProvisionError("WORKSPACE_QUARANTINE_INVALID", "provision record disappeared before success commit")
     _fsync_dir(record_path.parent)
+

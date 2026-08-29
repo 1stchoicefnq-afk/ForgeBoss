@@ -117,7 +117,8 @@ class WorkspaceProvisioningV3Tests(unittest.TestCase):
         target=self.workspaces/"worker-a"; ex,real=self._make_quarantine(target); gen=ex.generation_id
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,"0"*32)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH")
-        s=quarantine_status(target,self.workspaces); survivor=target if target.exists() else Path(s["stage"]); real(survivor); survivor.mkdir(); (survivor/"newer").write_text("x")
+        s=quarantine_status(target,self.workspaces); survivor=target if target.exists() else Path(s["stage"]); from forgeboss.control import workspace as m
+        m._rmtree_windows_safe(survivor); survivor.mkdir(); (survivor/"newer").write_text("x")
         with self.assertRaises(WorkspaceProvisionError) as cm: reconcile_quarantined_workspace(target,self.workspaces,gen)
         self.assertEqual(cm.exception.code,"WORKSPACE_GENERATION_MISMATCH"); self.assertTrue((survivor/"newer").exists())
 
