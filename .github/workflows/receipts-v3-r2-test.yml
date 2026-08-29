@@ -1,0 +1,26 @@
+name: Receipts V3 R2 exact tests
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-receipts-v3-r2
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact Receipts V3 R2 source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 1c8b6db98a17642b1aaf8cda29263e5080440967 HEAD
+          git diff --quiet 1c8b6db98a17642b1aaf8cda29263e5080440967 HEAD -- forgeboss
+          test "$(git rev-parse 1c8b6db98a17642b1aaf8cda29263e5080440967^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Run exact Receipts V3 R2 tests
+        run: python -m unittest forgeboss.control.test_receipts -v
