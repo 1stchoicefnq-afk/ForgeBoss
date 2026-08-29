@@ -1,0 +1,34 @@
+name: Workspace V6 Linux handle probe
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-workspace-v6-linux-handle-probe
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe name_to_handle_at stability
+        run: |
+          python - <<'PY'
+          import ctypes,errno,os,tempfile
+          libc=ctypes.CDLL(None,use_errno=True)
+          class FH(ctypes.Structure):
+              _fields_=[('handle_bytes',ctypes.c_uint),('handle_type',ctypes.c_int),('f_handle',ctypes.c_ubyte*128)]
+          fn=libc.name_to_handle_at
+          fn.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.POINTER(FH),ctypes.POINTER(ctypes.c_int),ctypes.c_int]
+          fn.restype=ctypes.c_int
+          def handle(path):
+              h=FH();h.handle_bytes=128;m=ctypes.c_int()
+              rc=fn(-100,os.fsencode(path),ctypes.byref(h),ctypes.byref(m),0)
+              if rc: raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))
+              return (m.value,h.handle_type,bytes(h.f_handle[:h.handle_bytes]).hex())
+          with tempfile.TemporaryDirectory() as td:
+              p=os.path.join(td,'stage');os.mkdir(p);a=handle(p)
+              open(os.path.join(p,'x'),'w').write('x');b=handle(p)
+              q=os.path.join(td,'target');os.rename(p,q);c=handle(q)
+              print('A',a);print('B',b);print('C',c)
+              assert a==b==c
+          PY
