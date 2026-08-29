@@ -1,0 +1,64 @@
+name: Store V1 ghost-read proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-store-v1-adversarial
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact Store V1 source tree
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD
+          git diff --quiet 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3 HEAD -- forgeboss
+          test "$(git rev-parse 3986dd8c3d6e543efc3bf2e5b5f52522cd921fe3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Reproduce same-connection uncommitted ghost read
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tempfile, threading
+          from pathlib import Path
+          from forgeboss.control.store import ControlStore
+
+          td=tempfile.TemporaryDirectory(); base=Path(td.name)
+          store=ControlStore(base/'state'/'control.sqlite3')
+          try:
+              store.create_task({
+                  'taskId':'A','repository':'owner/repo','purpose':'fl1','baseSha':'a'*40,
+                  'branch':'assigned','allowedPaths':['src/a.py'],'requiredTests':[],
+                  'budgetUsd':10,
+              })
+              original=store.get_task('A')['budget_spent']
+              mutated=threading.Event(); observed=[]
+
+              def writer_then_rollback():
+                  with store._lock:
+                      store.db.execute('BEGIN IMMEDIATE')
+                      store.db.execute("UPDATE tasks SET budget_spent=9.0,status='running' WHERE task_id='A'")
+                      mutated.set()
+                      reader_done.wait(5)
+                      store.db.execute('ROLLBACK')
+
+              reader_done=threading.Event()
+              t=threading.Thread(target=writer_then_rollback)
+              t.start(); assert mutated.wait(5)
+              # get_task intentionally does not acquire store._lock in V1.
+              ghost=store.get_task('A')
+              observed.append((ghost['budget_spent'],ghost['status']))
+              reader_done.set(); t.join(5); assert not t.is_alive()
+              final=store.get_task('A')
+              assert final['budget_spent']==original
+              assert observed==[(9.0,'running')], observed
+              print('UNCOMMITTED_STORE_GHOST_READ_REPRODUCED', observed, 'rolled_back_to', final['budget_spent'], final['status'])
+          finally:
+              store.db.close(); td.cleanup()
+          PY
