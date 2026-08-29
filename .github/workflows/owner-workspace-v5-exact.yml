@@ -1,0 +1,41 @@
+name: Owner Workspace V5 exact proof
+on:
+  push:
+    branches: [forgeboss/controller-test-owner-workspace-v5-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate source Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor da2160eec31d81311825526e61ea7681ab56aeae HEAD
+          git diff --quiet da2160eec31d81311825526e61ea7681ab56aeae HEAD -- forgeboss
+          test "$(git rev-parse da2160eec31d81311825526e61ea7681ab56aeae^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact candidate source Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor da2160eec31d81311825526e61ea7681ab56aeae HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'candidate not ancestor' }
+          git diff --quiet da2160eec31d81311825526e61ea7681ab56aeae HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source changed' }
+          $a=(git rev-parse 'da2160eec31d81311825526e61ea7681ab56aeae^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Workspace suite
+        run: python -m unittest forgeboss.control.test_workspace -v
