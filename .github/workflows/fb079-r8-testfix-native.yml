@@ -1,0 +1,112 @@
+name: FB079 R8 testfix native proof
+on:
+  push:
+    branches:
+      - forgeboss/worker-c-test-fb079-r8-testfix-native
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.out.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Checkout exact current R8 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/forgeboss/worker-c-fb079-r8-protected-windows-principals:refs/remotes/origin/r8
+          test "$(git rev-parse refs/remotes/origin/r8)" = "47c105bb5b41ff66ea3fb74e8bb502753d3cd1a2"
+          git checkout -B r8 refs/remotes/origin/r8
+      - name: Make filemode mutation tests cross-platform
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('forgeboss/security/test_executor_guard_git_metadata.py')
+          text=p.read_text(encoding='utf-8')
+          replacements={
+            'lease=self._lease(work);self._git(work,"config","core.filemode","false")':'lease=self._lease(work);current=self._git(work,"config","--bool","core.filemode").casefold();self._git(work,"config","core.filemode","true" if current=="false" else "false")',
+            'lease=self._lease(work);self._git(repo,"config","core.filemode","false")':'lease=self._lease(work);current=self._git(repo,"config","--bool","core.filemode").casefold();self._git(repo,"config","core.filemode","true" if current=="false" else "false")',
+          }
+          for old,new in replacements.items():
+              count=text.count(old)
+              expected=1 if 'self._git(work,"config"' in old else 2
+              if count!=expected:raise SystemExit(f'anchor count mismatch {count} != {expected}: {old}')
+              text=text.replace(old,new)
+          p.write_text(text,encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- forgeboss/security/test_executor_guard_git_metadata.py
+      - name: Run Linux security regressions
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+      - name: Commit and push testfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = 'forgeboss/security/test_executor_guard_git_metadata.py'
+          git config user.name 'Jake | Building SiteBoss'
+          git config user.email '1stchoicefnq@gmail.com'
+          git add forgeboss/security/test_executor_guard_git_metadata.py
+          git commit -m 'FB-079 R8: make metadata mutation tests cross-platform'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-fb079-r8-protected-windows-principals
+      - id: out
+        name: Record candidate SHA
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  windows:
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify R8 ancestry and scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $r7='3782f8a1ef095087942b91b1d39e722f856607e5'
+          $files=@(git diff --name-only $r7 HEAD)
+          if ($files.Count -ne 2 -or $files -notcontains 'forgeboss/security/executor_guard.py' -or $files -notcontains 'forgeboss/security/test_executor_guard_git_metadata.py') { throw "R8 scope mismatch: $($files -join ',')" }
+      - name: Run native Windows security suites
+        shell: pwsh
+        run: |
+          python -m unittest forgeboss.security.test_executor_guard_git_metadata -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest forgeboss.security.test_executor_guard_paid_start -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native stock Git-for-Windows snapshot probe
+        shell: pwsh
+        run: |
+          @'
+          import subprocess,tempfile
+          from pathlib import Path
+          from forgeboss.security import executor_guard as guard
+          sid=guard._windows_lookup_account_sid(guard._WIN_TRUSTED_INSTALLER_ACCOUNT).casefold()
+          assert sid==guard._WIN_TRUSTED_INSTALLER_SID,(sid,guard._WIN_TRUSTED_INSTALLER_SID)
+          with tempfile.TemporaryDirectory() as td:
+              work=Path(td)
+              subprocess.run(['git','init','-q'],cwd=work,check=True)
+              subprocess.run(['git','config','user.email','r8@example.invalid'],cwd=work,check=True)
+              subprocess.run(['git','config','user.name','R8'],cwd=work,check=True)
+              (work/'a.txt').write_text('x',encoding='utf-8')
+              subprocess.run(['git','add','a.txt'],cwd=work,check=True)
+              subprocess.run(['git','commit','-qm','base'],cwd=work,check=True)
+              snap=guard.git_metadata_snapshot(work)
+              assert 'git:effective-config' in snap and 'git:executable' in snap
+              print('R8_WINDOWS_STOCK_GIT_SNAPSHOT_PASS',sid,snap['git:executable']['path'])
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
