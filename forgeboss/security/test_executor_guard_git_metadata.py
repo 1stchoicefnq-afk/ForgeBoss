@@ -463,6 +463,18 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
         self.assertEqual(guard._windows_allow_ace_sid_offset(11,0x3),44)
         self.assertIsNone(guard._windows_allow_ace_sid_offset(1))
 
+    def test_windows_ace_layout_classification_fails_closed(self):
+        self.assertEqual(guard._windows_checked_ace_sid_offset(0,20),8)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(1,20),8)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(9,24),8)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(10,24),8)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(5,24),12)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(6,24),12)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(11,56,0x3),44)
+        self.assertEqual(guard._windows_checked_ace_sid_offset(12,56,0x3),44)
+        for args in ((2,20,0),(0,12,0),(0,18,0),(5,20,0x4),(11,44,0x3)):
+            with self.subTest(args=args),self.assertRaises(guard.SecurityError):guard._windows_checked_ace_sid_offset(*args)
+
     def test_windows_acl_requires_trusted_owner_and_rejects_any_untrusted_writer(self):
         p=Path("/synthetic/git.exe")
         safe={"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}
@@ -480,6 +492,17 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
         rights={"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,"S-1-5-21-111-222-333-1001":0x1200A9}
         with patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",rights)):guard._assert_windows_acl_trust(p)
 
+    def test_windows_parent_replacement_rights_are_narrow_and_fail_closed(self):
+        p=Path("/synthetic/volume")
+        trusted=frozenset({"s-1-5-18","s-1-5-32-544"})
+        safe={"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200AD}
+        with patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-18",safe)):
+            guard._assert_windows_parent_replacement_trust(p)
+        for bit in (0x40,0x40000,0x80000):
+            bad=dict(safe);bad["S-1-5-11"]=0x1200AD|bit
+            with self.subTest(bit=bit),patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-18",bad)):
+                with self.assertRaisesRegex(guard.SecurityError,"replacement-capable parent rights"):guard._assert_windows_parent_replacement_trust(p)
+
     def test_windows_trusted_install_policy_rejects_outside_root_and_checks_full_chain(self):
         td=tempfile.TemporaryDirectory()
         try:
@@ -487,8 +510,26 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             safe={"S-1-5-18":0,"S-1-5-32-544":0,"S-1-5-11":0x1200A9}
             with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-18",safe)) as facts:
                 guard._assert_windows_git_trust(inside.resolve())
-                self.assertEqual([c.args[0] for c in facts.call_args_list],[inside.resolve(),inside.parent.resolve(),trusted.resolve()])
+                calls=[c.args[0] for c in facts.call_args_list]
+                self.assertEqual(calls[:3],[inside.resolve(),inside.parent.resolve(),trusted.resolve()])
+                self.assertIn(trusted.parent.resolve(),calls);self.assertIn(Path(trusted.anchor).resolve(),calls)
                 with self.assertRaisesRegex(guard.SecurityError,"untrusted Git-for-Windows install path"):guard._assert_windows_git_trust(outside.resolve())
+        finally:td.cleanup()
+
+    def test_windows_ancestor_volume_allows_nonreplacement_rights_but_denies_delete_child(self):
+        td=tempfile.TemporaryDirectory()
+        try:
+            root=Path(td.name);trusted=root/"Git";inside=trusted/"cmd"/"git.exe";inside.parent.mkdir(parents=True);inside.write_text("x");volume=Path(trusted.anchor).resolve()
+            safe={"S-1-5-18":0,"S-1-5-32-544":0,"S-1-5-11":0x1200A9}
+            def facts(path):
+                if Path(path)==volume:return "S-1-5-18",{"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200AD}
+                return "S-1-5-18",safe
+            with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",side_effect=facts):guard._assert_windows_git_trust(inside.resolve())
+            def badfacts(path):
+                if Path(path)==volume:return "S-1-5-18",{"S-1-5-18":guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200AD|0x40}
+                return "S-1-5-18",safe
+            with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",side_effect=badfacts):
+                with self.assertRaisesRegex(guard.SecurityError,"replacement-capable parent rights"):guard._assert_windows_git_trust(inside.resolve())
         finally:td.cleanup()
 
     def test_windows_hostile_path_fake_git_is_rejected_before_subprocess(self):

@@ -25,6 +25,10 @@ _WIN_TRUSTED_INSTALLER_ACCOUNT=r"NT SERVICE\TrustedInstaller"
 _WIN_TRUSTED_INSTALLER_SID="s-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 _WIN_BROAD_WRITE_SIDS=("S-1-1-0","S-1-5-11","S-1-5-32-545")
 _WIN_WRITE_RIGHTS=0x500D0156
+_WIN_PARENT_REPLACE_RIGHTS=0x000C0040
+_WIN_ALLOW_ACE_TYPES=frozenset((0,5,9,11))
+_WIN_DENY_ACE_TYPES=frozenset((1,6,10,12))
+_WIN_OBJECT_ACE_TYPES=frozenset((5,6,11,12))
 
 def norm(p):
     if not isinstance(p,str) or not p.strip():raise SecurityError("empty path")
@@ -125,6 +129,15 @@ def _windows_allow_ace_sid_offset(ace_type:int,object_flags:int=0):
     if ace_type in (0,9):return 8
     if ace_type in (5,11):return 12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)
     return None
+def _windows_checked_ace_sid_offset(ace_type:int,ace_size:int,object_flags:int=0):
+    if ace_type not in _WIN_ALLOW_ACE_TYPES|_WIN_DENY_ACE_TYPES:raise SecurityError("unsupported Windows DACL ACE type: "+str(ace_type))
+    if not isinstance(ace_size,int) or ace_size<16 or ace_size%4:raise SecurityError("malformed Windows DACL ACE size")
+    if ace_type in _WIN_OBJECT_ACE_TYPES:
+        if object_flags & ~0x3:raise SecurityError("malformed Windows object ACE flags")
+        offset=12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)
+    else:offset=8
+    if offset+8>ace_size:raise SecurityError("malformed Windows DACL ACE layout")
+    return offset
 def _windows_lookup_account_sid(account:str):
     try:
         import ctypes
@@ -173,6 +186,8 @@ def _windows_acl_facts(path:Path):
         adv.GetEffectiveRightsFromAclW.argtypes=[V,ctypes.POINTER(TRUSTEE),ctypes.POINTER(D)];adv.GetEffectiveRightsFromAclW.restype=D
         adv.GetAclInformation.argtypes=[V,V,D,D];adv.GetAclInformation.restype=wintypes.BOOL
         adv.GetAce.argtypes=[V,D,ctypes.POINTER(V)];adv.GetAce.restype=wintypes.BOOL
+        adv.IsValidSid.argtypes=[V];adv.IsValidSid.restype=wintypes.BOOL
+        adv.GetLengthSid.argtypes=[V];adv.GetLengthSid.restype=D
         kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V
         owner=V();dacl=V();sd=V()
         rc=adv.GetNamedSecurityInfoW(str(path),1,0x1|0x4,ctypes.byref(owner),None,ctypes.byref(dacl),None,ctypes.byref(sd))
@@ -190,12 +205,17 @@ def _windows_acl_facts(path:Path):
             ace=V()
             if not adv.GetAce(dacl,i,ctypes.byref(ace)) or not ace.value:raise SecurityError("unable to read Windows DACL ACE: "+str(path))
             header=ctypes.cast(ace,ctypes.POINTER(ACE_HEADER)).contents
-            ace_type=int(header.AceType);base=int(ace.value);object_flags=ctypes.c_uint32.from_address(base+8).value if ace_type in (5,11) else 0
-            offset=_windows_allow_ace_sid_offset(ace_type,object_flags)
-            if offset is None:continue
+            ace_type=int(header.AceType);ace_size=int(header.AceSize);base=int(ace.value)
+            if ace_size<16 or ace_size%4:raise SecurityError("malformed Windows DACL ACE size: "+str(path))
+            object_flags=ctypes.c_uint32.from_address(base+8).value if ace_type in _WIN_OBJECT_ACE_TYPES else 0
+            offset=_windows_checked_ace_sid_offset(ace_type,ace_size,object_flags)
             sid_addr=base+offset
-            sid=V(sid_addr);text=sid_text(sid)
-            trustee_sids[text.casefold()]=(text,sid_addr)
+            subauth_count=int(ctypes.c_ubyte.from_address(sid_addr+1).value);sid_len=8+4*subauth_count
+            if sid_len<8 or offset+sid_len>ace_size:raise SecurityError("malformed Windows DACL SID bounds: "+str(path))
+            sid=V(sid_addr)
+            if not adv.IsValidSid(sid) or int(adv.GetLengthSid(sid))!=sid_len:raise SecurityError("invalid Windows DACL SID: "+str(path))
+            if ace_type in _WIN_DENY_ACE_TYPES:continue
+            text=sid_text(sid);trustee_sids[text.casefold()]=(text,sid_addr)
         rights={}
         for _,(text,sid_addr) in sorted(trustee_sids.items()):
             trustee=TRUSTEE();adv.BuildTrusteeWithSidW(ctypes.byref(trustee),V(sid_addr));mask=D(0)
@@ -209,12 +229,16 @@ def _windows_acl_facts(path:Path):
         try:
             if 'sd' in locals() and sd.value:kernel.LocalFree(sd)
         except Exception:pass
-def _assert_windows_acl_trust(path:Path):
+def _assert_windows_acl_mask(path:Path,deny_mask:int,reason:str):
     owner,rights=_windows_acl_facts(path);trusted=_windows_trusted_principal_sids()
     if str(owner).casefold() not in trusted:raise SecurityError("untrusted Windows Git path owner: "+str(path))
     for sid,mask in rights.items():
-        if str(sid).casefold() not in trusted and int(mask) & _WIN_WRITE_RIGHTS:
-            raise SecurityError("untrusted principal has write-capable Git path rights: "+str(sid)+" -> "+str(path))
+        if str(sid).casefold() not in trusted and int(mask) & int(deny_mask):
+            raise SecurityError(reason+str(sid)+" -> "+str(path))
+def _assert_windows_acl_trust(path:Path):
+    return _assert_windows_acl_mask(path,_WIN_WRITE_RIGHTS,"untrusted principal has write-capable Git path rights: ")
+def _assert_windows_parent_replacement_trust(path:Path):
+    return _assert_windows_acl_mask(path,_WIN_PARENT_REPLACE_RIGHTS,"untrusted principal has replacement-capable parent rights: ")
 def _windows_path_key(p:Path):return os.path.normcase(os.path.normpath(str(p)))
 def _windows_within(path:Path,root:Path):
     try:return os.path.commonpath([_windows_path_key(path),_windows_path_key(root)])==_windows_path_key(root)
@@ -229,6 +253,18 @@ def _assert_windows_git_trust(resolved:Path):
         if _windows_path_key(cur)==_windows_path_key(root):break
         if cur.parent==cur:raise SecurityError("Git executable escaped trusted install root")
         cur=cur.parent
+    if os.name=="nt":
+        anchor=str(root.anchor)
+        if not re.fullmatch(r"[A-Za-z]:\\",anchor):raise SecurityError("Git-for-Windows trust root is not on a local drive")
+    volume=Path(root.anchor) if root.anchor else root
+    ancestor=root.parent
+    while True:
+        if is_linklike(ancestor) or _windows_reparse(ancestor):raise SecurityError("linklike Git ancestor trust path denied: "+str(ancestor))
+        if _windows_path_key(ancestor)==_windows_path_key(volume):
+            _assert_windows_parent_replacement_trust(ancestor);break
+        _assert_windows_acl_trust(ancestor)
+        if ancestor.parent==ancestor:raise SecurityError("Git trust chain has no stable volume boundary")
+        ancestor=ancestor.parent
 def _resolve_git_executable():
     name="git.exe" if os.name=="nt" else "git"
     raw=shutil.which(name)
