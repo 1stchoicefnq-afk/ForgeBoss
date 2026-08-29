@@ -58,14 +58,14 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
     def test_ordinary_git_config_mutation_fails(self):
         td,work=self._ordinary()
         try:
-            lease=self._lease(work);self._git(work,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(work,"config","--bool","core.filemode").casefold();self._git(work,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed"):self._postflight(work,lease)
         finally:td.cleanup()
 
     def test_linked_worktree_common_config_mutation_fails(self):
         td,repo,work=self._linked()
         try:
-            lease=self._lease(work);self._git(repo,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(repo,"config","--bool","core.filemode").casefold();self._git(repo,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed"):self._postflight(work,lease)
         finally:td.cleanup()
 
@@ -354,7 +354,7 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
     def test_verify_rejects_postlease_linked_common_metadata_change(self):
         td,repo,work=self._linked()
         try:
-            lease=self._lease(work);self._git(repo,"config","core.filemode","false")
+            lease=self._lease(work);current=self._git(repo,"config","--bool","core.filemode").casefold();self._git(repo,"config","core.filemode","true" if current=="false" else "false")
             with self.assertRaisesRegex(guard.SecurityError,"Git metadata changed after lease before execution"):self._verify(work,lease)
         finally:td.cleanup()
 
@@ -511,6 +511,26 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             with patch.object(guard,"_windows_trusted_roots",return_value=[trusted.resolve()]),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",safe)):
                 guard._assert_windows_git_trust(exe.resolve())
         finally:td.cleanup()
+
+    def test_windows_trustedinstaller_resolution_is_exact_and_mismatch_fails_closed(self):
+        with patch.object(guard.os,"name","nt"),patch.object(guard,"_windows_lookup_account_sid",return_value=guard._WIN_TRUSTED_INSTALLER_SID.upper()):
+            trusted=guard._windows_trusted_principal_sids()
+        self.assertIn(guard._WIN_TRUSTED_INSTALLER_SID,trusted)
+        with patch.object(guard.os,"name","nt"),patch.object(guard,"_windows_lookup_account_sid",return_value="S-1-5-80-111-222-333-444-555"):
+            with self.assertRaisesRegex(guard.SecurityError,"TrustedInstaller SID identity mismatch"):guard._windows_trusted_principal_sids()
+
+    def test_windows_acl_accepts_verified_trustedinstaller_and_rejects_other_service_sid(self):
+        p=Path("/synthetic/git.exe");trusted=frozenset(set(guard._WIN_TRUSTED_OWNER_SIDS)|{guard._WIN_TRUSTED_INSTALLER_SID})
+        safe={"S-1-5-32-544":guard._WIN_WRITE_RIGHTS,guard._WIN_TRUSTED_INSTALLER_SID.upper():guard._WIN_WRITE_RIGHTS,"S-1-5-11":0x1200A9}
+        with patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=(guard._WIN_TRUSTED_INSTALLER_SID.upper(),safe)):
+            guard._assert_windows_acl_trust(p)
+        bad=dict(safe);bad["S-1-5-80-111-222-333-444-555"]=guard._WIN_WRITE_RIGHTS
+        with patch.object(guard,"_windows_trusted_principal_sids",return_value=trusted),patch.object(guard,"_windows_acl_facts",return_value=("S-1-5-32-544",bad)):
+            with self.assertRaisesRegex(guard.SecurityError,"untrusted principal has write-capable"):guard._assert_windows_acl_trust(p)
+
+    def test_windows_native_trustedinstaller_lookup_matches_canonical_sid(self):
+        if os.name!="nt":self.skipTest("Windows only")
+        self.assertEqual(guard._windows_lookup_account_sid(guard._WIN_TRUSTED_INSTALLER_ACCOUNT).casefold(),guard._WIN_TRUSTED_INSTALLER_SID)
 
 class ExecutorGuardTrustedConfigOriginTests(unittest.TestCase):
     def _git(self,work,*args):

@@ -21,6 +21,8 @@ _LOCAL_GIT_EXACT={
 }
 _WIN_GIT_REGISTRY_KEY=r"SOFTWARE\GitForWindows"
 _WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}
+_WIN_TRUSTED_INSTALLER_ACCOUNT=r"NT SERVICE\TrustedInstaller"
+_WIN_TRUSTED_INSTALLER_SID="s-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 _WIN_BROAD_WRITE_SIDS=("S-1-1-0","S-1-5-11","S-1-5-32-545")
 _WIN_WRITE_RIGHTS=0x500D0156
 
@@ -123,6 +125,35 @@ def _windows_allow_ace_sid_offset(ace_type:int,object_flags:int=0):
     if ace_type in (0,9):return 8
     if ace_type in (5,11):return 12+(16 if object_flags & 0x1 else 0)+(16 if object_flags & 0x2 else 0)
     return None
+def _windows_lookup_account_sid(account:str):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        adv=ctypes.WinDLL("advapi32",use_last_error=True);kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+        V=wintypes.LPVOID;D=wintypes.DWORD
+        adv.LookupAccountNameW.argtypes=[wintypes.LPCWSTR,wintypes.LPCWSTR,V,ctypes.POINTER(D),wintypes.LPWSTR,ctypes.POINTER(D),ctypes.POINTER(ctypes.c_int)];adv.LookupAccountNameW.restype=wintypes.BOOL
+        adv.ConvertSidToStringSidW.argtypes=[V,ctypes.POINTER(wintypes.LPWSTR)];adv.ConvertSidToStringSidW.restype=wintypes.BOOL
+        kernel.LocalFree.argtypes=[V];kernel.LocalFree.restype=V
+        sid_size=D(0);domain_size=D(0);sid_use=ctypes.c_int(0)
+        ctypes.set_last_error(0)
+        ok=adv.LookupAccountNameW(None,account,None,ctypes.byref(sid_size),None,ctypes.byref(domain_size),ctypes.byref(sid_use))
+        err=ctypes.get_last_error()
+        if ok or err!=122 or int(sid_size.value)<=0:raise SecurityError("unable to resolve protected Windows service SID: "+account)
+        sid_buf=ctypes.create_string_buffer(int(sid_size.value));domain=ctypes.create_unicode_buffer(max(1,int(domain_size.value)))
+        if not adv.LookupAccountNameW(None,account,ctypes.cast(sid_buf,V),ctypes.byref(sid_size),domain,ctypes.byref(domain_size),ctypes.byref(sid_use)):
+            raise SecurityError("unable to resolve protected Windows service SID: "+account)
+        out=wintypes.LPWSTR()
+        if not adv.ConvertSidToStringSidW(ctypes.cast(sid_buf,V),ctypes.byref(out)):raise SecurityError("unable to stringify protected Windows service SID: "+account)
+        try:return ctypes.wstring_at(out)
+        finally:kernel.LocalFree(out)
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to resolve protected Windows service SID: "+account) from e
+def _windows_trusted_principal_sids():
+    trusted=set(_WIN_TRUSTED_OWNER_SIDS)
+    if os.name!="nt":return frozenset(trusted)
+    resolved=_windows_lookup_account_sid(_WIN_TRUSTED_INSTALLER_ACCOUNT).casefold()
+    if resolved!=_WIN_TRUSTED_INSTALLER_SID:raise SecurityError("TrustedInstaller SID identity mismatch")
+    trusted.add(resolved);return frozenset(trusted)
 def _windows_acl_facts(path:Path):
     try:
         import ctypes
@@ -179,10 +210,10 @@ def _windows_acl_facts(path:Path):
             if 'sd' in locals() and sd.value:kernel.LocalFree(sd)
         except Exception:pass
 def _assert_windows_acl_trust(path:Path):
-    owner,rights=_windows_acl_facts(path)
-    if str(owner).casefold() not in _WIN_TRUSTED_OWNER_SIDS:raise SecurityError("untrusted Windows Git path owner: "+str(path))
+    owner,rights=_windows_acl_facts(path);trusted=_windows_trusted_principal_sids()
+    if str(owner).casefold() not in trusted:raise SecurityError("untrusted Windows Git path owner: "+str(path))
     for sid,mask in rights.items():
-        if str(sid).casefold() not in _WIN_TRUSTED_OWNER_SIDS and int(mask) & _WIN_WRITE_RIGHTS:
+        if str(sid).casefold() not in trusted and int(mask) & _WIN_WRITE_RIGHTS:
             raise SecurityError("untrusted principal has write-capable Git path rights: "+str(sid)+" -> "+str(path))
 def _windows_path_key(p:Path):return os.path.normcase(os.path.normpath(str(p)))
 def _windows_within(path:Path,root:Path):
