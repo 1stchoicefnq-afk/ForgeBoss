@@ -12,10 +12,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Checkout V6 temp source
-        run: git checkout ca644b6ef77643cd776e893297e47825f573965c
+      - name: Preserve helper and checkout V6 temp source
+        run: |
+          cp .github/workspace_v6_testfix.py "$RUNNER_TEMP/workspace_v6_testfix.py"
+          git checkout ca644b6ef77643cd776e893297e47825f573965c
       - name: Apply regression fixes
-        run: python .github/workspace_v6_testfix.py
+        run: python "$RUNNER_TEMP/workspace_v6_testfix.py"
       - name: Validate and publish
         run: |
           python -m py_compile forgeboss/control/test_workspace.py
