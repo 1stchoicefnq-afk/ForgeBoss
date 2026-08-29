@@ -1,0 +1,43 @@
+name: Worker C current-main Stage-1 regression
+on:
+  push:
+    branches: [forgeboss/worker-c-test-main-93b93678-stage1-regression]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact current-main source Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 93b936783797666c9652c457ad4d96c07fcdfbfe HEAD
+          git diff --quiet 93b936783797666c9652c457ad4d96c07fcdfbfe HEAD -- forgeboss
+          test "$(git rev-parse 93b936783797666c9652c457ad4d96c07fcdfbfe^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact current-main source Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor 93b936783797666c9652c457ad4d96c07fcdfbfe HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'main not ancestor' }
+          git diff --quiet 93b936783797666c9652c457ad4d96c07fcdfbfe HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source changed' }
+          $a=(git rev-parse '93b936783797666c9652c457ad4d96c07fcdfbfe^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
+      - name: Security regression discovery
+        run: python -m unittest discover -s forgeboss/security -p 'test_*.py' -v
