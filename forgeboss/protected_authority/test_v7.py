@@ -85,17 +85,21 @@ class WindowsRootChainV7Tests(unittest.TestCase):
         if cp.returncode!=0:self.skipTest('icacls fixture unavailable: '+(cp.stderr or cp.stdout))
     def _protect(self,path,sid):
         self._run_icacls(path,'/inheritance:r')
-        for principal in ('*S-1-1-0','*S-1-5-32-545','*S-1-5-11'):
+        for principal in ('*S-1-1-0','*S-1-5-32-545','*S-1-5-11','*S-1-3-0'):
             subprocess.run(['icacls',str(path),'/remove:g',principal],capture_output=True,text=True)
         self._run_icacls(path,'/grant:r',f'*{sid}:(OI)(CI)F','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
+    def _assert_leaf_fixture(self,boundary,path):
+        from forgeboss.protected_authority.boundary import _WIN_WRITE_RIGHTS,_windows_acl_facts
+        owner,rights=_windows_acl_facts(path);bad={sid:hex(mask) for sid,mask in rights.items() if sid not in boundary.trusted_storage and mask&_WIN_WRITE_RIGHTS}
+        self.assertFalse(bad,f'untrusted write-capable fixture ACEs: owner={owner} bad={bad} icacls={subprocess.run(["icacls",str(path)],capture_output=True,text=True).stdout}')
     def test_standard_volume_root_allows_genuinely_protected_child(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
-            parent=Path(td);root=parent/'svc';root.mkdir();self._protect(root,sid);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
+            parent=Path(td);root=parent/'svc';root.mkdir();self._protect(root,sid);self._assert_leaf_fixture(boundary,root);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
     def test_delete_child_authority_on_ancestor_is_denied(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
-            parent=Path(td)/'hostile';parent.mkdir();root=parent/'svc';root.mkdir();self._protect(root,sid);self._protect(parent,sid)
+            parent=Path(td)/'hostile';parent.mkdir();root=parent/'svc';root.mkdir();self._protect(root,sid);self._protect(parent,sid);self._assert_leaf_fixture(boundary,root)
             self._run_icacls(parent,'/grant','*S-1-1-0:(DC)')
             with self.assertRaises(AuthorityError) as cm:assert_machine_anchored_root(boundary,root)
             self.assertEqual(cm.exception.code,'PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
