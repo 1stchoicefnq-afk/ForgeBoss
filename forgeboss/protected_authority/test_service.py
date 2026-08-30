@@ -6,8 +6,8 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from forgeboss.protected_authority.boundary import PeerContext
-from forgeboss.protected_authority.protocol import AuthorityError,build_request,canonical_digest,canonical_json,strict_loads
-from forgeboss.protected_authority.service import ProtectedAuthorityService
+from forgeboss.protected_authority.protocol import AuthorityError,OPERATIONS,build_request,canonical_digest,canonical_json,strict_loads
+from forgeboss.protected_authority.service import ProtectedAuthorityService,_canonical_peer_policies
 from forgeboss.protected_authority.signing import ReceiptSigner,verify_signed_receipt
 
 class Boundary:
@@ -18,8 +18,9 @@ class Boundary:
     def verify_peer(self,peer_id,_digest,_signature,peer_context):return self.peer_ok and peer_id=='controller-a' and peer_context==PeerContext('test','principal-a')
 class Secrets:
     private_key='PEM-PRIVATE-DO-NOT-LEAK';trust_root='ED25519-TRUST-DO-NOT-LEAK'
-    def github_app_private_key(self):return self.private_key
-    def launch_trust_root(self):return self.trust_root
+    def __init__(self):self.key_reads=0;self.trust_reads=0
+    def github_app_private_key(self):self.key_reads+=1;return self.private_key
+    def launch_trust_root(self):self.trust_reads+=1;return self.trust_root
 class Backend:
     def __init__(self):self.calls=[];self.fail=False;self.leak=False;self.lock=threading.Lock()
     def _r(self,op,kw,private):
@@ -36,9 +37,12 @@ def req(op,payload,request_id=None,repo='owner/repo'):
     return build_request(operation=op,request_id=request_id or str(uuid.uuid4()),peer_id='controller-a',repository=repo,control_revision=129,payload=payload,signature='sig')
 CTX=PeerContext('test','principal-a')
 
+def full_policy():
+    return {'controller-a':{'operations':sorted(OPERATIONS),'repositories':['owner/repo'],'objects':{op:['*'] for op in OPERATIONS}}}
+
 class TestService(ProtectedAuthorityService):
-    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer):
-        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'}
+    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer,peer_policies=None):
+        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'};self.peer_policies=_canonical_peer_policies(peer_policies or full_policy(),self.allowed_repositories)
         from forgeboss.protected_authority.service import ReplayJournal
         self.journal=ReplayJournal(self.root)
 
@@ -67,6 +71,21 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         p={'baseSha':'a'*40,'headSha':'b'*40,'baseRef':'main','headRef':'repair/fix','title':'Reviewed fix','body':'evidence','reviewDigest':'c'*64};out=self.service.handle(req('publish_reviewed_draft_pr',p),peer_context=CTX);self.assertTrue(verify_signed_receipt(out,self.public_b64));self.backend.leak=True
         with self.assertRaises(AuthorityError) as cm:self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX)
         self.assertEqual(cm.exception.code,'SECRET_FIELD_DENIED')
+    def test_peer_policy_denial_precedes_replay_secret_and_backend(self):
+        policy={'controller-a':{'operations':['read_github_control'],'repositories':['owner/repo'],'objects':{'read_github_control':['pr:10']}}}
+        self.service.peer_policies=_canonical_peer_policies(policy,self.service.allowed_repositories)
+        rid=str(uuid.uuid4());r=req('publish_report_comment',{'issue':11,'body':'report','reportDigest':'a'*64},rid)
+        with self.assertRaises(AuthorityError) as cm:self.service.handle(r,peer_context=CTX)
+        self.assertEqual(cm.exception.code,'PEER_OPERATION_DENIED');self.assertEqual(self.secrets.key_reads,0);self.assertEqual(self.backend.calls,[])
+        self.service.peer_policies=_canonical_peer_policies(full_policy(),self.service.allowed_repositories)
+        self.service.handle(r,peer_context=CTX)
+        self.assertEqual(self.backend.calls,['publish_report_comment'])
+    def test_peer_object_policy_is_fail_closed(self):
+        policy={'controller-a':{'operations':['read_github_control'],'repositories':['owner/repo'],'objects':{'read_github_control':['pr:10']}}}
+        self.service.peer_policies=_canonical_peer_policies(policy,self.service.allowed_repositories)
+        self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX)
+        with self.assertRaises(AuthorityError) as cm:self.service.handle(req('read_github_control',{'rootPr':11,'preferredRepairPr':0}),peer_context=CTX)
+        self.assertEqual(cm.exception.code,'PEER_OBJECT_DENIED')
     def test_strict_json(self):
         for raw in ('{"x":1,"x":2}','{"x":NaN}','{"x":Infinity}',''):
             with self.subTest(raw=raw),self.assertRaises(AuthorityError):strict_loads(raw)
