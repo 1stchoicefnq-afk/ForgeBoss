@@ -175,10 +175,10 @@ class ControlStore:
                 SET assignment_mode='controller-bound'
                 WHERE assignment_mode='legacy'
                   AND (
-                    budget_run_id IS NOT NULL OR
                     assigned_builder_id IS NOT NULL OR
                     assignment_token_hash IS NOT NULL OR
-                    assignment_sha256 IS NOT NULL
+                    assignment_sha256 IS NOT NULL OR
+                    assignment_generation > 0
                   )""")
             rows=self.db.execute("SELECT task_id,budget_allocated,budget_spent,budget_cap_exact,budget_reserved_exact FROM tasks").fetchall()
             for row in rows:
