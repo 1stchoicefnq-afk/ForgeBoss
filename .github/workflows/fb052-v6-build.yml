@@ -18,39 +18,44 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Preserve patch and checkout exact V5
+      - name: Reconstruct exact V6 R2
         shell: bash
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch_fixed.py "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
           cp tmp/fb052_v6_sourcefix2.py "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
+          cp tmp/fb052_v6_sourcefix3.py "$RUNNER_TEMP/fb052_v6_sourcefix3.py"
           cp tmp/fb052_v6_testfix.py "$RUNNER_TEMP/fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
           python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
+          python "$RUNNER_TEMP/fb052_v6_sourcefix3.py"
           python "$RUNNER_TEMP/fb052_v6_testfix.py"
           test "$(git diff --name-only | sort | tr '\n' ' ')" = "forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py "
-      - name: Preserve patch and checkout exact V5 Windows
+      - name: Reconstruct exact V6 R2 Windows
         shell: pwsh
         if: runner.os == 'Windows'
         run: |
           Copy-Item tmp/fb052_v6_patch_fixed.py "$env:RUNNER_TEMP\fb052_v6_patch_fixed.py"
           Copy-Item tmp/fb052_v6_sourcefix2.py "$env:RUNNER_TEMP\fb052_v6_sourcefix2.py"
+          Copy-Item tmp/fb052_v6_sourcefix3.py "$env:RUNNER_TEMP\fb052_v6_sourcefix3.py"
           Copy-Item tmp/fb052_v6_testfix.py "$env:RUNNER_TEMP\fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
           python "$env:RUNNER_TEMP\fb052_v6_patch_fixed.py"
           if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
           python "$env:RUNNER_TEMP\fb052_v6_sourcefix2.py"
-          if ($LASTEXITCODE -ne 0) { throw 'sourcefix failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'sourcefix2 failed' }
+          python "$env:RUNNER_TEMP\fb052_v6_sourcefix3.py"
+          if ($LASTEXITCODE -ne 0) { throw 'sourcefix3 failed' }
           python "$env:RUNNER_TEMP\fb052_v6_testfix.py"
           if ($LASTEXITCODE -ne 0) { throw 'testfix failed' }
           $files = @(git diff --name-only | Sort-Object)
           if (($files -join ',') -ne 'forgeboss/control/process_supervisor.py,forgeboss/control/test_process_supervisor.py') { throw "scope mismatch: $files" }
-      - name: Compile V6
+      - name: Compile V6 R2
         run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
-      - name: Focused V6 suite
+      - name: Focused V6 R2 suite
         run: python -m unittest forgeboss.control.test_process_supervisor -v
       - name: Broad control regression discovery
         run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
@@ -64,22 +69,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Reconstruct exact tested candidate and publish one commit
+      - name: Publish exact tested V6 R2 one-commit candidate
         shell: bash
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch_fixed.py "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
           cp tmp/fb052_v6_sourcefix2.py "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
+          cp tmp/fb052_v6_sourcefix3.py "$RUNNER_TEMP/fb052_v6_sourcefix3.py"
           cp tmp/fb052_v6_testfix.py "$RUNNER_TEMP/fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
           python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
+          python "$RUNNER_TEMP/fb052_v6_sourcefix3.py"
           python "$RUNNER_TEMP/fb052_v6_testfix.py"
           python -m unittest forgeboss.control.test_process_supervisor -v
           git config user.name 'Worker C FB-052 V6'
           git config user.email 'worker-c@users.noreply.github.com'
-          git checkout -B forgeboss/worker-c-fb052-supervisor-v6 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          git checkout -B forgeboss/worker-c-fb052-supervisor-v6-r2 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           git add forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
           git diff --cached --quiet && { echo 'no candidate diff'; exit 1; }
-          git commit -m 'FB-052: bounded fail-closed Linux containment V6'
-          git push origin HEAD:refs/heads/forgeboss/worker-c-fb052-supervisor-v6
+          git commit -m 'FB-052: bounded fail-closed Linux containment V6 R2'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-fb052-supervisor-v6-r2
