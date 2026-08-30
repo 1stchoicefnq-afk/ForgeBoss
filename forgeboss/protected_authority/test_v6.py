@@ -2,6 +2,8 @@ from __future__ import annotations
 import base64,ctypes,json,os,tempfile,threading,time,unittest,uuid
 from ctypes import wintypes
 from pathlib import Path
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from forgeboss.protected_authority.boundary import PeerContext
 from forgeboss.protected_authority.github_backend import GitHubAppBackend
 from forgeboss.protected_authority.lifecycle import FIXED_PIPE_NAME,WindowsNamedPipeServer
@@ -25,8 +27,8 @@ class BackendSpy:
 class Signer:
     def sign(self,receipt):return {'receipt':dict(receipt),'receiptDigest':'d'*64,'receiptSignature':'signed'}
 class TestService(ProtectedAuthorityService):
-    def __init__(self,root,allowed=('Owner/Repo',)):
-        self.root=Path(root);self.boundary=Boundary();self.secrets_provider=Secrets();self.backend=BackendSpy();self.receipt_signer=Signer();self.allowed_repositories=_canonical_repository_map(allowed);self.service_principal='machine:svc';self.journal=ReplayJournal(self.root)
+    def __init__(self,root,allowed=('Owner/Repo',),receipt_signer=None):
+        self.root=Path(root);self.boundary=Boundary();self.secrets_provider=Secrets();self.backend=BackendSpy();self.receipt_signer=receipt_signer or Signer();self.allowed_repositories=_canonical_repository_map(allowed);self.service_principal='machine:svc';self.journal=ReplayJournal(self.root)
 
 def request(repo='owner/repo',op='read_github_control'):
     payload={'rootPr':1,'preferredRepairPr':0} if op=='read_github_control' else {'issue':1,'body':'x','reportDigest':'a'*64}
@@ -71,9 +73,9 @@ class WindowsAvailabilityTests(unittest.TestCase):
         expected='test'
         def assert_service_principal(self,_root):return 'test'
         def assert_protected_path(self,_path,**_kw):return None
-    class Echo:
-        def handle_json(self,raw,*,peer_context):return canonical_json({'ok':True,'peer':peer_context.principal,'raw':raw.decode()})
-    def _server(self,td,timeout=500):return WindowsNamedPipeServer(service=self.Echo(),boundary=self.PipeBoundary(),protected_root=Path(td),allowed_peer_sids={'S-1-1-0'},max_instances=4,preauth_timeout_ms=timeout,poll_interval=0.005)
+    def _signed_service(self,td):
+        key=Ed25519PrivateKey.generate();signer=ReceiptSigner.from_private_key(key);svc=TestService(td,receipt_signer=signer);raw=key.public_key().public_bytes(encoding=serialization.Encoding.Raw,format=serialization.PublicFormat.Raw);return svc,base64.b64encode(raw).decode()
+    def _server(self,td,service,timeout=500):return WindowsNamedPipeServer(service=service,boundary=self.PipeBoundary(),protected_root=Path(td),allowed_peer_sids={'S-1-1-0'},max_instances=4,preauth_timeout_ms=timeout,poll_interval=0.005)
     def _open_client(self):
         api=load_win32();deadline=time.monotonic()+5
         while time.monotonic()<deadline:
@@ -90,20 +92,20 @@ class WindowsAvailabilityTests(unittest.TestCase):
             if read.value:return buf.raw[:read.value]
             time.sleep(0.01)
         self.fail('client response timed out')
-    def test_stalled_client_does_not_starve_valid_client_and_is_bounded(self):
+    def test_stalled_client_does_not_starve_valid_signed_service_response(self):
         api=load_win32()
         with tempfile.TemporaryDirectory() as td:
-            srv=self._server(td,timeout=500);srv.start();batch={};t=threading.Thread(target=lambda:batch.setdefault('results',srv.serve_batch()));t.start();stall=self._open_client();valid=self._open_client()
+            svc,public_b64=self._signed_service(td);srv=self._server(td,svc,timeout=500);srv.start();batch={};t=threading.Thread(target=lambda:batch.setdefault('results',srv.serve_batch()));t.start();stall=self._open_client();valid=self._open_client()
             try:
-                started=time.monotonic();response=self._send_recv(valid,b'valid');elapsed=time.monotonic()-started;self.assertLess(elapsed,0.5);obj=json.loads(response.decode());self.assertTrue(obj['ok']);self.assertTrue(obj['peer'].startswith('s-1-'));t.join(2);self.assertFalse(t.is_alive());self.assertIn('results',batch);codes=[x.code for x in batch['results'] if isinstance(x,AuthorityError)];self.assertIn('IPC_PREAUTH_TIMEOUT',codes)
+                raw=canonical_json(request());started=time.monotonic();response=self._send_recv(valid,raw);elapsed=time.monotonic()-started;self.assertLess(elapsed,0.5);obj=json.loads(response.decode());self.assertTrue(verify_signed_receipt(obj,public_b64));self.assertEqual(obj['receipt']['repository'],'Owner/Repo');self.assertEqual(obj['result']['repository'],'Owner/Repo');t.join(2);self.assertFalse(t.is_alive());codes=[x.code for x in batch.get('results',[]) if isinstance(x,AuthorityError)];self.assertIn('IPC_PREAUTH_TIMEOUT',codes)
                 second={};t2=threading.Thread(target=lambda:second.setdefault('results',srv.serve_batch()));t2.start();h2=self._open_client()
-                try:self.assertTrue(json.loads(self._send_recv(h2,b'again').decode())['ok'])
+                try:self.assertTrue(verify_signed_receipt(json.loads(self._send_recv(h2,canonical_json(request())).decode()),public_b64))
                 finally:api.kernel32.CloseHandle(h2)
                 t2.join(2);self.assertFalse(t2.is_alive())
             finally:
                 api.kernel32.CloseHandle(stall);api.kernel32.CloseHandle(valid);srv.close();t.join(1)
     def test_close_unblocks_outstanding_waits(self):
         with tempfile.TemporaryDirectory() as td:
-            srv=self._server(td,timeout=5000);srv.start();t=threading.Thread(target=srv.serve_batch);t.start();time.sleep(0.1);srv.close();t.join(1.5);self.assertFalse(t.is_alive())
+            svc,_=self._signed_service(td);srv=self._server(td,svc,timeout=5000);srv.start();t=threading.Thread(target=srv.serve_batch);t.start();time.sleep(0.1);srv.close();t.join(1.5);self.assertFalse(t.is_alive())
 
 if __name__=='__main__':unittest.main()
