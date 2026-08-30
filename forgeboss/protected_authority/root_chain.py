@@ -5,6 +5,9 @@ from pathlib import Path
 
 from .protocol import AuthorityError
 
+_TRUSTED_INSTALLER_SID='s-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+_WIN_ANCESTOR_REPLACE_RIGHTS=0x00010000|0x00000040|0x00040000|0x00080000|0x10000000
+
 
 def _is_reparse(path:Path)->bool:
     try:st=path.lstat()
@@ -15,6 +18,14 @@ def _service_uid(boundary)->int:
     expected=str(getattr(boundary,'expected',''))
     if not expected.startswith('uid:') or not expected[4:].isdigit():raise AuthorityError('SERVICE_PRINCIPAL_INVALID')
     return int(expected[4:])
+
+def _assert_windows_ancestor(boundary,path:Path)->None:
+    from .boundary import _windows_acl_facts
+    owner,rights=_windows_acl_facts(path)
+    trusted=set(getattr(boundary,'trusted_storage',set()))|{_TRUSTED_INSTALLER_SID}
+    if owner not in trusted:raise AuthorityError('PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
+    for sid,mask in rights.items():
+        if sid not in trusted and mask&_WIN_ANCESTOR_REPLACE_RIGHTS:raise AuthorityError('PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
 
 def assert_machine_anchored_root(boundary,protected_root:Path)->Path:
     root=Path(protected_root)
@@ -44,5 +55,5 @@ def assert_machine_anchored_root(boundary,protected_root:Path)->Path:
         if not anchor or chain[-1]!=anchor:raise AuthorityError('PROTECTED_ROOT_ANCESTOR_INVALID')
         for component in chain:
             if component.is_symlink() or _is_reparse(component):raise AuthorityError('PROTECTED_ROOT_ANCESTOR_INVALID')
-            boundary.assert_protected_path(component,protected_root=component)
+            if component!=resolved:_assert_windows_ancestor(boundary,component)
     return resolved
