@@ -179,6 +179,24 @@ class StoreAuthorityR6MigrationTests(unittest.TestCase):
                 ControlStore(db)
             self.assertEqual(cm.exception.code, "ASSIGNMENT_HISTORY_INVALID")
 
+    def test_schema6_controller_bound_task_missing_assigned_history_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "state.db"
+            st = ControlStore(db)
+            st.create_budget_run("budget-1", "20")
+            st.create_task(make_task())
+            st.assign_builder("task-1", "worker-a", "budget-1")
+            st.db.close()
+
+            st = ControlStore(db)
+            self.assertEqual(st.get_task("task-1")["assignment_mode"], "controller-bound")
+            st.db.execute("DELETE FROM task_events WHERE task_id='task-1' AND event_type='task.assigned'")
+            st.db.close()
+
+            with self.assertRaises(StoreAuthorityError) as cm:
+                ControlStore(db)
+            self.assertEqual(cm.exception.code, "ASSIGNMENT_HISTORY_INVALID")
+
 
 if __name__ == "__main__":
     unittest.main()
