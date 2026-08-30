@@ -85,7 +85,7 @@ class WindowsRootChainV7Tests(unittest.TestCase):
         if cp.returncode!=0:self.skipTest('icacls fixture unavailable: '+(cp.stderr or cp.stdout))
     def _protect(self,path,sid):
         self._run_icacls(path,'/inheritance:r')
-        for principal in ('*S-1-1-0','*S-1-5-32-545','*S-1-5-11','*S-1-3-0'):
+        for principal in ('*S-1-1-0','*S-1-5-32-545','*S-1-5-11','*S-1-3-0','*S-1-3-4'):
             subprocess.run(['icacls',str(path),'/remove:g',principal],capture_output=True,text=True)
         self._run_icacls(path,'/grant:r',f'*{sid}:(OI)(CI)F','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
     def _assert_leaf_fixture(self,boundary,path):
@@ -95,7 +95,7 @@ class WindowsRootChainV7Tests(unittest.TestCase):
     def test_standard_volume_root_allows_genuinely_protected_child(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
-            parent=Path(td);root=parent/'svc';root.mkdir();self._protect(root,sid);self._assert_leaf_fixture(boundary,root);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
+            root=Path(td)/'svc';root.mkdir();self._protect(root,sid);self._assert_leaf_fixture(boundary,root);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
     def test_delete_child_authority_on_ancestor_is_denied(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
