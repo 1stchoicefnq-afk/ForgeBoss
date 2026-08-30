@@ -38,6 +38,7 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         self.state = ProtectedWorkspaceState(protected_root=self.protected, boundary=self.boundary)
 
     def tearDown(self):
+        self.state.close()
         self.td.cleanup()
 
     def _identity(self, path: Path) -> dict:
@@ -64,8 +65,11 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         record = self._record()
         self.state.write(self.workspaces, self.target, record)
         restarted = ProtectedWorkspaceState(protected_root=self.protected, boundary=self.boundary)
-        self.assertEqual(restarted.read(self.workspaces, self.target), record)
-        self.assertGreater(self.boundary.service_checks, 2)
+        try:
+            self.assertEqual(restarted.read(self.workspaces, self.target), record)
+            self.assertGreater(self.boundary.service_checks, 2)
+        finally:
+            restarted.close()
 
     def test_worker_local_forgery_is_not_authority(self):
         local = self.workspaces / ".forgeboss-quarantine"; local.mkdir()
@@ -81,11 +85,11 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
 
     def test_wrong_generation_reconcile_fails_before_mutation(self):
         record = self._record(); self.state.write(self.workspaces, self.target, record)
-        with mock.patch.object(w, "_rmtree_windows_safe") as rm:
+        with mock.patch.object(w, "_git_executable") as git, mock.patch.object(w, "_rmtree_windows_safe") as rm:
             with self.assertRaises(w.WorkspaceProvisionError) as cm:
                 w.reconcile_quarantined_workspace(self.target, self.workspaces, "b" * 32, "/bin/false", protected_state=self.state)
         self.assertEqual(cm.exception.code, "WORKSPACE_GENERATION_MISMATCH")
-        rm.assert_not_called()
+        git.assert_not_called(); rm.assert_not_called()
 
     def test_content_oid_mismatch_blocks_delete_before_mutation(self):
         self.target.mkdir()
@@ -128,7 +132,48 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         self.state.delete(self.workspaces, self.target)
         self.state.delete(self.workspaces, self.target)
         restarted = ProtectedWorkspaceState(protected_root=self.protected, boundary=self.boundary)
-        self.assertIsNone(restarted.read(self.workspaces, self.target))
+        try:
+            self.assertIsNone(restarted.read(self.workspaces, self.target))
+        finally:
+            restarted.close()
+
+    @unittest.skipIf(os.name == "nt", "POSIX dir-fd authority regression")
+    def test_posix_parent_path_swap_cannot_redirect_authoritative_state_io(self):
+        first = self._record(generation="a" * 32, oid="1" * 40)
+        second = self._record(generation="b" * 32, oid="2" * 40)
+        self.state.write(self.workspaces, self.target, first)
+
+        visible = self.state.state_dir
+        anchored = self.protected / "workspace-state-v7-anchored-original"
+        visible.rename(anchored)
+        visible.mkdir(mode=0o700)
+        attacker_sentinel = visible / "attacker.txt"
+        attacker_sentinel.write_text("keep", encoding="utf-8")
+        attacker_fake = visible / "evil.json"
+        attacker_fake.write_text(json.dumps({"attacker": True}), encoding="utf-8")
+
+        # All live operations must stay on the already verified held directory
+        # fd. The replacement pathname must not receive/read authoritative data.
+        self.state.write(self.workspaces, self.target, second)
+        self.assertEqual(self.state.read(self.workspaces, self.target), second)
+        rows = list(self.state.records())
+        self.assertIn(second, rows)
+        self.assertFalse(any(row.get("attacker") is True for row in rows))
+        self.assertEqual(attacker_sentinel.read_text(encoding="utf-8"), "keep")
+        self.assertEqual(json.loads(attacker_fake.read_text(encoding="utf-8")), {"attacker": True})
+        self.assertEqual(list(visible.glob("*.json")), [attacker_fake])
+
+        self.state.delete(self.workspaces, self.target)
+        self.assertIsNone(self.state.read(self.workspaces, self.target))
+        self.assertEqual(attacker_sentinel.read_text(encoding="utf-8"), "keep")
+        self.assertTrue(attacker_fake.exists())
+
+        # A restart must not inherit the old handles. It must re-run protected
+        # path/service validation against the currently visible replacement.
+        self.state.close()
+        self.boundary.deny = True
+        with self.assertRaises(ProtectedWorkspaceStateError):
+            ProtectedWorkspaceState(protected_root=self.protected, boundary=self.boundary)
 
     def test_source_contract_has_no_workspace_local_quarantine_authority(self):
         source = Path(w.__file__).read_text(encoding="utf-8")
