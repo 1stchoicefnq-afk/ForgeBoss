@@ -1,0 +1,29 @@
+name: Proof Receipts R4 c5b546e
+on:
+  push:
+    branches: [forgeboss/proof-receipts-r4-c5b546e]
+permissions:
+  contents: read
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: c5b546e43e677bf07d1e2b249aa45414a24f002d
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "c5b546e43e677bf07d1e2b249aa45414a24f002d"
+      - name: Run Receipts focused
+        run: python -m unittest forgeboss.control.test_receipts -v
+      - name: Run Receipts R4 composition
+        run: python -m unittest forgeboss.control.test_receipts_r4_composition -v
+      - name: Run Store + Receipts + Run-Budget stack
+        run: python -m unittest forgeboss.control.test_store_authority_r6 forgeboss.control.test_store_authority forgeboss.control.test_store_authority_v3 forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions forgeboss.control.test_daemon_budget forgeboss.control.test_receipts forgeboss.control.test_receipts_r4_composition forgeboss.control.test_run_budget -v
+      - name: Compile accepted composition
+        run: python -m py_compile forgeboss/control/store.py forgeboss/control/receipts.py forgeboss/control/run_budget.py forgeboss/control/test_receipts.py forgeboss/control/test_receipts_r4_composition.py
