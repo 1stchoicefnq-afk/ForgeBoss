@@ -1,0 +1,29 @@
+name: Proof Workspace pre-freeze ae9db45
+on:
+  push:
+    branches:
+      - forgeboss/proof-workspace-pre-freeze-ae9db45
+permissions:
+  contents: read
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ae9db45d2865eb8a70575f31b342154f72152688
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "ae9db45d2865eb8a70575f31b342154f72152688"
+      - name: Install protected dependency
+        run: python -m pip install cryptography
+      - name: Run Workspace V7 tests
+        run: python -m unittest forgeboss.control.test_workspace_v7 -v
+      - name: Compile Workspace files
+        run: python -m py_compile forgeboss/control/workspace.py forgeboss/control/workspace_state.py forgeboss/control/test_workspace_v7.py forgeboss/control/windows_cleanup.py
