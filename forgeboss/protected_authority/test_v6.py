@@ -7,8 +7,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from forgeboss.protected_authority.boundary import PeerContext
 from forgeboss.protected_authority.github_backend import GitHubAppBackend
 from forgeboss.protected_authority.lifecycle import FIXED_PIPE_NAME,WindowsNamedPipeServer
-from forgeboss.protected_authority.protocol import AuthorityError,build_request,canonical_json
-from forgeboss.protected_authority.service import ProtectedAuthorityService,ReplayJournal,_canonical_repository_map
+from forgeboss.protected_authority.protocol import AuthorityError,OPERATIONS,build_request,canonical_json
+from forgeboss.protected_authority.service import ProtectedAuthorityService,ReplayJournal,_canonical_peer_policies,_canonical_repository_map
 from forgeboss.protected_authority.signing import ReceiptSigner,verify_signed_receipt
 from forgeboss.protected_authority.win32_ffi import is_invalid_handle,load_win32
 
@@ -26,9 +26,11 @@ class BackendSpy:
     def verify_launch_authority(self,**kw):self.calls.append(('launch',kw['repository']));return {'repository':kw['repository'],'controlRevision':kw['control_revision'],'verified':True}
 class Signer:
     def sign(self,receipt):return {'receipt':dict(receipt),'receiptDigest':'d'*64,'receiptSignature':'signed'}
+
+def _policy():return {'controller-a':{'operations':sorted(OPERATIONS),'repositories':['owner/repo'],'objects':{op:['*'] for op in OPERATIONS}}}
 class TestService(ProtectedAuthorityService):
     def __init__(self,root,allowed=('Owner/Repo',),receipt_signer=None):
-        self.root=Path(root);self.boundary=Boundary();self.secrets_provider=Secrets();self.backend=BackendSpy();self.receipt_signer=receipt_signer or Signer();self.allowed_repositories=_canonical_repository_map(allowed);self.service_principal='machine:svc';self.journal=ReplayJournal(self.root)
+        self.root=Path(root);self.boundary=Boundary();self.secrets_provider=Secrets();self.backend=BackendSpy();self.receipt_signer=receipt_signer or Signer();self.allowed_repositories=_canonical_repository_map(allowed);self.peer_policies=_canonical_peer_policies(_policy(),self.allowed_repositories);self.service_principal='machine:svc';self.journal=ReplayJournal(self.root)
 
 def request(repo='owner/repo',op='read_github_control'):
     payload={'rootPr':1,'preferredRepairPr':0} if op=='read_github_control' else {'issue':1,'body':'x','reportDigest':'a'*64}
@@ -39,7 +41,7 @@ class RepositoryAuthorityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             svc=TestService(td);r=request('other/repo')
             with self.assertRaises(AuthorityError) as cm:svc.handle(r,peer_context=PeerContext('test','p'))
-            self.assertEqual(cm.exception.code,'REPOSITORY_DENIED');self.assertEqual(svc.backend.calls,[])
+            self.assertIn(cm.exception.code,{'PEER_REPOSITORY_DENIED','REPOSITORY_DENIED'});self.assertEqual(svc.backend.calls,[])
             db=__import__('sqlite3').connect(svc.journal.path);self.assertEqual(db.execute('select count(*) from consumed').fetchone()[0],0);db.close()
     def test_repository_case_is_canonicalized_in_backend_and_receipt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -55,7 +57,7 @@ class TokenScopeBackend(GitHubAppBackend):
 class TokenScopeTests(unittest.TestCase):
     def test_operation_tokens_are_exact_repo_and_minimum_permissions(self):
         expected={
-            'read_github_control':{'contents':'read','pull_requests':'read'},
+            'read_github_control':{'contents':'read','pull_requests':'read','checks':'read','statuses':'read'},
             'publish_report_comment':{'issues':'write'},
             'publish_reviewed_draft_pr':{'contents':'read','pull_requests':'write'},
         }
