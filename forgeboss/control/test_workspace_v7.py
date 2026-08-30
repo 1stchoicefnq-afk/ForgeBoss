@@ -42,7 +42,10 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         self.td.cleanup()
 
     def _identity(self, path: Path) -> dict:
-        return {"resolved": str(path.resolve()), "dev": 1, "ino": 2, "ctimeNs": 3, "mode": 16832, "linuxHandle": {"mountId": 1, "handleType": 1, "handleHex": "aa"}}
+        base = {"resolved": str(path.resolve()), "dev": 1, "ino": 2, "ctimeNs": 3, "mode": 16832}
+        if os.name == "nt":
+            return {**base, "native": {"volumeSerial": 1, "fileId": "11" * 16, "creationTime": 1}}
+        return {**base, "linuxHandle": {"mountId": 1, "handleType": 1, "handleHex": "aa"}}
 
     def _record(self, *, generation="a" * 32, oid="1" * 40, state="quarantined"):
         stage = self.workspaces / (w.STAGE_PREFIX + "fixture-" + generation)
