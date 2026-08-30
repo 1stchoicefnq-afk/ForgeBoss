@@ -1,0 +1,42 @@
+name: FB052 V5 publisher
+on:
+  push:
+    branches: [forgeboss/worker-c-fb052-v5-payloads]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve payloads and reconstruct exact tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R .github/fb052v5 "$RUNNER_TEMP/fb052v5"
+          git checkout 8d36be20cfb3f29e315363e290818f4c370f5b03
+          python - <<'PY'
+          import base64,gzip,hashlib,pathlib,os
+          src=pathlib.Path(os.environ['RUNNER_TEMP'])/'fb052v5'
+          dst=pathlib.Path('forgeboss/control'); dst.mkdir(parents=True,exist_ok=True)
+          expected={
+            'process_supervisor.py':'f42b29c67cc1357edb0d0fdf2b49d53a1e5ddef0481c9458c135303ae1bbb2ec',
+            'process_supervisor_windows.py':'fdf6d0ee5c7b637f5cb33a4cf0a9de1a2c114a428104e1921f3d10983eb056b0',
+            'test_process_supervisor.py':'a78941fdd924544fd15379638e52451203bfa2264345cd5bcf4f6fd341e1a3a5',
+          }
+          for name,want in expected.items():
+              raw=gzip.decompress(base64.b64decode((src/(name+'.gz.b64')).read_text()))
+              got=hashlib.sha256(raw).hexdigest()
+              if got != want: raise SystemExit(f'{name}: SHA256 mismatch {got} != {want}')
+              (dst/name).write_bytes(raw)
+          PY
+          python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/process_supervisor_windows.py forgeboss/control/test_process_supervisor.py
+          git config user.name "Worker C FB-052 V5"
+          git config user.email "worker-c@users.noreply.github.com"
+          git add forgeboss/control/process_supervisor.py forgeboss/control/process_supervisor_windows.py forgeboss/control/test_process_supervisor.py
+          test "$(git diff --cached --name-only | wc -l)" -eq 3
+          test "$(git diff --cached --name-only | sort | tr '\n' ' ')" = "forgeboss/control/process_supervisor.py forgeboss/control/process_supervisor_windows.py forgeboss/control/test_process_supervisor.py "
+          git commit -m "FB-052: owned-containment process supervisor V5"
+          git push origin HEAD:refs/heads/forgeboss/worker-c-fb052-supervisor-v5
