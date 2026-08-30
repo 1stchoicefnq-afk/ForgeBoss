@@ -1,13 +1,16 @@
 from __future__ import annotations
-import ctypes,os,socket,stat,threading
+import ctypes,os,socket,stat,threading,time
 from ctypes import wintypes
 from pathlib import Path
 from .boundary import windows_pipe_peer_context
 from .ipc import serve_unix_once
 from .protocol import AuthorityError,MAX_REQUEST_BYTES
 from .root_chain import assert_machine_anchored_root
-from .win32_ffi import is_invalid_handle,load_win32
+from .win32_ffi import handle_value,is_invalid_handle,load_win32
 FIXED_PIPE_NAME=r'\\.\pipe\ForgeBossAuthority';FIXED_SOCKET_NAME='authority.sock';FIXED_SERVICE_NAME='ForgeBossAuthoritySvc'
+_PIPE_ACCESS_DUPLEX=0x00000003;_FILE_FLAG_FIRST_PIPE_INSTANCE=0x00080000;_PIPE_TYPE_MESSAGE=0x4;_PIPE_READMODE_MESSAGE=0x2;_PIPE_NOWAIT=0x1
+_ERROR_BROKEN_PIPE=109;_ERROR_NO_DATA=232;_ERROR_MORE_DATA=234;_ERROR_PIPE_CONNECTED=535;_ERROR_PIPE_LISTENING=536
+
 def _assert_linux_endpoint_dir(path:Path,*,service_uid:int,allowed_gid:int)->Path:
     p=Path(path)
     if not p.is_absolute() or p.is_symlink():raise AuthorityError('IPC_ENDPOINT_DIR_INVALID')
@@ -52,6 +55,7 @@ class LinuxAuthorityDaemon:
         if self.listener is not None:self.listener.close();self.listener=None
         try:self.path.unlink()
         except FileNotFoundError:pass
+
 def _windows_sddl(allowed_peer_sids:set[str])->str:
     sids=[]
     for sid in sorted({str(x).upper() for x in allowed_peer_sids}):
@@ -78,38 +82,91 @@ def assert_windows_scm_registration(*,service_name:str=FIXED_SERVICE_NAME,expect
         if scm and not is_invalid_handle(scm):api.advapi32.CloseServiceHandle(scm)
 class SA(ctypes.Structure):_fields_=[('nLength',wintypes.DWORD),('lpSecurityDescriptor',wintypes.LPVOID),('bInheritHandle',wintypes.BOOL)]
 class WindowsNamedPipeServer:
-    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str]):
+    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str],max_instances:int=4,preauth_timeout_ms:int=1000,poll_interval:float=0.01):
         if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
-        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.handle=None;self._sd=None
+        if not isinstance(max_instances,int) or not 2<=max_instances<=16:raise AuthorityError('IPC_CONCURRENCY_INVALID')
+        if not isinstance(preauth_timeout_ms,int) or not 100<=preauth_timeout_ms<=30000:raise AuthorityError('IPC_TIMEOUT_INVALID')
+        if not isinstance(poll_interval,(int,float)) or not 0.001<=float(poll_interval)<=0.1:raise AuthorityError('IPC_TIMEOUT_INVALID')
+        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.max_instances=max_instances;self.preauth_timeout_ms=preauth_timeout_ms;self.poll_interval=float(poll_interval);self.handles=[];self.handle=None;self._sd=None;self._stop=threading.Event()
     def start(self):
-        if self.handle is not None:raise AuthorityError('SERVICE_ALREADY_STARTED')
+        if self.handles:raise AuthorityError('SERVICE_ALREADY_STARTED')
         api=load_win32();sd=wintypes.LPVOID();sddl=_windows_sddl(self.allowed_peer_sids)
         if not api.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,ctypes.byref(sd),None):raise AuthorityError('IPC_ACL_INVALID')
-        sa=SA(ctypes.sizeof(SA),sd,False);h=api.kernel32.CreateNamedPipeW(FIXED_PIPE_NAME,0x00000003|0x00080000,0x00000004|0x00000002|0x00000008,1,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,5000,ctypes.byref(sa))
-        if is_invalid_handle(h):api.kernel32.LocalFree(sd);raise AuthorityError('IPC_CREATE_FAILED')
-        self.handle=h;self._sd=sd;return h
-    def serve_once(self):
-        if self.handle is None:raise AuthorityError('SERVICE_NOT_STARTED')
-        api=load_win32();ok=api.kernel32.ConnectNamedPipe(self.handle,None)
-        if not ok and ctypes.get_last_error()!=535:raise AuthorityError('IPC_CONNECT_FAILED')
+        created=[]
         try:
-            chunks=[];total=0
-            while True:
-                buf=ctypes.create_string_buffer(65536);read=wintypes.DWORD(0);ok=api.kernel32.ReadFile(self.handle,buf,len(buf),ctypes.byref(read),None);err=ctypes.get_last_error()
-                if read.value:chunks.append(buf.raw[:read.value]);total+=read.value
-                if total>MAX_REQUEST_BYTES:raise AuthorityError('REQUEST_SIZE_INVALID')
-                if ok:break
-                if err!=234:raise AuthorityError('IPC_READ_FAILED')
-            raw_handle=int(ctypes.cast(self.handle,ctypes.c_void_p).value or 0);ctx=windows_pipe_peer_context(raw_handle)
-            out=self.service.handle_json(b''.join(chunks),peer_context=ctx);written=wintypes.DWORD(0)
-            if not api.kernel32.WriteFile(self.handle,out,len(out),ctypes.byref(written),None) or written.value!=len(out):raise AuthorityError('IPC_WRITE_FAILED')
+            for i in range(self.max_instances):
+                open_mode=_PIPE_ACCESS_DUPLEX|(_FILE_FLAG_FIRST_PIPE_INSTANCE if i==0 else 0)
+                pipe_mode=_PIPE_TYPE_MESSAGE|_PIPE_READMODE_MESSAGE|_PIPE_NOWAIT
+                h=api.kernel32.CreateNamedPipeW(FIXED_PIPE_NAME,open_mode,pipe_mode,self.max_instances,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,self.preauth_timeout_ms,ctypes.byref(SA(ctypes.sizeof(SA),sd,False)))
+                if is_invalid_handle(h):raise AuthorityError('IPC_CREATE_FAILED')
+                mode=wintypes.DWORD(_PIPE_READMODE_MESSAGE|_PIPE_NOWAIT)
+                if not api.kernel32.SetNamedPipeHandleState(h,ctypes.byref(mode),None,None):api.kernel32.CloseHandle(h);raise AuthorityError('IPC_MODE_FAILED')
+                created.append(h)
+            self.handles=created;self.handle=created[0];self._sd=sd;self._stop.clear();return self.handle
+        except Exception:
+            for h in created:api.kernel32.CloseHandle(h)
+            api.kernel32.LocalFree(sd);raise
+    def _deadline(self):return time.monotonic()+self.preauth_timeout_ms/1000.0
+    def _check_wait(self,deadline):
+        if self._stop.is_set():raise AuthorityError('IPC_STOPPED')
+        if time.monotonic()>=deadline:raise AuthorityError('IPC_PREAUTH_TIMEOUT')
+        time.sleep(self.poll_interval)
+    def _connect(self,h,deadline):
+        api=load_win32()
+        while True:
+            ctypes.set_last_error(0);ok=api.kernel32.ConnectNamedPipe(h,None);err=ctypes.get_last_error()
+            if ok or err==_ERROR_PIPE_CONNECTED:return
+            if err in (_ERROR_PIPE_LISTENING,_ERROR_NO_DATA):self._check_wait(deadline);continue
+            raise AuthorityError('IPC_CONNECT_FAILED')
+    def _read_request(self,h,deadline):
+        api=load_win32();chunks=[];total=0
+        while True:
+            buf=ctypes.create_string_buffer(min(65536,MAX_REQUEST_BYTES+1-total));read=wintypes.DWORD(0);ctypes.set_last_error(0);ok=api.kernel32.ReadFile(h,buf,len(buf),ctypes.byref(read),None);err=ctypes.get_last_error()
+            if read.value:chunks.append(buf.raw[:read.value]);total+=read.value
+            if total>MAX_REQUEST_BYTES:raise AuthorityError('REQUEST_SIZE_INVALID')
+            if ok:
+                if not total: self._check_wait(deadline);continue
+                return b''.join(chunks)
+            if err==_ERROR_MORE_DATA:continue
+            if err in (_ERROR_NO_DATA,_ERROR_PIPE_LISTENING):self._check_wait(deadline);continue
+            if err==_ERROR_BROKEN_PIPE:raise AuthorityError('IPC_CLIENT_DISCONNECTED')
+            raise AuthorityError('IPC_READ_FAILED')
+    def _serve_handle(self,h):
+        api=load_win32();deadline=self._deadline();connected=False
+        try:
+            self._connect(h,deadline);connected=True;raw=self._read_request(h,deadline);ctx=windows_pipe_peer_context(handle_value(h));out=self.service.handle_json(raw,peer_context=ctx);written=wintypes.DWORD(0)
+            if not api.kernel32.WriteFile(h,out,len(out),ctypes.byref(written),None) or written.value!=len(out):raise AuthorityError('IPC_WRITE_FAILED')
             return out
-        finally:api.kernel32.DisconnectNamedPipe(self.handle)
+        finally:
+            if connected:
+                try:api.kernel32.DisconnectNamedPipe(h)
+                except Exception:pass
+    def serve_once(self):
+        if not self.handles:raise AuthorityError('SERVICE_NOT_STARTED')
+        return self._serve_handle(self.handles[0])
+    def serve_batch(self):
+        if not self.handles:raise AuthorityError('SERVICE_NOT_STARTED')
+        results=[None]*len(self.handles);threads=[]
+        def run(i,h):
+            try:results[i]=self._serve_handle(h)
+            except AuthorityError as e:results[i]=e
+            except Exception:results[i]=AuthorityError('IPC_INTERNAL_FAILED')
+        for i,h in enumerate(tuple(self.handles)):
+            t=threading.Thread(target=run,args=(i,h),daemon=True);threads.append(t);t.start()
+        deadline=time.monotonic()+self.preauth_timeout_ms/1000.0+1.0
+        for t in threads:t.join(max(0.0,deadline-time.monotonic()))
+        if any(t.is_alive() for t in threads):raise AuthorityError('IPC_WORKER_STUCK')
+        return results
     def close(self):
         if os.name!='nt':return
-        api=load_win32()
-        if self.handle is not None:api.kernel32.CloseHandle(self.handle);self.handle=None
+        self._stop.set();api=load_win32();handles=self.handles;self.handles=[];self.handle=None
+        for h in handles:
+            try:api.kernel32.DisconnectNamedPipe(h)
+            except Exception:pass
+            try:api.kernel32.CloseHandle(h)
+            except Exception:pass
         if self._sd:api.kernel32.LocalFree(self._sd);self._sd=None
+
 def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory):
     if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
     api=load_win32();OWN=0x10;START_PENDING=2;STOP_PENDING=3;RUNNING=4;STOPPED=1;ACCEPT_STOP=1;ACCEPT_SHUTDOWN=4;CTRL_STOP=1;CTRL_SHUTDOWN=5
@@ -134,10 +191,9 @@ def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory
         try:
             set_status(START_PENDING);srv=server_factory();state['server']=srv;srv.start();set_status(RUNNING,ACCEPT_STOP|ACCEPT_SHUTDOWN)
             while not state['stop'].is_set():
-                try:srv.serve_once()
-                except Exception:
-                    if state['stop'].is_set():break
-                    raise
+                try:srv.serve_batch()
+                except AuthorityError as e:
+                    if state['stop'].is_set() or e.code=='IPC_STOPPED':break
         finally:
             try:
                 if state['server'] is not None:state['server'].close()

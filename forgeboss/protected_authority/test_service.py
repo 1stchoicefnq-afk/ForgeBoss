@@ -38,7 +38,7 @@ CTX=PeerContext('test','principal-a')
 
 class TestService(ProtectedAuthorityService):
     def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer):
-        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root)
+        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'}
         from forgeboss.protected_authority.service import ReplayJournal
         self.journal=ReplayJournal(self.root)
 
