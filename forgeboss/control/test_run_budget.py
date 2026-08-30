@@ -123,6 +123,62 @@ class T(unittest.TestCase):
         self.code("AUTHORITY_TOKEN_INVALID", b.settle, "a", ".2", authority_token="wrong")
         self.assertEqual(b.get("a").state, STATE_PAID_STARTED)
 
+    def test_missing_empty_and_nonstring_authority_token_rejected(self):
+        operations = (
+            lambda b: b.settle("a", ".2"),
+            lambda b: b.fail("a", ".2"),
+            lambda b: b.cancel("a", ".2"),
+            lambda b: b.settle_unknown("a"),
+        )
+        for operation in operations:
+            for token in (None, "", 123, True):
+                with self.subTest(operation=operation, token=token):
+                    events = []
+                    b = GlobalRunBudget(1, journal=events.append)
+                    b.reserve("a", ".4")
+                    _, valid = b.start_paid("a")
+                    before = (b.get("a"), tuple(events), b.committed, b.outstanding, b.latched)
+                    if token is None:
+                        self.code("AUTHORITY_TOKEN_INVALID", operation, b)
+                    else:
+                        name = operation.__code__.co_firstlineno
+                        if name == operations[0].__code__.co_firstlineno:
+                            self.code("AUTHORITY_TOKEN_INVALID", b.settle, "a", ".2", authority_token=token)
+                        elif name == operations[1].__code__.co_firstlineno:
+                            self.code("AUTHORITY_TOKEN_INVALID", b.fail, "a", ".2", authority_token=token)
+                        elif name == operations[2].__code__.co_firstlineno:
+                            self.code("AUTHORITY_TOKEN_INVALID", b.cancel, "a", ".2", authority_token=token)
+                        else:
+                            self.code("AUTHORITY_TOKEN_INVALID", b.settle_unknown, "a", authority_token=token)
+                    self.assertEqual(b.get("a"), before[0])
+                    self.assertEqual(tuple(events), before[1])
+                    self.assertEqual((b.committed, b.outstanding, b.latched), before[2:])
+                    self.assertEqual(b.settle("a", ".2", authority_token=valid).state, STATE_SETTLED)
+
+    def test_duplicate_terminal_requires_original_authority_token(self):
+        events = []
+        b = GlobalRunBudget(1, journal=events.append)
+        b.reserve("a", ".5")
+        _, token = b.start_paid("a")
+        first = b.settle("a", ".2", authority_token=token)
+        count = len(events)
+        self.code("AUTHORITY_TOKEN_INVALID", b.settle, "a", ".2")
+        self.code("AUTHORITY_TOKEN_INVALID", b.settle, "a", ".2", authority_token="wrong")
+        self.assertEqual(b.get("a"), first)
+        self.assertEqual(len(events), count)
+        self.assertEqual(b.settle("a", ".2", authority_token=token), first)
+        self.assertEqual(len(events), count)
+
+    def test_restored_paid_started_snapshot_requires_original_token(self):
+        b = GlobalRunBudget(1)
+        b.reserve("a", ".5")
+        _, token = b.start_paid("a")
+        restored = GlobalRunBudget.from_snapshot(b.snapshot())
+        self.code("AUTHORITY_TOKEN_INVALID", restored.settle, "a", ".2")
+        self.code("AUTHORITY_TOKEN_INVALID", restored.settle, "a", ".2", authority_token="wrong")
+        self.assertEqual(restored.get("a").state, STATE_PAID_STARTED)
+        self.assertEqual(restored.settle("a", ".2", authority_token=token).state, STATE_SETTLED)
+
     def test_journal_veto_is_atomic(self):
         def journal(event):
             if event["op"] == "start_paid":
@@ -163,15 +219,12 @@ class T(unittest.TestCase):
             barrier.wait()
             try:
                 b.reserve(f"r{i}", ".1")
-                with lock:
-                    success.append(i)
+                with lock: success.append(i)
             except RunBudgetError as e:
                 self.assertEqual(e.code, "BUDGET_EXCEEDED")
         threads = [threading.Thread(target=run, args=(i,)) for i in range(20)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        for t in threads:t.start()
+        for t in threads:t.join()
         self.assertEqual(len(success), 10)
         self.assertEqual(b.outstanding, Decimal("1.0"))
 
@@ -189,8 +242,7 @@ class T(unittest.TestCase):
                     out = "start"
                 except RunBudgetError as e:
                     out = e.code
-                with lock:
-                    outcomes.append(out)
+                with lock: outcomes.append(out)
             def releaser():
                 barrier.wait()
                 try:
@@ -198,58 +250,42 @@ class T(unittest.TestCase):
                     out = "release"
                 except RunBudgetError as e:
                     out = e.code
-                with lock:
-                    outcomes.append(out)
-            t1 = threading.Thread(target=starter)
-            t2 = threading.Thread(target=releaser)
-            t1.start(); t2.start(); t1.join(); t2.join()
-            self.assertEqual(len(outcomes), 2)
+                with lock: outcomes.append(out)
+            t1=threading.Thread(target=starter);t2=threading.Thread(target=releaser)
+            t1.start();t2.start();t1.join();t2.join()
+            self.assertEqual(len(outcomes),2)
             self.assertIn(b.get("a").state, {STATE_PAID_STARTED, STATE_RELEASED})
             if b.get("a").state == STATE_PAID_STARTED:
-                self.assertIn("start", outcomes)
-                self.assertIn("PAID_WORK_STARTED", outcomes)
+                self.assertIn("start", outcomes);self.assertIn("PAID_WORK_STARTED", outcomes)
             else:
-                self.assertIn("release", outcomes)
-                self.assertIn("RESERVATION_CONFLICT", outcomes)
+                self.assertIn("release", outcomes);self.assertIn("RESERVATION_CONFLICT", outcomes)
 
     def test_duplicate_terminal_same_cost_is_idempotent(self):
-        b = GlobalRunBudget(1)
-        b.reserve("a", .5)
-        _, token = b.start_paid("a")
-        first = b.settle("a", .2, authority_token=token)
-        self.assertEqual(b.settle("a", .2, authority_token=token), first)
+        b=GlobalRunBudget(1);b.reserve("a",.5);_,t=b.start_paid("a")
+        first=b.settle("a",.2,authority_token=t)
+        self.assertEqual(b.settle("a",.2,authority_token=t), first)
 
     def test_duplicate_terminal_different_cost_fails(self):
-        b = GlobalRunBudget(1)
-        b.reserve("a", .5)
-        _, token = b.start_paid("a")
-        b.settle("a", .2, authority_token=token)
-        self.code("PAID_WORK_NOT_STARTED", b.settle, "a", .3, authority_token=token)
+        b=GlobalRunBudget(1);b.reserve("a",.5);_,t=b.start_paid("a");b.settle("a",.2,authority_token=t)
+        self.code("PAID_WORK_NOT_STARTED", b.settle, "a", .3, authority_token=t)
 
     def test_snapshot_individual_overrun_cannot_unlatch_even_under_global_cap(self):
         b = GlobalRunBudget(10)
         b.reserve("a", "1")
         _, token = b.start_paid("a")
         b.settle("a", "2", authority_token=token)
-        snap = b.snapshot()
-        snap["latched"] = False
-        snap["latchReason"] = None
+        snap = b.snapshot(); snap["latched"] = False; snap["latchReason"] = None
         self.code("SNAPSHOT_INVALID", GlobalRunBudget.from_snapshot, snap)
 
     def test_snapshot_released_record_cannot_claim_spend(self):
-        b = GlobalRunBudget(10)
-        b.reserve("a", "1")
-        b.release("a")
-        snap = b.snapshot()
-        snap["records"][0]["committedUsd"] = "0.5"
+        b = GlobalRunBudget(10); b.reserve("a", "1"); b.release("a")
+        snap=b.snapshot(); snap["records"][0]["committedUsd"]="0.5"
         self.code("SNAPSHOT_INVALID", GlobalRunBudget.from_snapshot, snap)
 
     def test_journal_sees_latch_reason_before_overrun_mutation(self):
-        events = []
-        b = GlobalRunBudget(10, journal=events.append)
-        b.reserve("a", 1)
-        _, token = b.start_paid("a")
-        b.settle("a", 2, authority_token=token)
+        events=[]
+        b=GlobalRunBudget(10,journal=events.append);b.reserve("a",1);_,token=b.start_paid("a")
+        b.settle("a",2,authority_token=token)
         self.assertEqual(events[-1]["latchReason"], "reservation-overrun")
         self.assertTrue(b.latched)
 

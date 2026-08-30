@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import math
 import secrets
 import threading
@@ -303,12 +304,19 @@ class GlobalRunBudget:
             raise RunBudgetError("RESERVATION_UNKNOWN", f"reservation {rid} is unknown")
         return current
 
+    def _verify_authority_token(self, current: Reservation, token) -> None:
+        digest = current.authority_token_sha256
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise RunBudgetError("AUTHORITY_TOKEN_INVALID", "paid authority token is unavailable", state=current.state)
+        if not isinstance(token, str) or not token:
+            raise RunBudgetError("AUTHORITY_TOKEN_INVALID", "paid authority token required", state=current.state)
+        if not hmac.compare_digest(_token_digest(token), digest):
+            raise RunBudgetError("AUTHORITY_TOKEN_INVALID", "paid authority token invalid", state=current.state)
+
     def _verify_token(self, current: Reservation, token) -> None:
         if current.state != STATE_PAID_STARTED:
             raise RunBudgetError("PAID_WORK_NOT_STARTED", "paid work has not started", state=current.state)
-        if token is not None:
-            if not isinstance(token, str) or _token_digest(token) != current.authority_token_sha256:
-                raise RunBudgetError("AUTHORITY_TOKEN_INVALID", "paid authority token invalid", state=current.state)
+        self._verify_authority_token(current, token)
 
     def _finish(self, reservation_id, terminal_state, actual_usd, *, authority_token, reason) -> Reservation:
         rid = _identifier(reservation_id, "reservationId")
@@ -316,6 +324,7 @@ class GlobalRunBudget:
         with self._lock:
             current = self._require(rid)
             if current.state == terminal_state and current.cost_known and current.measured == actual:
+                self._verify_authority_token(current, authority_token)
                 return current
             self._verify_token(current, authority_token)
             updated = replace(current, state=terminal_state, committed=actual, measured=actual, cost_known=True, reason=reason)
@@ -339,6 +348,7 @@ class GlobalRunBudget:
         with self._lock:
             current = self._require(rid)
             if current.state == terminal_state and not current.cost_known:
+                self._verify_authority_token(current, authority_token)
                 return current
             self._verify_token(current, authority_token)
             updated = replace(current, state=terminal_state, committed=current.reserved, measured=None, cost_known=False, reason=reason)
