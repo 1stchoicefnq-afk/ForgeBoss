@@ -124,10 +124,6 @@ class ProtectedWorkspaceState:
             if not stat.S_ISDIR(state_st.st_mode):
                 raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID")
 
-            # Re-run the accepted protected-boundary checks after acquiring the
-            # handles, then prove those checked pathnames still name the held
-            # objects. A swap before this point fails; a swap after this point
-            # cannot redirect fd-relative I/O.
             self.boundary.assert_service_principal(self.root)
             self.boundary.assert_protected_path(self.state_dir, protected_root=self.root)
             root_path_st = os.stat(self.root, follow_symlinks=False)
@@ -155,6 +151,7 @@ class ProtectedWorkspaceState:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID") from ex
 
     def _assert_posix_anchor(self) -> int:
+        self._assert_service()
         if self._root_fd is None or self._state_fd is None or self._root_identity is None or self._state_identity is None:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_ANCHOR_CLOSED")
         try:
@@ -182,7 +179,6 @@ class ProtectedWorkspaceState:
         return f"{self.key_for(workspace_root, target)}.json"
 
     def path_for(self, workspace_root: Path, target: Path) -> Path:
-        # Display/diagnostic path only. POSIX authority never opens this path.
         return self.state_dir / self._name_for(workspace_root, target)
 
     @staticmethod
