@@ -56,6 +56,11 @@ class StoreAuthorityR6MigrationTests(unittest.TestCase):
             st.db.execute(
                 "UPDATE tasks SET budget_run_id='budget-1', assignment_mode='controller-bound' WHERE task_id='task-1'"
             )
+            # This case represents a pre-R6/pre-schema-6 database where
+            # current row fields alone must NOT manufacture assignment history.
+            st.db.execute(
+                "UPDATE meta SET value='5' WHERE key='schema_version'"
+            )
             st.db.close()
 
             st = ControlStore(db)

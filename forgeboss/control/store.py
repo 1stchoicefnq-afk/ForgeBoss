@@ -136,7 +136,17 @@ class ControlStore:
         self._lock=threading.RLock()
         self.db=sqlite3.connect(str(self.path),check_same_thread=False,timeout=15,isolation_level=None)
         harden_private_path(self.path);self.db.row_factory=sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL");self.db.execute("PRAGMA foreign_keys=ON");self.db.execute("PRAGMA synchronous=FULL");self._migrate()
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA foreign_keys=ON")
+            self.db.execute("PRAGMA synchronous=FULL")
+            self._migrate()
+        except Exception:
+            try:
+                self.db.close()
+            except Exception:
+                pass
+            raise
 
     def _ensure_column(self,table,name,definition):
         cols={str(r[1]) for r in self.db.execute(f"PRAGMA table_info({table})")}
