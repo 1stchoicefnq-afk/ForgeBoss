@@ -1,0 +1,39 @@
+name: Protected Authority V7 final proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v7-final
+permissions:
+  contents: read
+jobs:
+  linux-v7-final:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source unchanged
+        run: git diff --exit-code e0373fe98ea76bcf2a5f7dee49c5367f24f04dc9 -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - name: Run Linux V7 hostile and inherited authority regressions
+        run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v7_hostile forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v3 -v
+  windows-v7-final:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source unchanged
+        shell: pwsh
+        run: git diff --exit-code e0373fe98ea76bcf2a5f7dee49c5367f24f04dc9 -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - name: Run Windows V7 root-chain and inherited authority regressions
+        run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v7_hostile forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v4 -v
