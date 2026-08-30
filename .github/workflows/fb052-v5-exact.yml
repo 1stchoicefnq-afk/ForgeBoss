@@ -1,0 +1,57 @@
+name: FB052 V5 exact proof
+on:
+  push:
+    branches: [forgeboss/worker-c-test-fb052-v5-exact]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate ancestry and forgeboss tree Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 7811824fd2c5629cf72bfba8a0df7108b53b54a8 HEAD
+          git diff --quiet 7811824fd2c5629cf72bfba8a0df7108b53b54a8 HEAD -- forgeboss
+          test "$(git rev-parse 7811824fd2c5629cf72bfba8a0df7108b53b54a8^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact candidate ancestry and forgeboss tree Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor 7811824fd2c5629cf72bfba8a0df7108b53b54a8 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'candidate not ancestor' }
+          git diff --quiet 7811824fd2c5629cf72bfba8a0df7108b53b54a8 HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'forgeboss source changed' }
+          $a=(git rev-parse '7811824fd2c5629cf72bfba8a0df7108b53b54a8^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'forgeboss tree mismatch' }
+      - name: Verify local tested byte hashes
+        shell: python
+        run: |
+          import hashlib,pathlib
+          expected={
+            'forgeboss/control/process_supervisor.py':'f42b29c67cc1357edb0d0fdf2b49d53a1e5ddef0481c9458c135303ae1bbb2ec',
+            'forgeboss/control/process_supervisor_windows.py':'fdf6d0ee5c7b637f5cb33a4cf0a9de1a2c114a428104e1921f3d10983eb056b0',
+            'forgeboss/control/test_process_supervisor.py':'a78941fdd924544fd15379638e52451203bfa2264345cd5bcf4f6fd341e1a3a5',
+          }
+          for p,want in expected.items():
+              got=hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+              assert got==want,(p,got,want)
+      - name: Compile V5
+        run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/process_supervisor_windows.py forgeboss/control/test_process_supervisor.py
+      - name: Focused FB052 V5 suite
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Broad control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
