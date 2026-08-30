@@ -1,0 +1,39 @@
+name: Protected Authority V7 temp proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v7-temp
+permissions:
+  contents: read
+jobs:
+  linux-v7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact temp source
+        run: git diff --exit-code 1a647ff2e8158717a34aa32b9ae02ac70ed59caa -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - name: Linux V7 hostile + inherited V6 regressions
+        run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v3 -v
+  windows-v7:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact temp source
+        shell: pwsh
+        run: git diff --exit-code 1a647ff2e8158717a34aa32b9ae02ac70ed59caa -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - name: Windows V7 root-chain + inherited V6 regressions
+        run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v4 -v
