@@ -156,6 +156,14 @@ class ControlStore:
             CREATE TABLE IF NOT EXISTS provider_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,provider TEXT,model TEXT,input_tokens INTEGER,output_tokens INTEGER,cost_usd REAL NOT NULL DEFAULT 0,created_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS budget_runs(run_id TEXT PRIMARY KEY,cap_exact TEXT NOT NULL,reserved_exact TEXT NOT NULL DEFAULT '0',status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at REAL NOT NULL,updated_at REAL NOT NULL,closed_at REAL);
             """)
+            prior_schema_row=self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            if prior_schema_row:
+                try:prior_schema=int(prior_schema_row["value"])
+                except Exception as ex:
+                    raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is invalid") from ex
+                if prior_schema<0 or prior_schema>SCHEMA_VERSION:
+                    raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is unsupported")
+            else:prior_schema=0
             self._ensure_column("workspace_leases","budget_reserved","REAL NOT NULL DEFAULT 0")
             task_cols_before={str(r[1]) for r in self.db.execute("PRAGMA table_info(tasks)")}
             had_budget_cap_exact="budget_cap_exact" in task_cols_before
@@ -192,6 +200,8 @@ class ControlStore:
                 events=self.db.execute("""SELECT seq,run_id,payload_json,state_version FROM task_events
                     WHERE task_id=? AND event_type='task.assigned' ORDER BY seq""",(task_id,)).fetchall()
                 if not events:
+                    if prior_schema>=SCHEMA_VERSION and mode=="controller-bound":
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","controller-bound task lost durable task.assigned history")
                     self.db.execute("UPDATE tasks SET assignment_mode='legacy' WHERE task_id=?",(task_id,))
                     continue
                 last_generation=0;last_state_version=0;history_budget_run=None
