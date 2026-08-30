@@ -1,0 +1,84 @@
+name: Worker C review FB052 V5 d1f9
+on:
+  push:
+    branches: [forgeboss/worker-c-review-fb052-v5-d1f9-exact]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact reviewed source Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3 HEAD
+          git diff --quiet d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3 HEAD -- forgeboss
+          test "$(git rev-parse d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Verify exact reviewed source Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'reviewed candidate not ancestor' }
+          git diff --quiet d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3 HEAD -- forgeboss
+          if ($LASTEXITCODE -ne 0) { throw 'reviewed forgeboss source changed' }
+          $a=(git rev-parse 'd1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3^{tree}:forgeboss').Trim()
+          $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
+          if ($a -ne $b) { throw 'reviewed forgeboss tree mismatch' }
+      - name: Candidate committed suite
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Hostile keeper-timeout descendant leak repro
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,signal,sys,tempfile,time
+          from pathlib import Path
+          from forgeboss.control.process_supervisor import ProcessSupervisor,STATE_STOPPED
+          sup=ProcessSupervisor()
+          with tempfile.TemporaryDirectory() as td:
+              marker=Path(td)/'child.pid'
+              code=r'''
+          import os,signal,time,sys
+          marker=sys.argv[1]
+          pid=os.fork()
+          if pid==0:
+              os.setsid()
+              signal.signal(signal.SIGTERM, signal.SIG_IGN)
+              open(marker,'w').write(str(os.getpid()))
+              while True: time.sleep(1)
+          signal.signal(signal.SIGTERM, signal.SIG_IGN)
+          while True: time.sleep(1)
+          '''
+              a=sup.launch('leak',[str(Path(sys.executable).resolve()),'-c',code,str(marker)])
+              deadline=time.time()+5
+              while time.time()<deadline and not marker.exists(): time.sleep(.02)
+              assert marker.exists(),'daemon child did not start'
+              child=int(marker.read_text())
+              try:
+                  ev=sup.stop('leak',a.generation,timeout=.10)
+                  alive=True
+                  try: os.kill(child,0)
+                  except ProcessLookupError: alive=False
+                  print('STOP',ev.as_dict())
+                  print('CHILD_ALIVE_AFTER_STOP',alive,child)
+                  assert not (ev.state==STATE_STOPPED and ev.containment_empty and alive), 'STOPPED+empty reported while daemonized descendant survived keeper timeout'
+              finally:
+                  try: os.kill(child,signal.SIGKILL)
+                  except ProcessLookupError: pass
+                  sup.close()
+          PY
+      - name: Broad control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
