@@ -1,0 +1,34 @@
+name: FB050 Run Budget R2 exact proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-fb050-r2-exact
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate files
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          test "$(git rev-parse 2b117bdcfa6b82bffbdae116b63de145698f25ed:forgeboss/control/run_budget.py)" = "$(git rev-parse HEAD:forgeboss/control/run_budget.py)"
+          test "$(git rev-parse 2b117bdcfa6b82bffbdae116b63de145698f25ed:forgeboss/control/test_run_budget.py)" = "$(git rev-parse HEAD:forgeboss/control/test_run_budget.py)"
+      - name: Verify exact candidate files Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          $a=(git rev-parse '2b117bdcfa6b82bffbdae116b63de145698f25ed:forgeboss/control/run_budget.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/run_budget.py').Trim(); if($a-ne$b){throw 'run_budget mismatch'}
+          $a=(git rev-parse '2b117bdcfa6b82bffbdae116b63de145698f25ed:forgeboss/control/test_run_budget.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/test_run_budget.py').Trim(); if($a-ne$b){throw 'test mismatch'}
+      - run: python -m compileall -q forgeboss/control/run_budget.py forgeboss/control/test_run_budget.py
+      - run: python -m unittest forgeboss.control.test_run_budget -v
