@@ -144,100 +144,110 @@ class ControlStore:
 
     def _migrate(self):
         with self._lock:
-            self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS task_runs(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),attempt INTEGER NOT NULL,owner_epoch INTEGER NOT NULL,runtime_id TEXT,status TEXT NOT NULL,started_at REAL NOT NULL,finished_at REAL);
-            CREATE TABLE IF NOT EXISTS task_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,event_type TEXT NOT NULL,payload_json TEXT NOT NULL,state_version INTEGER NOT NULL,created_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS workspace_leases(task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),worktree_path TEXT NOT NULL,branch TEXT,owner_run_id TEXT NOT NULL,owner_epoch INTEGER NOT NULL,claimed_at REAL NOT NULL,heartbeat_at REAL NOT NULL,expires_at REAL NOT NULL,released_at REAL,current_head TEXT NOT NULL,budget_reserved REAL NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS worker_instances(worker_id TEXT PRIMARY KEY,task_id TEXT,run_id TEXT,owner_epoch INTEGER,runtime_id TEXT NOT NULL,envelope_hash TEXT NOT NULL,status TEXT NOT NULL,last_seen_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS validation_receipts(receipt_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,run_id TEXT,result_json TEXT NOT NULL,created_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS artefacts(artefact_id TEXT PRIMARY KEY,task_id TEXT,type TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,size INTEGER NOT NULL,created_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS provider_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,provider TEXT,model TEXT,input_tokens INTEGER,output_tokens INTEGER,cost_usd REAL NOT NULL DEFAULT 0,created_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS budget_runs(run_id TEXT PRIMARY KEY,cap_exact TEXT NOT NULL,reserved_exact TEXT NOT NULL DEFAULT '0',status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at REAL NOT NULL,updated_at REAL NOT NULL,closed_at REAL);
-            """)
-            prior_schema_row=self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if prior_schema_row:
-                try:prior_schema=int(prior_schema_row["value"])
-                except Exception as ex:
-                    raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is invalid") from ex
-                if prior_schema<0 or prior_schema>SCHEMA_VERSION:
-                    raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is unsupported")
-            else:prior_schema=0
-            self._ensure_column("workspace_leases","budget_reserved","REAL NOT NULL DEFAULT 0")
-            task_cols_before={str(r[1]) for r in self.db.execute("PRAGMA table_info(tasks)")}
-            had_budget_cap_exact="budget_cap_exact" in task_cols_before
-            had_budget_reserved_exact="budget_reserved_exact" in task_cols_before
-            for name,definition in (
-                ("budget_cap_exact","TEXT"),("budget_reserved_exact","TEXT NOT NULL DEFAULT '0'"),("budget_run_id","TEXT"),
-                ("assigned_builder_id","TEXT"),("assignment_generation","INTEGER NOT NULL DEFAULT 0"),("assignment_token_hash","TEXT"),
-                ("assignment_sha256","TEXT"),("retry_reason","TEXT"),("assignment_mode","TEXT NOT NULL DEFAULT 'legacy'")):
-                self._ensure_column("tasks",name,definition)
-            for table in ("task_runs","workspace_leases"):
-                for name,definition in (
-                    ("builder_id","TEXT"),("assignment_generation","INTEGER NOT NULL DEFAULT 0"),("assignment_sha256","TEXT"),
-                    ("revoked_at","REAL"),("revoke_reason","TEXT")):
-                    self._ensure_column(table,name,definition)
-            self._ensure_column("workspace_leases","attempt","INTEGER")
-            rows=self.db.execute("SELECT task_id,budget_allocated,budget_spent,budget_cap_exact,budget_reserved_exact FROM tasks").fetchall()
-            for row in rows:
-                cap=row["budget_cap_exact"]
-                reserved=row["budget_reserved_exact"]
-                if not had_budget_cap_exact or cap is None:
-                    cap=_money_text(_budget_decimal(row["budget_allocated"],"BUDGET_STATE_INVALID","task budget state is invalid"))
-                if not had_budget_reserved_exact or reserved is None:
-                    reserved=_money_text(_budget_decimal(row["budget_spent"],"BUDGET_STATE_INVALID","task budget state is invalid"))
-                self.db.execute("UPDATE tasks SET budget_cap_exact=?,budget_reserved_exact=? WHERE task_id=?",(cap,reserved,row["task_id"]))
-            orphan=self.db.execute("""SELECT e.seq FROM task_events e LEFT JOIN tasks t ON t.task_id=e.task_id
-                WHERE e.event_type='task.assigned' AND t.task_id IS NULL LIMIT 1""").fetchone()
-            if orphan:
-                raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","orphan task.assigned history")
-            for task_row in self.db.execute("SELECT * FROM tasks").fetchall():
-                task=dict(task_row);task_id=str(task["task_id"])
-                mode=str(task.get("assignment_mode") or "legacy")
-                if mode not in ("legacy","controller-bound"):
-                    raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","assignment mode is invalid")
-                events=self.db.execute("""SELECT seq,run_id,payload_json,state_version FROM task_events
-                    WHERE task_id=? AND event_type='task.assigned' ORDER BY seq""",(task_id,)).fetchall()
-                if not events:
-                    if prior_schema>=SCHEMA_VERSION and mode=="controller-bound":
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","controller-bound task lost durable task.assigned history")
-                    self.db.execute("UPDATE tasks SET assignment_mode='legacy' WHERE task_id=?",(task_id,))
-                    continue
-                last_generation=0;last_state_version=0;history_budget_run=None
-                for event in events:
-                    if event["run_id"] is not None:
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history must not be run-scoped")
-                    try:payload=json.loads(event["payload_json"])
+            begun=False
+            try:
+                self.db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS task_runs(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),attempt INTEGER NOT NULL,owner_epoch INTEGER NOT NULL,runtime_id TEXT,status TEXT NOT NULL,started_at REAL NOT NULL,finished_at REAL);
+                CREATE TABLE IF NOT EXISTS task_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,event_type TEXT NOT NULL,payload_json TEXT NOT NULL,state_version INTEGER NOT NULL,created_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS workspace_leases(task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),worktree_path TEXT NOT NULL,branch TEXT,owner_run_id TEXT NOT NULL,owner_epoch INTEGER NOT NULL,claimed_at REAL NOT NULL,heartbeat_at REAL NOT NULL,expires_at REAL NOT NULL,released_at REAL,current_head TEXT NOT NULL,budget_reserved REAL NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS worker_instances(worker_id TEXT PRIMARY KEY,task_id TEXT,run_id TEXT,owner_epoch INTEGER,runtime_id TEXT NOT NULL,envelope_hash TEXT NOT NULL,status TEXT NOT NULL,last_seen_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS validation_receipts(receipt_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,run_id TEXT,result_json TEXT NOT NULL,created_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS artefacts(artefact_id TEXT PRIMARY KEY,task_id TEXT,type TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,size INTEGER NOT NULL,created_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS provider_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,provider TEXT,model TEXT,input_tokens INTEGER,output_tokens INTEGER,cost_usd REAL NOT NULL DEFAULT 0,created_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS budget_runs(run_id TEXT PRIMARY KEY,cap_exact TEXT NOT NULL,reserved_exact TEXT NOT NULL DEFAULT '0',status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at REAL NOT NULL,updated_at REAL NOT NULL,closed_at REAL);
+                """)
+                begun=True
+                prior_schema_row=self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                if prior_schema_row:
+                    try:prior_schema=int(prior_schema_row["value"])
                     except Exception as ex:
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid") from ex
-                    if not isinstance(payload,dict):
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid")
-                    required=("builderId","assignmentGeneration","assignmentSha256","budgetRunId")
-                    if any(key not in payload for key in required):
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is incomplete")
-                    builder=_opaque(payload["builderId"],"builder id")
-                    budget_run_id=_opaque(payload["budgetRunId"],"budget run id")
-                    generation=payload["assignmentGeneration"]
-                    if isinstance(generation,bool) or not isinstance(generation,int) or generation<=0 or generation<=last_generation:
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned generation history is invalid")
-                    digest=payload["assignmentSha256"]
-                    if not isinstance(digest,str) or not re.fullmatch(r"[0-9a-f]{64}",digest):
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest history is invalid")
-                    state_version=event["state_version"]
-                    if isinstance(state_version,bool) or not isinstance(state_version,int) or state_version<=last_state_version:
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned state-version history is invalid")
-                    if history_budget_run is None:history_budget_run=budget_run_id
-                    elif budget_run_id!=history_budget_run:
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned budget-run history is contradictory")
-                    expected=self._assignment_digest_locked(task,builder,budget_run_id,generation)
-                    if not hmac.compare_digest(expected,digest):
-                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest does not match durable task authority")
-                    last_generation=generation;last_state_version=state_version
-                if task.get("budget_run_id") is None or str(task["budget_run_id"])!=history_budget_run:
-                    raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task budget-run authority contradicts assignment history")
-                self.db.execute("UPDATE tasks SET assignment_mode='controller-bound' WHERE task_id=?",(task_id,))
-            self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
+                        raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is invalid") from ex
+                    if prior_schema<0 or prior_schema>SCHEMA_VERSION:
+                        raise StoreAuthorityError("STORE_SCHEMA_INVALID","stored schema version is unsupported")
+                else:prior_schema=0
+                self._ensure_column("workspace_leases","budget_reserved","REAL NOT NULL DEFAULT 0")
+                task_cols_before={str(r[1]) for r in self.db.execute("PRAGMA table_info(tasks)")}
+                had_budget_cap_exact="budget_cap_exact" in task_cols_before
+                had_budget_reserved_exact="budget_reserved_exact" in task_cols_before
+                for name,definition in (
+                    ("budget_cap_exact","TEXT"),("budget_reserved_exact","TEXT NOT NULL DEFAULT '0'"),("budget_run_id","TEXT"),
+                    ("assigned_builder_id","TEXT"),("assignment_generation","INTEGER NOT NULL DEFAULT 0"),("assignment_token_hash","TEXT"),
+                    ("assignment_sha256","TEXT"),("retry_reason","TEXT"),("assignment_mode","TEXT NOT NULL DEFAULT 'legacy'")):
+                    self._ensure_column("tasks",name,definition)
+                for table in ("task_runs","workspace_leases"):
+                    for name,definition in (
+                        ("builder_id","TEXT"),("assignment_generation","INTEGER NOT NULL DEFAULT 0"),("assignment_sha256","TEXT"),
+                        ("revoked_at","REAL"),("revoke_reason","TEXT")):
+                        self._ensure_column(table,name,definition)
+                self._ensure_column("workspace_leases","attempt","INTEGER")
+                rows=self.db.execute("SELECT task_id,budget_allocated,budget_spent,budget_cap_exact,budget_reserved_exact FROM tasks").fetchall()
+                for row in rows:
+                    cap=row["budget_cap_exact"]
+                    reserved=row["budget_reserved_exact"]
+                    if not had_budget_cap_exact or cap is None:
+                        cap=_money_text(_budget_decimal(row["budget_allocated"],"BUDGET_STATE_INVALID","task budget state is invalid"))
+                    if not had_budget_reserved_exact or reserved is None:
+                        reserved=_money_text(_budget_decimal(row["budget_spent"],"BUDGET_STATE_INVALID","task budget state is invalid"))
+                    self.db.execute("UPDATE tasks SET budget_cap_exact=?,budget_reserved_exact=? WHERE task_id=?",(cap,reserved,row["task_id"]))
+                orphan=self.db.execute("""SELECT e.seq FROM task_events e LEFT JOIN tasks t ON t.task_id=e.task_id
+                    WHERE e.event_type='task.assigned' AND t.task_id IS NULL LIMIT 1""").fetchone()
+                if orphan:
+                    raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","orphan task.assigned history")
+                for task_row in self.db.execute("SELECT * FROM tasks").fetchall():
+                    task=dict(task_row);task_id=str(task["task_id"])
+                    mode=str(task.get("assignment_mode") or "legacy")
+                    if mode not in ("legacy","controller-bound"):
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","assignment mode is invalid")
+                    events=self.db.execute("""SELECT seq,run_id,payload_json,state_version FROM task_events
+                        WHERE task_id=? AND event_type='task.assigned' ORDER BY seq""",(task_id,)).fetchall()
+                    if not events:
+                        if prior_schema>=SCHEMA_VERSION and mode=="controller-bound":
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","controller-bound task lost durable task.assigned history")
+                        self.db.execute("UPDATE tasks SET assignment_mode='legacy' WHERE task_id=?",(task_id,))
+                        continue
+                    last_generation=0;last_state_version=0;history_budget_run=None
+                    for event in events:
+                        if event["run_id"] is not None:
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history must not be run-scoped")
+                        try:payload=json.loads(event["payload_json"])
+                        except Exception as ex:
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid") from ex
+                        if not isinstance(payload,dict):
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid")
+                        required=("builderId","assignmentGeneration","assignmentSha256","budgetRunId")
+                        if any(key not in payload for key in required):
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is incomplete")
+                        builder=_opaque(payload["builderId"],"builder id")
+                        budget_run_id=_opaque(payload["budgetRunId"],"budget run id")
+                        generation=payload["assignmentGeneration"]
+                        if isinstance(generation,bool) or not isinstance(generation,int) or generation<=0 or generation<=last_generation:
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned generation history is invalid")
+                        digest=payload["assignmentSha256"]
+                        if not isinstance(digest,str) or not re.fullmatch(r"[0-9a-f]{64}",digest):
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest history is invalid")
+                        state_version=event["state_version"]
+                        if isinstance(state_version,bool) or not isinstance(state_version,int) or state_version<=last_state_version:
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned state-version history is invalid")
+                        if history_budget_run is None:history_budget_run=budget_run_id
+                        elif budget_run_id!=history_budget_run:
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned budget-run history is contradictory")
+                        expected=self._assignment_digest_locked(task,builder,budget_run_id,generation)
+                        if not hmac.compare_digest(expected,digest):
+                            raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest does not match durable task authority")
+                        last_generation=generation;last_state_version=state_version
+                    if task.get("budget_run_id") is None or str(task["budget_run_id"])!=history_budget_run:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task budget-run authority contradicts assignment history")
+                    self.db.execute("UPDATE tasks SET assignment_mode='controller-bound' WHERE task_id=?",(task_id,))
+                self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
+                self.db.execute("COMMIT");begun=False
+            except Exception:
+                if begun or self.db.in_transaction:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
 
     def _state_version(self):
         return int(self.db.execute("SELECT COALESCE(MAX(state_version),0)+1 AS v FROM task_events").fetchone()["v"])
