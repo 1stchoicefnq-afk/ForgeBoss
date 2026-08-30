@@ -24,9 +24,11 @@ jobs:
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch_fixed.py "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
+          cp tmp/fb052_v6_sourcefix2.py "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
           cp tmp/fb052_v6_testfix.py "$RUNNER_TEMP/fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
+          python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
           python "$RUNNER_TEMP/fb052_v6_testfix.py"
           test "$(git diff --name-only | sort | tr '\n' ' ')" = "forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py "
       - name: Preserve patch and checkout exact V5 Windows
@@ -34,11 +36,14 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           Copy-Item tmp/fb052_v6_patch_fixed.py "$env:RUNNER_TEMP\fb052_v6_patch_fixed.py"
+          Copy-Item tmp/fb052_v6_sourcefix2.py "$env:RUNNER_TEMP\fb052_v6_sourcefix2.py"
           Copy-Item tmp/fb052_v6_testfix.py "$env:RUNNER_TEMP\fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
           python "$env:RUNNER_TEMP\fb052_v6_patch_fixed.py"
           if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+          python "$env:RUNNER_TEMP\fb052_v6_sourcefix2.py"
+          if ($LASTEXITCODE -ne 0) { throw 'sourcefix failed' }
           python "$env:RUNNER_TEMP\fb052_v6_testfix.py"
           if ($LASTEXITCODE -ne 0) { throw 'testfix failed' }
           $files = @(git diff --name-only | Sort-Object)
@@ -64,15 +69,18 @@ jobs:
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch_fixed.py "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
+          cp tmp/fb052_v6_sourcefix2.py "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
           cp tmp/fb052_v6_testfix.py "$RUNNER_TEMP/fb052_v6_testfix.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
+          python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
           python "$RUNNER_TEMP/fb052_v6_testfix.py"
           python -m unittest forgeboss.control.test_process_supervisor -v
           git config user.name 'Worker C FB-052 V6'
           git config user.email 'worker-c@users.noreply.github.com'
           git checkout -B forgeboss/worker-c-fb052-supervisor-v6 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
+          python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
           python "$RUNNER_TEMP/fb052_v6_testfix.py"
           git add forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
           git diff --cached --quiet && { echo 'no candidate diff'; exit 1; }
