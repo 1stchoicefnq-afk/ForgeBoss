@@ -217,6 +217,46 @@ class StoreAuthorityV3Tests(unittest.TestCase):
             self.assertTrue(packet["assignmentIdentitySha256"])
             st.db.close()
 
+    def test_restart_budget_bound_never_assigned_remains_legacy(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            db=root/"state.db"
+            st=ControlStore(db)
+            st.create_budget_run("budget-1","20")
+            st.create_task(make_task())
+            st.db.execute("""UPDATE tasks SET budget_run_id='budget-1',assignment_mode='legacy',
+                assigned_builder_id=NULL,assignment_generation=0,assignment_token_hash=NULL,assignment_sha256=NULL
+                WHERE task_id='task-1'""")
+            st.db.close()
 
-if __name__=="__main__":
-    unittest.main()
+            st=ControlStore(db)
+            self.assertEqual(st.get_task("task-1")["assignment_mode"],"legacy")
+            wr=root/"worktrees";wr.mkdir();w1=wr/"one";w2=wr/"two";w1.mkdir();w2.mkdir()
+            l1=st.claim_workspace("task-1","run-1",w1,"fb/task-1",A40,worktree_root=wr,budget_reserved="1")
+            st.release("task-1","run-1",l1["owner_epoch"],A40)
+            l2=st.claim_workspace("task-1","run-2",w2,"fb/task-1",A40,worktree_root=wr,budget_reserved="1")
+            self.assertGreater(l2["owner_epoch"],l1["owner_epoch"])
+            self.assertEqual(st.get_task("task-1")["assignment_mode"],"legacy")
+            st.db.close()
+
+    def test_restart_infers_genuine_assignment_history_after_nullable_fields_clear(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            db=root/"state.db"
+            st=ControlStore(db)
+            st.create_budget_run("budget-1","20")
+            st.create_task(make_task())
+            a=st.assign_builder("task-1","worker-a","budget-1")
+            self.assertGreater(a["assignmentGeneration"],0)
+            st.db.execute("""UPDATE tasks SET assignment_mode='legacy',assigned_builder_id=NULL,
+                assignment_token_hash=NULL,assignment_sha256=NULL WHERE task_id='task-1'""")
+            st.db.close()
+
+            st=ControlStore(db)
+            task=st.get_task("task-1")
+            self.assertEqual(task["assignment_mode"],"controller-bound")
+            self.assertGreater(task["assignment_generation"],0)
+            st.db.close()
+
+
+if __name__=="__main__":unittest.main()
