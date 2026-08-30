@@ -1,0 +1,37 @@
+name: Protected Authority V7 temp5 proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v7-temp5
+permissions:
+  contents: read
+jobs:
+  linux-v7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact temp source
+        run: git diff --exit-code 880c87a50b3b80f777d459cd674425ac89810f77 -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v3 -v
+  windows-v7:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact temp source
+        shell: pwsh
+        run: git diff --exit-code 880c87a50b3b80f777d459cd674425ac89810f77 -- forgeboss/protected_authority
+      - run: python -m compileall -q forgeboss/protected_authority
+      - run: python -m unittest forgeboss.protected_authority.test_v7 forgeboss.protected_authority.test_v6 forgeboss.protected_authority.test_v4 -v
