@@ -1,0 +1,26 @@
+name: Protected Authority V7 ProgramData root proof
+
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-v7-programdata-root2
+
+permissions:
+  contents: read
+
+jobs:
+  windows-programdata-root:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install crypto dependency
+        run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify production tree unchanged from V7 temp source
+        shell: pwsh
+        run: |
+          git diff --exit-code 880c87a50b3b80f777d459cd674425ac89810f77 HEAD -- forgeboss/protected_authority ':!forgeboss/protected_authority/test_programdata_root_v7.py'
+      - name: Native ProgramData root proof
+        run: python -m unittest forgeboss.protected_authority.test_programdata_root_v7 -v
