@@ -8,7 +8,7 @@ from forgeboss.protected_authority.boundary import PlatformMachineBoundary
 from forgeboss.protected_authority.lifecycle import LinuxAuthorityDaemon
 from forgeboss.protected_authority.protocol import AuthorityError,canonical_digest,canonical_json
 from forgeboss.protected_authority.root_chain import assert_machine_anchored_root
-from forgeboss.protected_authority.service import ProtectedAuthorityService,ReplayJournal,_canonical_repository_map
+from forgeboss.protected_authority.service import ProtectedAuthorityService,ReplayJournal,_canonical_peer_policies,_canonical_repository_map
 from forgeboss.protected_authority.signing import ReceiptSigner,verify_signed_receipt
 
 class _Secrets:
@@ -29,7 +29,7 @@ class LinuxAvailabilityV7Tests(unittest.TestCase):
     def _tree(self):
         base=Path(tempfile.mkdtemp(prefix='forgeboss-v7-',dir=str(Path.home())));root=base/'protected';endpoint=base/'run';root.mkdir();endpoint.mkdir();root.chmod(0o700);endpoint.chmod(0o750);return base,root,endpoint
     def _service(self,root):
-        uid=os.geteuid();peer=Ed25519PrivateKey.generate();peer_pub=base64.b64encode(peer.public_key().public_bytes(encoding=serialization.Encoding.Raw,format=serialization.PublicFormat.Raw)).decode();boundary=PlatformMachineBoundary(expected_service_principal=f'uid:{uid}',peer_principals={'controller-a':f'uid:{uid}'},peer_public_keys={'controller-a':peer_pub});receipt=Ed25519PrivateKey.generate();signer=ReceiptSigner.from_private_key(receipt);svc=object.__new__(ProtectedAuthorityService);svc.root=root;svc.boundary=boundary;svc.secrets_provider=_Secrets();svc.backend=_Backend();svc.receipt_signer=signer;svc.allowed_repositories=_canonical_repository_map(['Owner/Repo']);svc.service_principal=f'uid:{uid}';svc.journal=ReplayJournal(root);receipt_pub=base64.b64encode(receipt.public_key().public_bytes(encoding=serialization.Encoding.Raw,format=serialization.PublicFormat.Raw)).decode();return svc,boundary,peer,receipt_pub
+        uid=os.geteuid();peer=Ed25519PrivateKey.generate();peer_pub=base64.b64encode(peer.public_key().public_bytes(encoding=serialization.Encoding.Raw,format=serialization.PublicFormat.Raw)).decode();boundary=PlatformMachineBoundary(expected_service_principal=f'uid:{uid}',peer_principals={'controller-a':f'uid:{uid}'},peer_public_keys={'controller-a':peer_pub});receipt=Ed25519PrivateKey.generate();signer=ReceiptSigner.from_private_key(receipt);svc=object.__new__(ProtectedAuthorityService);svc.root=root;svc.boundary=boundary;svc.secrets_provider=_Secrets();svc.backend=_Backend();svc.receipt_signer=signer;svc.allowed_repositories=_canonical_repository_map(['Owner/Repo']);svc.peer_policies=_canonical_peer_policies({'controller-a':{'operations':['read_github_control'],'repositories':['owner/repo'],'objects':{'read_github_control':['*']}}},svc.allowed_repositories);svc.service_principal=f'uid:{uid}';svc.journal=ReplayJournal(root);receipt_pub=base64.b64encode(receipt.public_key().public_bytes(encoding=serialization.Encoding.Raw,format=serialization.PublicFormat.Raw)).decode();return svc,boundary,peer,receipt_pub
     def _connect(self,path):
         s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);deadline=time.monotonic()+3
         while True:
