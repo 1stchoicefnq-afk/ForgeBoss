@@ -70,9 +70,6 @@ new='''    _timeout, _owned_descendants_linux, _ProcQueryError, _reap_linux_chil
 )'''
 if t.count(old)!=1:raise SystemExit('test import sourcefix3 anchor mismatch')
 t=t.replace(old,new,1)
-main='''if __name__=='__main__':
-    unittest.main()
-'''
 test='''    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper wait proof")
     def test_waitpid_echild_not_procfs_empty_is_final_empty_authority(self):
         pid = os.fork()
@@ -92,7 +89,8 @@ test='''    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subrea
         self.assertTrue(empty, "ECHILD must prove no child processes remain")
 
 '''
-if t.count(main)!=1:raise SystemExit('test main anchor sourcefix3 mismatch')
-t=t.replace(main,test+main,1)
+pos=t.rfind('\nif __name__')
+if pos<0:raise SystemExit('test final main guard not found')
+t=t[:pos+1]+test+t[pos+1:]
 P.write_text(s,encoding='utf-8')
 T.write_text(t,encoding='utf-8')
