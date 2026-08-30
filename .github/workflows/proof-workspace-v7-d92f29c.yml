@@ -1,0 +1,29 @@
+name: Proof Workspace V7 d92f29c
+on:
+  push:
+    branches:
+      - forgeboss/proof-workspace-v7-d92f29c
+permissions:
+  contents: read
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: d92f29c7484810249f927d61f8b7fe47ae797ad9
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "d92f29c7484810249f927d61f8b7fe47ae797ad9"
+      - name: Install protected dependency
+        run: python -m pip install cryptography
+      - name: Run Workspace V7 tests
+        run: python -m unittest forgeboss.control.test_workspace_v7 -v
+      - name: Compile Workspace files
+        run: python -m py_compile forgeboss/control/workspace.py forgeboss/control/workspace_state.py forgeboss/control/windows_cleanup.py forgeboss/control/test_workspace_v7.py
