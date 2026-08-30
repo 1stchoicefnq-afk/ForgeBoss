@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Iterable
 
 from forgeboss.protected_authority.boundary import PlatformMachineBoundary
-from forgeboss.protected_authority.protocol import AuthorityError
 
 STATE_DIRNAME = "workspace-state-v7"
 MAX_RECORD_BYTES = 128 * 1024
@@ -45,7 +44,7 @@ class ProtectedWorkspaceState:
         try:
             self.root = Path(protected_root).resolve(strict=True)
             self.boundary.assert_service_principal(self.root)
-        except (OSError, AuthorityError) as ex:
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID") from ex
         self.state_dir = self.root / STATE_DIRNAME
         try:
@@ -53,13 +52,15 @@ class ProtectedWorkspaceState:
                 self.state_dir.mkdir(mode=0o700)
                 _fsync_dir(self.root)
             self._assert_state_dir()
-        except (OSError, AuthorityError) as ex:
+        except ProtectedWorkspaceStateError:
+            raise
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID") from ex
 
     def _assert_service(self) -> None:
         try:
             self.boundary.assert_service_principal(self.root)
-        except AuthorityError as ex:
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_PRINCIPAL_DENIED") from ex
 
     def _assert_state_dir(self) -> None:
@@ -68,7 +69,9 @@ class ProtectedWorkspaceState:
             if self.state_dir.is_symlink() or not self.state_dir.is_dir():
                 raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID")
             self.boundary.assert_protected_path(self.state_dir, protected_root=self.root)
-        except AuthorityError as ex:
+        except ProtectedWorkspaceStateError:
+            raise
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_ROOT_INVALID") from ex
 
     def key_for(self, workspace_root: Path, target: Path) -> str:
@@ -110,7 +113,7 @@ class ProtectedWorkspaceState:
             os.replace(temp, path)
             _fsync_dir(self.state_dir)
             self.boundary.assert_protected_path(path, protected_root=self.root, secret=True)
-        except (OSError, AuthorityError) as ex:
+        except Exception as ex:
             try:
                 temp.unlink()
             except OSError:
@@ -148,7 +151,7 @@ class ProtectedWorkspaceState:
             value = json.loads(b"".join(chunks).decode("utf-8"))
         except ProtectedWorkspaceStateError:
             raise
-        except (OSError, UnicodeError, ValueError, AuthorityError) as ex:
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_RECORD_INVALID") from ex
         finally:
             if fd is not None:
@@ -166,7 +169,7 @@ class ProtectedWorkspaceState:
             self.boundary.assert_protected_path(path, protected_root=self.root, secret=True)
             path.unlink()
             _fsync_dir(self.state_dir)
-        except (OSError, AuthorityError) as ex:
+        except Exception as ex:
             raise ProtectedWorkspaceStateError("PROTECTED_STATE_DELETE_FAILED") from ex
 
     def records(self) -> Iterable[dict]:
@@ -182,7 +185,7 @@ class ProtectedWorkspaceState:
                 value = json.loads(raw.decode("utf-8"))
             except ProtectedWorkspaceStateError:
                 raise
-            except (OSError, UnicodeError, ValueError, AuthorityError) as ex:
+            except Exception as ex:
                 raise ProtectedWorkspaceStateError("PROTECTED_STATE_RECORD_INVALID") from ex
             if not isinstance(value, dict):
                 raise ProtectedWorkspaceStateError("PROTECTED_STATE_RECORD_INVALID")
