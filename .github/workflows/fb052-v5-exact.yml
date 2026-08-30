@@ -1,0 +1,34 @@
+name: FB052 Supervisor V5 exact proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-fb052-v5-exact
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate files
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          test "$(git rev-parse d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3:forgeboss/control/process_supervisor.py)" = "$(git rev-parse HEAD:forgeboss/control/process_supervisor.py)"
+          test "$(git rev-parse d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3:forgeboss/control/test_process_supervisor.py)" = "$(git rev-parse HEAD:forgeboss/control/test_process_supervisor.py)"
+      - name: Verify exact candidate files Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          $a=(git rev-parse 'd1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3:forgeboss/control/process_supervisor.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/process_supervisor.py').Trim(); if($a-ne$b){throw 'supervisor mismatch'}
+          $a=(git rev-parse 'd1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3:forgeboss/control/test_process_supervisor.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/test_process_supervisor.py').Trim(); if($a-ne$b){throw 'test mismatch'}
+      - run: python -m compileall -q forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
+      - run: python -m unittest forgeboss.control.test_process_supervisor -v
