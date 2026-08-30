@@ -1,0 +1,41 @@
+name: Worker C FB050 token preflight
+on:
+  push:
+    branches: [forgeboss/worker-c-preflight-fb050-token]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact frozen source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 2b117bdcfa6b82bffbdae116b63de145698f25ed HEAD
+          git diff --quiet 2b117bdcfa6b82bffbdae116b63de145698f25ed HEAD -- forgeboss
+          test "$(git rev-parse 2b117bdcfa6b82bffbdae116b63de145698f25ed^{tree}:forgeboss)" = "$(git rev-parse HEAD^{tree}:forgeboss)"
+      - name: Candidate committed suite
+        run: python -m unittest forgeboss.control.test_run_budget -v
+      - name: Missing paid authority token must fail closed
+        shell: python
+        run: |
+          from forgeboss.control.run_budget import GlobalRunBudget, RunBudgetError, STATE_PAID_STARTED
+          b=GlobalRunBudget('1')
+          b.reserve('r','.5',worker_id='worker-a')
+          rec,token=b.start_paid('r')
+          assert rec.state==STATE_PAID_STARTED and token
+          try:
+              out=b.settle('r','.2')
+          except RunBudgetError as e:
+              print('DENIED',e.code,e.state)
+              assert e.code=='AUTHORITY_TOKEN_INVALID'
+          else:
+              print('BYPASS',out.as_dict())
+              raise AssertionError('paid-started reservation settled without authority token')
