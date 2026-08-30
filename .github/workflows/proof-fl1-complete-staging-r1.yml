@@ -1,0 +1,35 @@
+name: Proof FL1 Complete Staging R1
+on:
+  push:
+    branches: [forgeboss/proof-fl1-complete-staging-r1]
+permissions:
+  contents: read
+jobs:
+  exact-staging:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 55ad6e9c32552ada39fbba39a2c7e934126d7b20
+          persist-credentials: false
+      - name: Verify exact staging SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "55ad6e9c32552ada39fbba39a2c7e934126d7b20"
+      - name: Install protected dependency
+        run: python -m pip install cryptography
+      - name: Run Run-Budget
+        run: python -m unittest forgeboss.control.test_run_budget -v
+      - name: Run Supervisor
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Run Workspace
+        run: python -m unittest forgeboss.control.test_workspace_v7 -v
+      - name: Run Protected Authority
+        run: python -m unittest discover -s forgeboss/protected_authority -p "test*.py" -v
+      - name: Run Store Receipts Budget composition
+        run: python -m unittest forgeboss.control.test_store_authority_r6 forgeboss.control.test_store_authority forgeboss.control.test_store_authority_v3 forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions forgeboss.control.test_daemon_budget forgeboss.control.test_receipts forgeboss.control.test_receipts_r4_composition forgeboss.control.test_run_budget -v
+      - name: Compile component code
+        run: python -m compileall -q forgeboss/protected_authority forgeboss/control/run_budget.py forgeboss/control/process_supervisor.py forgeboss/control/workspace.py forgeboss/control/workspace_state.py forgeboss/control/windows_cleanup.py forgeboss/control/store.py forgeboss/control/receipts.py
