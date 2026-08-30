@@ -1,0 +1,31 @@
+name: Proof FB050 R4 149e73e
+
+on:
+  push:
+    branches:
+      - forgeboss/proof-fb050-r4-149e73e
+
+permissions:
+  contents: read
+
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 149e73e2da3d1b264724ba7120c9b2169271257b
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "149e73e2da3d1b264724ba7120c9b2169271257b"
+      - name: Run exact Run Budget tests
+        run: python -m unittest forgeboss.control.test_run_budget -v
+      - name: Compile exact files
+        run: python -m py_compile forgeboss/control/run_budget.py forgeboss/control/test_run_budget.py
