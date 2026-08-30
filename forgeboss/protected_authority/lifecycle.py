@@ -25,6 +25,7 @@ def _assert_linux_endpoint_dir(path:Path,*,service_uid:int,allowed_gid:int)->Pat
         if cur.parent==cur:break
         cur=cur.parent
     return r
+
 class LinuxAuthorityDaemon:
     def __init__(self,*,service,boundary,protected_root:Path,endpoint_dir:Path,allowed_gid:int,max_workers:int=4,preauth_timeout:float=1.0,accept_poll:float=0.1):
         if os.name=='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
@@ -33,7 +34,13 @@ class LinuxAuthorityDaemon:
         if not isinstance(accept_poll,(int,float)) or not 0.01<=float(accept_poll)<=1.0:raise AuthorityError('IPC_TIMEOUT_INVALID')
         self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.service_uid=int(boundary.expected[4:]);self.endpoint_dir=_assert_linux_endpoint_dir(endpoint_dir,service_uid=self.service_uid,allowed_gid=int(allowed_gid));self.allowed_gid=int(allowed_gid);self.path=self.endpoint_dir/FIXED_SOCKET_NAME;self.listener=None;self.max_workers=max_workers;self.preauth_timeout=float(preauth_timeout);self.accept_poll=float(accept_poll);self._stop=threading.Event();self._active=set();self._active_lock=threading.Lock();self._workers=[]
     def start(self):
+        # A timed-out shutdown must not silently forget a still-executing
+        # authenticated/backend worker and then permit a second daemon instance.
         if self.listener is not None:raise AuthorityError('SERVICE_ALREADY_STARTED')
+        if any(t.is_alive() for t in self._workers):raise AuthorityError('IPC_WORKER_STUCK')
+        self._workers=[]
+        with self._active_lock:
+            if self._active:raise AuthorityError('IPC_WORKER_STUCK')
         if self.path.exists() or self.path.is_symlink():raise AuthorityError('IPC_ENDPOINT_EXISTS')
         s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         try:
@@ -80,15 +87,20 @@ class LinuxAuthorityDaemon:
             except OSError:pass
             try:conn.close()
             except OSError:pass
-        current=threading.current_thread()
-        for t in list(self._workers):
+        current=threading.current_thread();workers=list(self._workers)
+        for t in workers:
             if t is not current:t.join(self.preauth_timeout+self.accept_poll+0.5)
-        self._workers=[]
-        with self._active_lock:self._active.clear()
+        survivors=[t for t in workers if t is not current and t.is_alive()]
         try:self.path.unlink()
         except FileNotFoundError:pass
-        except OSError:
-            if not self._stop.is_set():raise
+        except OSError:pass
+        if survivors:
+            # Preserve the surviving worker and active-connection tracking. A
+            # second start is denied until the blocked handler actually exits.
+            self._workers=survivors
+            raise AuthorityError('IPC_WORKER_STUCK')
+        self._workers=[]
+        with self._active_lock:self._active.clear()
 
 def _windows_sddl(allowed_peer_sids:set[str])->str:
     sids=[]
