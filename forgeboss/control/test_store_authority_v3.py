@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -257,6 +258,97 @@ class StoreAuthorityV3Tests(unittest.TestCase):
             self.assertEqual(task["assignment_mode"],"controller-bound")
             self.assertGreater(task["assignment_generation"],0)
             st.db.close()
+
+
+    def test_failed_history_migration_rolls_back_all_prior_r6_changes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            db=root/"state.db"
+
+            st=ControlStore(db)
+            st.create_budget_run("budget-1","20")
+
+            st.create_task(make_task("task-a"))
+            st.create_task(make_task("task-b"))
+
+            a=st.assign_builder(
+                "task-a",
+                "worker-a",
+                "budget-1",
+            )
+            self.assertGreater(a["assignmentGeneration"],0)
+
+            # Simulate pre-R6 durable state:
+            # task-a has genuine assignment history but current mode is legacy.
+            st.db.execute(
+                """UPDATE tasks
+                   SET assignment_mode='legacy',
+                       assigned_builder_id=NULL,
+                       assignment_token_hash=NULL,
+                       assignment_sha256=NULL
+                   WHERE task_id='task-a'"""
+            )
+
+            # Make migration visibly attempt an old -> new schema transition.
+            st.db.execute(
+                "UPDATE meta SET value='5' WHERE key='schema_version'"
+            )
+
+            # task-b has malformed durable assignment history.
+            next_version=int(
+                st.db.execute(
+                    "SELECT COALESCE(MAX(state_version),0)+1 FROM task_events"
+                ).fetchone()[0]
+            )
+
+            st.db.execute(
+                """INSERT INTO task_events(
+                       task_id,
+                       run_id,
+                       event_type,
+                       payload_json,
+                       state_version,
+                       created_at
+                   )
+                   VALUES(?,NULL,'task.assigned',?,?,?)""",
+                (
+                    "task-b",
+                    "{}",
+                    next_version,
+                    1.0,
+                ),
+            )
+
+            st.db.close()
+
+            # The constructor/migration must fail closed.
+            with self.assertRaises(StoreAuthorityError):
+                ControlStore(db)
+
+            # Inspect durable bytes directly after failed migration.
+            raw=sqlite3.connect(str(db))
+            try:
+                mode=raw.execute(
+                    "SELECT assignment_mode FROM tasks WHERE task_id='task-a'"
+                ).fetchone()[0]
+
+                schema=raw.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()[0]
+
+                self.assertEqual(
+                    mode,
+                    "legacy",
+                    "task-a classification partially committed despite failed migration",
+                )
+
+                self.assertEqual(
+                    schema,
+                    "5",
+                    "schema/meta version partially committed despite failed migration",
+                )
+            finally:
+                raw.close()
 
 
 if __name__=="__main__":unittest.main()
