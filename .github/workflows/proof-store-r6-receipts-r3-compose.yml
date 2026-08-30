@@ -1,0 +1,25 @@
+name: Proof Store R6 + Receipts R3
+on: push
+permissions:
+  contents: read
+jobs:
+  exact-composition:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 0514ae85f237424c50f4a0792d5a37e4c0cfd928
+          persist-credentials: false
+      - name: Verify exact composition SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "0514ae85f237424c50f4a0792d5a37e4c0cfd928"
+      - name: Run Receipts focused
+        run: python -m unittest forgeboss.control.test_receipts -v
+      - name: Run Store + Receipts combined
+        run: python -m unittest forgeboss.control.test_store_authority_r6 forgeboss.control.test_store_authority forgeboss.control.test_store_authority_v3 forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions forgeboss.control.test_daemon_budget forgeboss.control.test_receipts -v
+      - name: Compile Store + Receipts
+        run: python -m py_compile forgeboss/control/store.py forgeboss/control/receipts.py forgeboss/control/test_receipts.py
