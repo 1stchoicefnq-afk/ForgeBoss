@@ -5,7 +5,7 @@ from pathlib import Path
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 from forgeboss.control.scheduler import _canonical_path
 
-SCHEMA_VERSION=5
+SCHEMA_VERSION=6
 class BudgetReservationError(RuntimeError):
     def __init__(self,code,message): super().__init__(message);self.code=code
 class WorkspaceCollisionError(RuntimeError):
@@ -171,15 +171,6 @@ class ControlStore:
                     ("revoked_at","REAL"),("revoke_reason","TEXT")):
                     self._ensure_column(table,name,definition)
             self._ensure_column("workspace_leases","attempt","INTEGER")
-            self.db.execute("""UPDATE tasks
-                SET assignment_mode='controller-bound'
-                WHERE assignment_mode='legacy'
-                  AND (
-                    assigned_builder_id IS NOT NULL OR
-                    assignment_token_hash IS NOT NULL OR
-                    assignment_sha256 IS NOT NULL OR
-                    assignment_generation > 0
-                  )""")
             rows=self.db.execute("SELECT task_id,budget_allocated,budget_spent,budget_cap_exact,budget_reserved_exact FROM tasks").fetchall()
             for row in rows:
                 cap=row["budget_cap_exact"]
@@ -189,6 +180,53 @@ class ControlStore:
                 if not had_budget_reserved_exact or reserved is None:
                     reserved=_money_text(_budget_decimal(row["budget_spent"],"BUDGET_STATE_INVALID","task budget state is invalid"))
                 self.db.execute("UPDATE tasks SET budget_cap_exact=?,budget_reserved_exact=? WHERE task_id=?",(cap,reserved,row["task_id"]))
+            orphan=self.db.execute("""SELECT e.seq FROM task_events e LEFT JOIN tasks t ON t.task_id=e.task_id
+                WHERE e.event_type='task.assigned' AND t.task_id IS NULL LIMIT 1""").fetchone()
+            if orphan:
+                raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","orphan task.assigned history")
+            for task_row in self.db.execute("SELECT * FROM tasks").fetchall():
+                task=dict(task_row);task_id=str(task["task_id"])
+                mode=str(task.get("assignment_mode") or "legacy")
+                if mode not in ("legacy","controller-bound"):
+                    raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","assignment mode is invalid")
+                events=self.db.execute("""SELECT seq,run_id,payload_json,state_version FROM task_events
+                    WHERE task_id=? AND event_type='task.assigned' ORDER BY seq""",(task_id,)).fetchall()
+                if not events:
+                    self.db.execute("UPDATE tasks SET assignment_mode='legacy' WHERE task_id=?",(task_id,))
+                    continue
+                last_generation=0;last_state_version=0;history_budget_run=None
+                for event in events:
+                    if event["run_id"] is not None:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history must not be run-scoped")
+                    try:payload=json.loads(event["payload_json"])
+                    except Exception as ex:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid") from ex
+                    if not isinstance(payload,dict):
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is invalid")
+                    required=("builderId","assignmentGeneration","assignmentSha256","budgetRunId")
+                    if any(key not in payload for key in required):
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned history payload is incomplete")
+                    builder=_opaque(payload["builderId"],"builder id")
+                    budget_run_id=_opaque(payload["budgetRunId"],"budget run id")
+                    generation=payload["assignmentGeneration"]
+                    if isinstance(generation,bool) or not isinstance(generation,int) or generation<=0 or generation<=last_generation:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned generation history is invalid")
+                    digest=payload["assignmentSha256"]
+                    if not isinstance(digest,str) or not re.fullmatch(r"[0-9a-f]{64}",digest):
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest history is invalid")
+                    state_version=event["state_version"]
+                    if isinstance(state_version,bool) or not isinstance(state_version,int) or state_version<=last_state_version:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned state-version history is invalid")
+                    if history_budget_run is None:history_budget_run=budget_run_id
+                    elif budget_run_id!=history_budget_run:
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned budget-run history is contradictory")
+                    expected=self._assignment_digest_locked(task,builder,budget_run_id,generation)
+                    if not hmac.compare_digest(expected,digest):
+                        raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task.assigned digest does not match durable task authority")
+                    last_generation=generation;last_state_version=state_version
+                if task.get("budget_run_id") is None or str(task["budget_run_id"])!=history_budget_run:
+                    raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","task budget-run authority contradicts assignment history")
+                self.db.execute("UPDATE tasks SET assignment_mode='controller-bound' WHERE task_id=?",(task_id,))
             self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
 
     def _state_version(self):
