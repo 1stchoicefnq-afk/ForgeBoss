@@ -1,0 +1,59 @@
+name: Proof Receipts R4 c5b546e Ubuntu
+
+on:
+  push:
+    branches:
+      - forgeboss/evidence-receipts-r4-c5b546e-ubuntu
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout evidence branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Checkout exact frozen candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach c5b546e43e677bf07d1e2b249aa45414a24f002d
+          test "$(git rev-parse HEAD)" = "c5b546e43e677bf07d1e2b249aa45414a24f002d"
+          test -z "$(git status --porcelain)"
+
+      - name: Focused Receipts and R4 composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest forgeboss.control.test_receipts forgeboss.control.test_receipts_r4_composition -v
+
+      - name: Combined Store Run-Budget Receipts stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            forgeboss.control.test_store_authority_r6 \
+            forgeboss.control.test_store_authority_v3 \
+            forgeboss.control.test_store_repository_identity \
+            forgeboss.control.test_store_transactions \
+            forgeboss.control.test_daemon_budget \
+            forgeboss.control.test_run_budget \
+            forgeboss.control.test_receipts \
+            forgeboss.control.test_receipts_r4_composition -v
+
+      - name: Compile and cleanliness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            forgeboss/control/store.py \
+            forgeboss/control/run_budget.py \
+            forgeboss/control/receipts.py \
+            forgeboss/control/test_receipts.py \
+            forgeboss/control/test_receipts_r4_composition.py
+          test "$(git rev-parse HEAD)" = "c5b546e43e677bf07d1e2b249aa45414a24f002d"
+          test -z "$(git status --porcelain)"
