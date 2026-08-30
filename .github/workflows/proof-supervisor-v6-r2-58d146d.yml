@@ -1,0 +1,31 @@
+name: Proof Supervisor V6 R2 58d146d
+
+on:
+  push:
+    branches:
+      - forgeboss/proof-supervisor-v6-r2-58d146d
+
+permissions:
+  contents: read
+
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 58d146df61e659111c2d93a73c35196838ce18c9
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "58d146df61e659111c2d93a73c35196838ce18c9"
+      - name: Run exact Supervisor tests
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Compile exact files
+        run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
