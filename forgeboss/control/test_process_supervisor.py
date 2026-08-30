@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, sys, threading, time, unittest
+import os, signal, sys, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -14,13 +14,14 @@ PY = str(Path(sys.executable).resolve())
 
 
 class FakeContainment:
-    def __init__(self, *, pid=1234, rc=None, empty=False, terminate_result=True, terminate_delay=0):
+    def __init__(self, *, pid=1234, rc=None, empty=False, terminate_result=True, terminate_delay=0, terminate_error=None):
         self.pid = pid
         self.containment_id = f"fake:{pid}"
         self.rc = rc
         self.empty_value = empty
         self.terminate_result = terminate_result
         self.terminate_delay = terminate_delay
+        self.terminate_error = terminate_error
         self.terminate_calls = 0
         self.closed = False
     def poll(self): return self.rc
@@ -28,6 +29,7 @@ class FakeContainment:
     def terminate(self, timeout):
         self.terminate_calls += 1
         if self.terminate_delay: time.sleep(self.terminate_delay)
+        if self.terminate_error is not None: raise self.terminate_error
         if self.terminate_result:
             self.empty_value = True
             if self.rc is None: self.rc = 75
@@ -69,6 +71,7 @@ class SupervisorTests(unittest.TestCase):
             self.sup.launch("w", [PY, "-c", "pass"])
             ev = self.sup.stop("w", 1, timeout=.1)
             self.assertEqual(ev.state, STATE_STOP_FAILED)
+            self.assertFalse(ev.containment_empty)
             with self.assertRaises(SupervisorError) as cm:
                 self.sup.reassign("w", 1, [PY, "-c", "pass"])
             self.assertEqual(cm.exception.code, "GENERATION_NOT_STOPPED")
@@ -83,6 +86,18 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(got.state, STATE_IDENTITY_LOST)
             with self.assertRaises(SupervisorError):
                 self.sup.reassign("w", 1, [PY, "-c", "pass"])
+
+    def test_keeper_identity_loss_never_becomes_stopped(self):
+        fake = FakeContainment(terminate_error=SupervisorError("IDENTITY_LOST", "keeper died"))
+        with mock.patch("forgeboss.control.process_supervisor._launch_containment", return_value=fake):
+            self.sup = ProcessSupervisor()
+            self.sup.launch("w", [PY, "-c", "pass"])
+            ev = self.sup.stop("w", 1, timeout=.1)
+            self.assertEqual(ev.state, STATE_IDENTITY_LOST)
+            self.assertFalse(ev.containment_empty)
+            with self.assertRaises(SupervisorError) as cm:
+                self.sup.reassign("w", 1, [PY, "-c", "pass"])
+            self.assertEqual(cm.exception.code, "GENERATION_NOT_STOPPED")
 
     def test_duplicate_stop_serializes_single_termination(self):
         fake = FakeContainment(terminate_delay=.05)
@@ -137,6 +152,43 @@ class SupervisorTests(unittest.TestCase):
         ev=self.sup.stop("real",a.generation,timeout=3.0)
         self.assertEqual(ev.state, STATE_STOPPED)
         self.assertTrue(ev.containment_empty)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper proof")
+    def test_short_timeout_keeps_keeper_and_later_reconciliation_completes(self):
+        self.sup=ProcessSupervisor()
+        sh="/bin/sh"
+        code="trap '' TERM; setsid sh -c 'trap \"\" TERM; sleep 30' & wait"
+        a=self.sup.launch("timeout",[sh,"-c",code])
+        containment=self.sup._containments["timeout"]
+        time.sleep(.3)
+        first=self.sup.stop("timeout",a.generation,timeout=.10)
+        self.assertEqual(first.state,STATE_STOP_FAILED)
+        self.assertFalse(first.containment_empty)
+        self.assertIsNone(containment._proc.poll(), "caller timeout must not kill keeper")
+        with self.assertRaises(SupervisorError):
+            self.sup.reassign("timeout",a.generation,[PY,"-c","pass"])
+        second=self.sup.stop("timeout",a.generation,timeout=3.0)
+        self.assertEqual(second.state,STATE_STOPPED)
+        self.assertTrue(second.containment_empty)
+        self.assertIsNotNone(containment._proc.poll())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper proof")
+    def test_unexpected_keeper_death_is_never_empty_or_stopped(self):
+        self.sup=ProcessSupervisor()
+        a=self.sup.launch("lost-real",[PY,"-c","import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"])
+        containment=self.sup._containments["lost-real"]
+        try:
+            os.kill(containment._proc.pid,signal.SIGKILL)
+            containment._proc.wait(timeout=2.0)
+            self.assertFalse(containment.empty(.1))
+            current=self.sup.refresh("lost-real")
+            self.assertEqual(current.state,STATE_QUARANTINED)
+            ev=self.sup.stop("lost-real",a.generation,timeout=.1)
+            self.assertEqual(ev.state,STATE_IDENTITY_LOST)
+            self.assertFalse(ev.containment_empty)
+        finally:
+            try: os.killpg(a.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper proof")
     def test_real_root_exits_descendant_keeps_containment_nonempty(self):

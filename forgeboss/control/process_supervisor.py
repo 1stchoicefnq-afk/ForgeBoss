@@ -165,9 +165,9 @@ class _PosixKeeperContainment(_Containment):
 
     The keeper is the nearest subreaper for the worker. If the leader exits or
     descendants daemonize into a new session/process group, orphaned descendants
-    are reparented to the keeper. The supervisor treats the containment as empty
-    only when the keeper has positively observed that no worker descendants
-    remain.
+    are reparented to the keeper. A caller timeout never destroys this ownership
+    authority. Keeper death proves emptiness only when the keeper exits normally
+    after its own positive descendant/reap check.
     """
 
     def __init__(self, argv: tuple[str, ...], cwd: str | None, env: dict[str, str]):
@@ -209,11 +209,13 @@ class _PosixKeeperContainment(_Containment):
     def _readline_bounded(self, timeout: float) -> str:
         result: list[str] = []
         error: list[BaseException] = []
+
         def reader():
             try:
                 result.append(self._proc.stdout.readline() if self._proc.stdout else "")
             except BaseException as ex:
                 error.append(ex)
+
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         thread.join(timeout)
@@ -224,6 +226,13 @@ class _PosixKeeperContainment(_Containment):
             raise SupervisorError("CONTAINMENT_START_FAILED", "keeper exited before launch identity")
         return result[0]
 
+    @staticmethod
+    def _exit_proves_empty(rc: int | None) -> bool:
+        # The keeper itself only returns a non-negative status after it has
+        # observed root completion and an empty descendant set. Signal death is
+        # loss of containment identity, never positive emptiness evidence.
+        return isinstance(rc, int) and rc >= 0
+
     def poll(self) -> int | None:
         rc = self._proc.poll()
         if rc is None:
@@ -233,34 +242,39 @@ class _PosixKeeperContainment(_Containment):
     def empty(self, timeout: float) -> bool:
         timeout = _timeout(timeout, "containment query timeout")
         try:
-            self._proc.wait(timeout=timeout)
-            return True
+            rc = self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             return False
+        return self._exit_proves_empty(int(rc))
 
     def terminate(self, timeout: float) -> bool:
         timeout = _timeout(timeout, "termination timeout")
-        if self._proc.poll() is not None:
+        rc = self._proc.poll()
+        if rc is not None:
+            if not self._exit_proves_empty(int(rc)):
+                raise SupervisorError("IDENTITY_LOST", "Linux keeper died without positive empty proof")
             return True
         try:
             os.kill(self._proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except ProcessLookupError as ex:
+            rc = self._proc.poll()
+            if rc is None or not self._exit_proves_empty(int(rc)):
+                raise SupervisorError("IDENTITY_LOST", "Linux keeper identity disappeared before empty proof") from ex
             return True
         try:
-            self._proc.wait(timeout=timeout)
-            return True
+            rc = self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            try:
-                os.kill(self._proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return True
-            try:
-                self._proc.wait(timeout=min(timeout, 5.0))
-                return True
-            except subprocess.TimeoutExpired:
-                return False
+            # V6:
+caller deadline is not authority to kill the subreaper. The
+            # still-live keeper continues cleanup and can be reconciled later.
+            return False
+        if not self._exit_proves_empty(int(rc)):
+            raise SupervisorError("IDENTITY_LOST", "Linux keeper died without positive empty proof")
+        return True
 
     def _kill_keeper(self):
+        # Startup-only emergency cleanup before a valid containment identity has
+        # been handed to the supervisor. Runtime stop paths must never call it.
         try:
             self._proc.kill()
         except Exception:
@@ -272,7 +286,12 @@ class _PosixKeeperContainment(_Containment):
 
     def close(self) -> None:
         if self._proc.poll() is None:
-            self.terminate(2.0)
+            # Do not turn an unproven timeout into success and do not SIGKILL the
+            # keeper. A live keeper continues its already-requested tree cleanup.
+            try:
+                self.terminate(2.0)
+            except SupervisorError:
+                pass
         for stream in (self._proc.stdout, self._proc.stderr):
             try:
                 if stream:
@@ -358,18 +377,18 @@ class _WindowsJobContainment(_Containment):
         if os.name != "nt":
             raise SupervisorError("CONTAINMENT_UNAVAILABLE", "Windows Job containment is unavailable")
         from ctypes import wintypes
-        self._k = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k = ctypes.WinDLLK"kernel32", use_last_error=True)
         self._configure()
         self._job = self._k.CreateJobObjectW(None, None)
         if not self._job:
-            raise SupervisorError("CONTAINMENT_START_FAILED", "CreateJobObjectW failed")
+            raise SupervisorError("CONTAINMENT_START_FAILED", "CreateJobObjectW hailed")
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not self._k.SetInformationJobObject(self._job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)):
             self._k.CloseHandle(self._job)
             raise SupervisorError("CONTAINMENT_START_FAILED", "SetInformationJobObject failed")
         cmd = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
-        block = "\0".join(f"{k}={v}" for k, v in sorted(env.items(), key=lambda kv: kv[0].casefold())) + "\0\0"
+        block = "\0".join(f"{+}={v}" for k, v in sorted(env.items(), key=lambda kv: kv[0].casefold())) + "\0\0"
         envbuf = ctypes.create_unicode_buffer(block)
         si = _STARTUPINFOW()
         si.cb = ctypes.sizeof(si)
@@ -399,344 +418,5 @@ class _WindowsJobContainment(_Containment):
             "SetInformationJobObject": ([H, ctypes.c_int, V, D], wintypes.BOOL),
             "AssignProcessToJobObject": ([H, H], wintypes.BOOL),
             "TerminateJobObject": ([H, wintypes.UINT], wintypes.BOOL),
-            "QueryInformationJobObject": ([H, ctypes.c_int, V, D, ctypes.POINTER(D)], wintypes.BOOL),
-            "CreateProcessW": ([wintypes.LPCWSTR, wintypes.LPWSTR, V, V, wintypes.BOOL, D, V, wintypes.LPCWSTR, V, V], wintypes.BOOL),
-            "ResumeThread": ([H], D),
-            "GetExitCodeProcess": ([H, ctypes.POINTER(D)], wintypes.BOOL),
-            "WaitForSingleObject": ([H, D], D),
-            "TerminateProcess": ([H, wintypes.UINT], wintypes.BOOL),
-            "CloseHandle": ([H], wintypes.BOOL),
-        }
-        for name, (args, result) in specs.items():
-            fn = getattr(self._k, name)
-            fn.argtypes = args
-            fn.restype = result
-
-    def poll(self) -> int | None:
-        from ctypes import wintypes
-        code = wintypes.DWORD()
-        if not self._k.GetExitCodeProcess(self._process, ctypes.byref(code)):
-            raise SupervisorError("IDENTITY_LOST", "cannot query stable worker process handle")
-        return None if code.value == 259 else int(code.value)
-
-    def empty(self, timeout: float) -> bool:
-        timeout = _timeout(timeout, "containment query timeout")
-        deadline = time.monotonic() + timeout
-        info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
-        while time.monotonic() < deadline:
-            if not self._k.QueryInformationJobObject(self._job, JobObjectBasicAccountingInformation, ctypes.byref(info), ctypes.sizeof(info), None):
-                raise SupervisorError("CONTAINMENT_QUERY_FAILED", "QueryInformationJobObject failed")
-            if int(info.ActiveProcesses) == 0:
-                return True
-            time.sleep(min(DEFAULT_POLL_SECONDS, max(0.001, deadline - time.monotonic())))
-        return False
-
-    def terminate(self, timeout: float) -> bool:
-        timeout = _timeout(timeout, "termination timeout")
-        if not self._k.TerminateJobObject(self._job, 75):
-            raise SupervisorError("STOP_FAILED", "TerminateJobObject failed")
-        return self.empty(timeout)
-
-    def close(self) -> None:
-        for handle in (getattr(self, "_thread", None), getattr(self, "_process", None), getattr(self, "_job", None)):
-            if handle:
-                try:
-                    self._k.CloseHandle(handle)
-                except Exception:
-                    pass
-
-
-def _launch_containment(argv: tuple[str, ...], cwd: str | None, env: dict[str, str]) -> _Containment:
-    if os.name == "nt":
-        return _WindowsJobContainment(argv, cwd, env)
-    if sys.platform.startswith("linux"):
-        return _PosixKeeperContainment(argv, cwd, env)
-    raise SupervisorError("CONTAINMENT_UNAVAILABLE", "no non-escapable containment backend for this platform")
-
-
-class ProcessSupervisor:
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._slots: dict[str, Assignment] = {}
-        self._containments: dict[str, _Containment] = {}
-        self._stop_ops: dict[tuple[str, int], tuple[str, threading.Event]] = {}
-
-    def launch(self, worker_id: str, argv: Sequence[str], *, cwd=None, env=None) -> Assignment:
-        return self._bind(worker_id, argv, cwd=cwd, env=env, expected_generation=None)
-
-    def reassign(self, worker_id: str, expected_generation: int, argv: Sequence[str], *, cwd=None, env=None) -> Assignment:
-        return self._bind(worker_id, argv, cwd=cwd, env=env, expected_generation=expected_generation)
-
-    def _bind(self, worker_id, argv, *, cwd, env, expected_generation):
-        if not isinstance(worker_id, str) or not worker_id or worker_id.strip() != worker_id:
-            raise SupervisorError("WORKER_ID_INVALID", "worker_id must be a non-empty canonical string")
-        args = _argv(argv)
-        workdir = _cwd(cwd)
-        environment = _env(env)
-        with self._lock:
-            current = self._slots.get(worker_id)
-            if current is not None:
-                if expected_generation is None:
-                    raise SupervisorError("GENERATION_OCCUPIED", "worker already has a generation")
-                if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation != current.generation:
-                    raise SupervisorError("GENERATION_STALE", "expected generation does not match")
-                if current.state not in _ADVANCEABLE:
-                    raise SupervisorError("GENERATION_NOT_STOPPED", f"cannot advance from {current.state}")
-                containment = self._containments.get(worker_id)
-                if containment is None:
-                    raise SupervisorError("IDENTITY_LOST", "prior containment identity is missing")
-                if not containment.empty(1.0):
-                    raise SupervisorError("GENERATION_NOT_STOPPED", "prior containment is not empty")
-                generation = current.generation + 1
-            else:
-                if expected_generation is not None:
-                    raise SupervisorError("GENERATION_UNKNOWN", "worker has no prior generation")
-                generation = 1
-        containment = _launch_containment(args, workdir, environment)
-        started = time.time()
-        assignment = Assignment(worker_id, generation, STATE_RUNNING, args, containment.pid, containment.containment_id, started)
-        with self._lock:
-            latest = self._slots.get(worker_id)
-            if current is None:
-                if latest is not None:
-                    containment.terminate(2.0); containment.close()
-                    raise SupervisorError("GENERATION_RACE", "worker generation changed during launch")
-            else:
-                if latest != current:
-                    containment.terminate(2.0); containment.close()
-                    raise SupervisorError("GENERATION_RACE", "worker generation changed during launch")
-                old = self._containments.get(worker_id)
-                if old is not None:
-                    old.close()
-            self._slots[worker_id] = assignment
-            self._containments[worker_id] = containment
-            return assignment
-
-    def refresh(self, worker_id: str) -> Assignment:
-        with self._lock:
-            current = self._require(worker_id)
-            containment = self._containments.get(worker_id)
-        if containment is None:
-            updated = replace(current, state=STATE_IDENTITY_LOST)
-        else:
-            try:
-                rc = containment.poll()
-            except Exception:
-                updated = replace(current, state=STATE_IDENTITY_LOST)
-            else:
-                if rc is None:
-                    return current
-                empty = containment.empty(1.0)
-                if not empty:
-                    updated = replace(current, state=STATE_QUARANTINED, exit_code=rc)
-                elif rc == 0:
-                    updated = replace(current, state=STATE_QUARANTINED, exit_code=0)
-                else:
-                    updated = replace(current, state=STATE_FAILED, exit_code=rc)
-        with self._lock:
-            if self._slots.get(worker_id) == current:
-                self._slots[worker_id] = updated
-            return self._slots[worker_id]
-
-    def stop(self, worker_id: str, expected_generation: int, *, timeout: float = 10.0) -> Evidence:
-        timeout = _timeout(timeout, "stop timeout")
-        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation <= 0:
-            raise SupervisorError("GENERATION_INVALID", "expected_generation must be a positive integer")
-        key = (worker_id, expected_generation)
-        leader = False
-        with self._lock:
-            current = self._require(worker_id)
-            if current.generation != expected_generation:
-                raise SupervisorError("GENERATION_STALE", "stop targets a stale generation")
-            existing = self._stop_ops.get(key)
-            if existing is None:
-                operation_id = uuid.uuid4().hex
-                event = threading.Event()
-                self._stop_ops[key] = (operation_id, event)
-                self._slots[worker_id] = replace(current, state=STATE_STOPPING)
-                leader = True
-            else:
-                operation_id, event = existing
-        if not leader:
-            if not event.wait(timeout):
-                raise SupervisorError("STOP_JOIN_TIMEOUT", "duplicate stop did not finish within timeout")
-            with self._lock:
-                done = self._require(worker_id)
-                if done.generation != expected_generation or done.last_evidence is None or done.last_evidence.operation_id != operation_id:
-                    raise SupervisorError("STOP_EVIDENCE_LOST", "stop completion evidence is unavailable")
-                return done.last_evidence
-
-        started = time.time()
-        state = STATE_STOP_FAILED
-        reason = "stop-failed"
-        exit_code = None
-        empty = False
-        containment = None
-        try:
-            with self._lock:
-                containment = self._containments.get(worker_id)
-            if containment is None:
-                state, reason = STATE_IDENTITY_LOST, "containment-identity-lost"
-            else:
-                try:
-                    if not containment.terminate(timeout):
-                        state, reason = STATE_STOP_FAILED, "containment-survived-stop"
-                    else:
-                        empty = containment.empty(min(timeout, 5.0))
-                        if not empty:
-                            state, reason = STATE_STOP_FAILED, "containment-not-empty"
-                        else:
-                            exit_code = containment.poll()
-                            state, reason = STATE_STOPPED, "verified-stopped"
-                except SupervisorError as ex:
-                    state, reason = STATE_STOP_FAILED, ex.code.lower()
-                except Exception:
-                    state, reason = STATE_STOP_FAILED, "containment-query-failed"
-        finally:
-            evidence = Evidence(operation_id, worker_id, expected_generation, state, reason, exit_code, empty, started, time.time())
-            with self._lock:
-                latest = self._slots.get(worker_id)
-                if latest is not None and latest.generation == expected_generation and latest.state == STATE_STOPPING:
-                    self._slots[worker_id] = replace(latest, state=state, exit_code=exit_code, last_evidence=evidence)
-                op = self._stop_ops.pop(key, None)
-                if op:
-                    op[1].set()
-            return evidence
-
-    def get(self, worker_id: str, *, refresh: bool = False) -> Assignment:
-        return self.refresh(worker_id) if refresh else self._require_public(worker_id)
-
-    def _require(self, worker_id: str) -> Assignment:
-        value = self._slots.get(worker_id)
-        if value is None:
-            raise SupervisorError("WORKER_UNKNOWN", "worker is unknown")
-        return value
-
-    def _require_public(self, worker_id: str) -> Assignment:
-        with self._lock:
-            return self._require(worker_id)
-
-    def close(self):
-        with self._lock:
-            items = list(self._containments.items())
-        for worker_id, containment in items:
-            try:
-                current = self.get(worker_id)
-                if current.state != STATE_STOPPED:
-                    self.stop(worker_id, current.generation, timeout=2.0)
-            except Exception:
-                pass
-            try:
-                containment.close()
-            except Exception:
-                pass
-
-
-def _descendants_linux(root_pid: int) -> set[int]:
-    parent: dict[int, int] = {}
-    for item in Path("/proc").iterdir():
-        if not item.name.isdigit():
-            continue
-        try:
-            raw = (item / "stat").read_text(encoding="utf-8")
-            tail = raw[raw.rfind(")") + 2:].split()
-            parent[int(item.name)] = int(tail[1])
-        except Exception:
-            continue
-    out: set[int] = set()
-    frontier = [root_pid]
-    while frontier:
-        pid = frontier.pop()
-        for child, ppid in tuple(parent.items()):
-            if ppid == pid and child not in out:
-                out.add(child)
-                frontier.append(child)
-    return out
-
-
-def _keeper_main() -> int:
-    if not _linux_subreaper_available():
-        print(json.dumps({"ok": False, "error": "subreaper unavailable"}), flush=True)
-        return 125
-    libc = ctypes.CDLL(None, use_errno=True)
-    PR_SET_CHILD_SUBREAPER = 36
-    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
-        print(json.dumps({"ok": False, "error": "prctl subreaper failed"}), flush=True)
-        return 125
-    try:
-        line = sys.stdin.readline()
-        if not line:
-            raise ValueError("missing keeper launch spec")
-        spec = json.loads(line)
-        proc = subprocess.Popen(
-            spec["argv"],
-            cwd=spec.get("cwd"),
-            env=spec.get("env"),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except Exception as ex:
-        print(json.dumps({"ok": False, "error": str(ex)}), flush=True)
-        return 125
-    print(json.dumps({"ok": True, "pid": proc.pid}), flush=True)
-    stopping = False
-
-    def request_stop(_sig, _frame):
-        nonlocal stopping
-        stopping = True
-
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
-    root_rc: int | None = None
-    stop_started: float | None = None
-    while True:
-        if root_rc is None:
-            root_rc = proc.poll()
-        descendants = _descendants_linux(os.getpid())
-        descendants.discard(proc.pid)
-        if stopping:
-            if stop_started is None:
-                stop_started = time.monotonic()
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            for pid in descendants:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            if time.monotonic() - stop_started > 1.0:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                for pid in descendants:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-        while True:
-            try:
-                waited, status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if waited == 0:
-                break
-            if waited == proc.pid and root_rc is None:
-                root_rc = os.waitstatus_to_exitcode(status)
-        descendants = _descendants_linux(os.getpid())
-        if root_rc is not None and not descendants:
-            if stopping:
-                return 75
-            if root_rc < 0:
-                return min(255, 128 + abs(root_rc))
-            return min(125, int(root_rc))
-        time.sleep(0.02)
-
-
-if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--keeper":
-    raise SystemExit(_keeper_main())
+            "QueryInformationJobObject": ([H, ctypes.c_int, V, D, ctypes.POINTER(D]], wintypes.BOOL),
+            "CreateProcessW": ([wintypes.LPCWSTR, wintypes.LPWSTR
