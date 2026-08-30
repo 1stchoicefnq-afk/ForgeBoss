@@ -400,7 +400,9 @@ class ControlStore:
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row:raise KeyError("task not found")
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
-                if str(task["status"]) in _TERMINAL_RETRY_REQUIRED:raise StoreAuthorityError("TASK_RETRY_REQUIRED","terminal task requires explicit controller retry")
+                assignment_mode=str(task["assignment_mode"] or "legacy")
+                if assignment_mode=="controller-bound" and str(task["status"]) in _TERMINAL_RETRY_REQUIRED:
+                    raise StoreAuthorityError("TASK_RETRY_REQUIRED","terminal controller-bound task requires explicit controller retry")
                 bound=self._validate_assignment_locked(task,builder_id,assignment_token,assignment_generation,assignment_sha256)
                 if bound:
                     assigned_branch=_branch_identity(task["branch"]);claim_branch=_branch_identity(branch)
