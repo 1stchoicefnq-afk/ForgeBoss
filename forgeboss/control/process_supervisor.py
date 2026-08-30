@@ -777,6 +777,28 @@ def _owned_descendants_linux(keeper_pid: int, root_pid: int, *, proc_root: Path 
     return owned
 
 
+def _reap_linux_children(root_pid: int, root_rc: int | None) -> tuple[int | None, bool]:
+    """Reap terminal children and return whether the subreaper has ECHILD.
+
+    Unlike procfs children listings, waitpid(-1, WNOHANG) returning ECHILD is
+    kernel authority that this process has no child processes at all. A zero
+    return means at least one live child still exists and can never certify
+    containment empty.
+    """
+    no_children = False
+    while True:
+        try:
+            waited, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            no_children = True
+            break
+        if waited == 0:
+            break
+        if waited == root_pid and root_rc is None:
+            root_rc = os.waitstatus_to_exitcode(status)
+    return root_rc, no_children
+
+
 def _keeper_main() -> int:
     if not _linux_subreaper_available():
         print(json.dumps({"ok": False, "error": "subreaper unavailable"}), flush=True)
@@ -854,15 +876,7 @@ def _keeper_main() -> int:
             if signal_ambiguous:
                 time.sleep(0.02)
                 continue
-        while True:
-            try:
-                waited, status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if waited == 0:
-                break
-            if waited == proc.pid and root_rc is None:
-                root_rc = os.waitstatus_to_exitcode(status)
+        root_rc, no_children = _reap_linux_children(proc.pid, root_rc)
         if root_rc is None:
             root_rc = proc.poll()
         try:
@@ -870,7 +884,10 @@ def _keeper_main() -> int:
         except _ProcQueryError:
             time.sleep(0.02)
             continue
-        if root_rc is not None and not owned:
+        # procfs children is discovery/signal assistance only. Linux documents
+        # that it may omit children during exit races, so STOPPED authority is
+        # granted only by the subreaper's waitpid ECHILD proof.
+        if root_rc is not None and no_children:
             if stopping:
                 return 75
             if root_rc < 0:

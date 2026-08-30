@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, sys, tempfile, threading, time, unittest
+import os, signal, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -7,7 +7,7 @@ from forgeboss.control.process_supervisor import (
     ProcessSupervisor, SupervisorError,
     STATE_FAILED, STATE_IDENTITY_LOST, STATE_QUARANTINED,
     STATE_RUNNING, STATE_STOPPED, STATE_STOP_FAILED,
-    _timeout, _owned_descendants_linux, _ProcQueryError,
+    _timeout, _owned_descendants_linux, _ProcQueryError, _reap_linux_children,
 )
 
 PY = str(Path(sys.executable).resolve())
@@ -325,6 +325,24 @@ class SupervisorTests(unittest.TestCase):
             self.assertTrue(second.containment_empty)
             with self.assertRaises(ProcessLookupError):
                 os.kill(child, 0)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper wait proof")
+    def test_waitpid_echild_not_procfs_empty_is_final_empty_authority(self):
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(5)
+            os._exit(0)
+        try:
+            root_rc, empty = _reap_linux_children(-999999, None)
+            self.assertIsNone(root_rc)
+            self.assertFalse(empty, "live child must prevent ECHILD empty proof")
+        finally:
+            try: os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            os.waitpid(pid, 0)
+        root_rc, empty = _reap_linux_children(-999999, None)
+        self.assertIsNone(root_rc)
+        self.assertTrue(empty, "ECHILD must prove no child processes remain")
 
 if __name__=="__main__":
     unittest.main()
