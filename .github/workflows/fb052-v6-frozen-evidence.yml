@@ -1,0 +1,43 @@
+name: FB052 frozen V6 evidence
+on:
+  push:
+    branches: [forgeboss/worker-c-fb052-v6-builder]
+permissions:
+  contents: read
+jobs:
+  exact:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Checkout exact frozen Supervisor V6
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          git checkout --detach 8a20c8d890a8ad483212c3105a53327f6e62ba7d
+          test "$(git rev-parse HEAD)" = "8a20c8d890a8ad483212c3105a53327f6e62ba7d"
+          git diff --exit-code
+      - name: Checkout exact frozen Supervisor V6 Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          git checkout --detach 8a20c8d890a8ad483212c3105a53327f6e62ba7d
+          if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+          if ((git rev-parse HEAD).Trim() -ne '8a20c8d890a8ad483212c3105a53327f6e62ba7d') { throw 'SHA mismatch' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'dirty exact checkout' }
+      - name: Compile exact frozen V6
+        run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
+      - name: Focused exact frozen V6 suite
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Broad control discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
