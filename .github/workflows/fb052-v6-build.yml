@@ -79,9 +79,6 @@ jobs:
           git config user.name 'Worker C FB-052 V6'
           git config user.email 'worker-c@users.noreply.github.com'
           git checkout -B forgeboss/worker-c-fb052-supervisor-v6 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
-          python "$RUNNER_TEMP/fb052_v6_patch_fixed.py"
-          python "$RUNNER_TEMP/fb052_v6_sourcefix2.py"
-          python "$RUNNER_TEMP/fb052_v6_testfix.py"
           git add forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
           git diff --cached --quiet && { echo 'no candidate diff'; exit 1; }
           git commit -m 'FB-052: bounded fail-closed Linux containment V6'
