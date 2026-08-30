@@ -196,7 +196,7 @@ class ControlStore:
                     WHERE e.event_type='task.assigned' AND t.task_id IS NULL LIMIT 1""").fetchone()
                 if orphan:
                     raise StoreAuthorityError("ASSIGNMENT_HISTORY_INVALID","orphan task.assigned history")
-                for task_row in self.db.execute("SELECT * FROM tasks").fetchall():
+                for task_row in self.db.execute("SELECT * FROM tasks ORDER BY task_id").fetchall():
                     task=dict(task_row);task_id=str(task["task_id"])
                     mode=str(task.get("assignment_mode") or "legacy")
                     if mode not in ("legacy","controller-bound"):
