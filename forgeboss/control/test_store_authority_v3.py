@@ -177,6 +177,73 @@ class StoreAuthorityV3Tests(unittest.TestCase):
 
             st.db.close()
 
+    def test_pre_v3_budget_bound_but_never_assigned_remains_legacy_after_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            db=root/"state.db"
+
+            st=ControlStore(db)
+            st.create_budget_run("budget-1","20")
+            st.create_task(make_task())
+
+            # Simulate a pre-V3 task that had a global budget binding
+            # but never received controller builder assignment authority.
+            st.db.execute(
+                """UPDATE tasks
+                   SET budget_run_id=?,
+                       assigned_builder_id=NULL,
+                       assignment_generation=0,
+                       assignment_token_hash=NULL,
+                       assignment_sha256=NULL,
+                       assignment_mode='legacy'
+                   WHERE task_id=?""",
+                ("budget-1","task-1")
+            )
+            st.db.close()
+
+            # Reopening performs schema migration.
+            st=ControlStore(db)
+
+            task=st.get_task("task-1")
+            self.assertEqual(task["assignment_mode"],"legacy")
+
+            wr=root/"worktrees"
+            wr.mkdir()
+
+            w1=wr/"one"
+            w2=wr/"two"
+            w1.mkdir()
+            w2.mkdir()
+
+            l1=st.claim_workspace(
+                "task-1","run-1",w1,"fb/task-1",A40,
+                worktree_root=wr,
+                budget_reserved="1"
+            )
+
+            st.release(
+                "task-1","run-1",l1["owner_epoch"],A40
+            )
+
+            l2=st.claim_workspace(
+                "task-1","run-2",w2,"fb/task-1",A40,
+                worktree_root=wr,
+                budget_reserved="1"
+            )
+
+            self.assertGreater(
+                l2["owner_epoch"],
+                l1["owner_epoch"]
+            )
+
+            self.assertEqual(
+                st.get_task("task-1")["assignment_mode"],
+                "legacy"
+            )
+
+            st.db.close()
+
+
     def test_restart_preserves_bound_mode_and_identity_fencing(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)

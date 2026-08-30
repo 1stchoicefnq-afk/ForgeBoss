@@ -175,7 +175,6 @@ class ControlStore:
                 SET assignment_mode='controller-bound'
                 WHERE assignment_mode='legacy'
                   AND (
-                    budget_run_id IS NOT NULL OR
                     assigned_builder_id IS NOT NULL OR
                     assignment_token_hash IS NOT NULL OR
                     assignment_sha256 IS NOT NULL
