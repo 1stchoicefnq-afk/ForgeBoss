@@ -1,0 +1,35 @@
+name: Store Authority V3 R2 exact proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-store-v3-r2-exact
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate files
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          test "$(git rev-parse f0daa27aef4365898645820641da9b06c3164815:forgeboss/control/store.py)" = "$(git rev-parse HEAD:forgeboss/control/store.py)"
+          test "$(git rev-parse f0daa27aef4365898645820641da9b06c3164815:forgeboss/control/test_store_authority_v3.py)" = "$(git rev-parse HEAD:forgeboss/control/test_store_authority_v3.py)"
+      - name: Verify exact candidate files Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          $a=(git rev-parse 'f0daa27aef4365898645820641da9b06c3164815:forgeboss/control/store.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/store.py').Trim(); if($a-ne$b){throw 'store mismatch'}
+          $a=(git rev-parse 'f0daa27aef4365898645820641da9b06c3164815:forgeboss/control/test_store_authority_v3.py').Trim(); $b=(git rev-parse 'HEAD:forgeboss/control/test_store_authority_v3.py').Trim(); if($a-ne$b){throw 'test mismatch'}
+      - run: python -m compileall -q forgeboss/control/store.py forgeboss/control/test_store_authority_v3.py
+      - run: python -m unittest forgeboss.control.test_store_authority_v3 forgeboss.control.test_store_repository_identity forgeboss.control.test_store_transactions -v
+      - run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
