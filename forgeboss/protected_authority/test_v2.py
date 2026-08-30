@@ -5,7 +5,7 @@ from pathlib import Path
 
 from forgeboss.protected_authority.boundary import FileSecretProvider,PeerContext,PlatformMachineBoundary
 from forgeboss.protected_authority.github_backend import GitHubAppBackend
-from forgeboss.protected_authority.protocol import AuthorityError,SCHEMA,build_request,strict_loads
+from forgeboss.protected_authority.protocol import AuthorityError,SCHEMA,build_request,strict_loads,unsigned_request
 from forgeboss.protected_authority.service import ReplayJournal
 
 class ReplayV2Tests(unittest.TestCase):
@@ -26,11 +26,28 @@ class ReplayV2Tests(unittest.TestCase):
             self.assertEqual(cm.exception.code,'REQUEST_REPLAYED')
 
 class ProtocolV2Tests(unittest.TestCase):
+    def _draft(self):
+        import uuid
+        return build_request(operation='publish_reviewed_draft_pr',request_id=str(uuid.uuid4()),peer_id='worker-a',repository='Owner/Repo',control_revision=7,payload={'baseSha':'A'*40,'headSha':'B'*40,'baseRef':'main','headRef':'repair/x','title':'t','body':'b','reviewDigest':'C'*64},signature='sig')
     def test_draft_pr_requires_ref_and_sha_binding(self):
         import uuid
-        r=build_request(operation='publish_reviewed_draft_pr',request_id=str(uuid.uuid4()),peer_id='worker-a',repository='Owner/Repo',control_revision=7,payload={'baseSha':'a'*40,'headSha':'b'*40,'baseRef':'main','headRef':'repair/x','title':'t','body':'b','reviewDigest':'c'*64},signature='sig')
-        self.assertEqual(r['schema'],SCHEMA);self.assertEqual(r['repository'],'owner/repo')
+        r=self._draft()
+        self.assertEqual(r['schema'],SCHEMA);self.assertEqual(r['repository'],'owner/repo');self.assertEqual(r['payload']['baseSha'],'a'*40);self.assertEqual(r['payload']['reviewDigest'],'c'*64)
         with self.assertRaises(AuthorityError):build_request(operation='publish_reviewed_draft_pr',request_id=str(uuid.uuid4()),peer_id='worker-a',repository='o/r',control_revision=1,payload={'baseSha':'a'*40,'headSha':'b'*40,'baseRef':'main','headRef':'../evil','title':'t','body':'b','reviewDigest':'c'*64},signature='sig')
+    def test_mixed_case_builder_roundtrips_canonical_unsigned_digest(self):
+        r=self._draft();self.assertEqual(unsigned_request(dict(r)),r);self.assertEqual(r['repository'],'owner/repo');self.assertEqual(r['payload']['headSha'],'b'*40)
+    def test_post_digest_authority_mutations_are_rejected(self):
+        r=self._draft()
+        mutations=[]
+        x=dict(r);x['repository']='owner/other';mutations.append(x)
+        x=dict(r);x['payload']=dict(r['payload']);x['payload']['body']='changed';mutations.append(x)
+        x=dict(r);x['payload']=dict(r['payload']);x['payload']['headRef']='repair/y';mutations.append(x)
+        x=dict(r);x['controlRevision']=8;mutations.append(x)
+        x=dict(r);x['requestId']='00000000-0000-4000-8000-000000000001';mutations.append(x)
+        for mutated in mutations:
+            with self.subTest(mutated=mutated):
+                with self.assertRaises(AuthorityError) as cm:unsigned_request(mutated)
+                self.assertEqual(cm.exception.code,'REQUEST_DIGEST_MISMATCH')
     def test_duplicate_json_rejected(self):
         with self.assertRaises(AuthorityError):strict_loads('{"x":1,"x":2}')
 
