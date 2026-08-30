@@ -83,17 +83,21 @@ def _payload(op,raw):
         if not isinstance(o['envelope'],Mapping):raise AuthorityError('LAUNCH_ENVELOPE_INVALID')
         o['envelope']=_jsonable(o['envelope']);o['envelopeDigest']=_text(o['envelopeDigest'],'ENVELOPE_DIGEST_INVALID',64,_HEX64,True);return o
     raise AuthorityError('OPERATION_DENIED')
-def unsigned_request(raw):
-    o=_exact(raw,('schema','operation','requestId','peerId','repository','controlRevision','requestDigest','signature','payload'),'REQUEST_FIELDS_INVALID')
+def _canonical_unsigned(raw):
+    o=_exact(raw,('schema','operation','requestId','peerId','repository','controlRevision','payload'),'REQUEST_FIELDS_INVALID')
     if o['schema']!=SCHEMA:raise AuthorityError('SCHEMA_INVALID')
     op=_text(o['operation'],'OPERATION_INVALID',64)
     if op not in OPERATIONS:raise AuthorityError('OPERATION_DENIED')
-    repo=_text(o['repository'],'REPOSITORY_INVALID',201,_REPO,True);rev=_int(o['controlRevision'],'CONTROL_REVISION_INVALID');rid=_rid(o['requestId']);peer=_text(o['peerId'],'PEER_ID_INVALID',128,_PEER);payload=_payload(op,o['payload']);dig=_text(o['requestDigest'],'REQUEST_DIGEST_INVALID',64,_HEX64,True);sig=_text(o['signature'],'SIGNATURE_INVALID',4096)
-    u={'schema':SCHEMA,'operation':op,'requestId':rid,'peerId':peer,'repository':repo,'controlRevision':rev,'payload':payload}
+    repo=_text(o['repository'],'REPOSITORY_INVALID',201,_REPO,True);rev=_int(o['controlRevision'],'CONTROL_REVISION_INVALID');rid=_rid(o['requestId']);peer=_text(o['peerId'],'PEER_ID_INVALID',128,_PEER);payload=_payload(op,o['payload'])
+    return {'schema':SCHEMA,'operation':op,'requestId':rid,'peerId':peer,'repository':repo,'controlRevision':rev,'payload':payload}
+def unsigned_request(raw):
+    o=_exact(raw,('schema','operation','requestId','peerId','repository','controlRevision','requestDigest','signature','payload'),'REQUEST_FIELDS_INVALID')
+    u=_canonical_unsigned({k:o[k] for k in ('schema','operation','requestId','peerId','repository','controlRevision','payload')});dig=_text(o['requestDigest'],'REQUEST_DIGEST_INVALID',64,_HEX64,True);sig=_text(o['signature'],'SIGNATURE_INVALID',4096)
     if canonical_digest(u)!=dig:raise AuthorityError('REQUEST_DIGEST_MISMATCH')
     return {**u,'requestDigest':dig,'signature':sig}
 def build_request(*,operation,request_id,peer_id,repository,control_revision,payload,signature):
-    u={'schema':SCHEMA,'operation':operation,'requestId':request_id,'peerId':peer_id,'repository':repository,'controlRevision':control_revision,'payload':dict(payload)};return unsigned_request({**u,'requestDigest':canonical_digest(u),'signature':signature})
+    u=_canonical_unsigned({'schema':SCHEMA,'operation':operation,'requestId':request_id,'peerId':peer_id,'repository':repository,'controlRevision':control_revision,'payload':dict(payload)})
+    return unsigned_request({**u,'requestDigest':canonical_digest(u),'signature':signature})
 def assert_public_result(value,private_values=()):
     clean=_jsonable(value);texts=[]
     for item in private_values:
