@@ -1,0 +1,72 @@
+name: FB052 V6 build proof
+on:
+  push:
+    branches: [forgeboss/worker-c-fb052-v6-builder]
+permissions:
+  contents: write
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preserve patch and checkout exact V5
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          cp tmp/fb052_v6_patch.py "$RUNNER_TEMP/fb052_v6_patch.py"
+          git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python "$RUNNER_TEMP/fb052_v6_patch.py"
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py "
+      - name: Preserve patch and checkout exact V5 Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item tmp/fb052_v6_patch.py "$env:RUNNER_TEMP\fb052_v6_patch.py"
+          git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+          python "$env:RUNNER_TEMP\fb052_v6_patch.py"
+          if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+          $files = @(git diff --name-only | Sort-Object)
+          if (($files -join ',') -ne 'forgeboss/control/process_supervisor.py,forgeboss/control/test_process_supervisor.py') { throw "scope mismatch: $files" }
+      - name: Compile V6
+        run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
+      - name: Focused V6 suite
+        run: python -m unittest forgeboss.control.test_process_supervisor -v
+      - name: Broad control regression discovery
+        run: python -m unittest discover -s forgeboss/control -p 'test_*.py' -v
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct exact tested candidate and publish one commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tmp/fb052_v6_patch.py "$RUNNER_TEMP/fb052_v6_patch.py"
+          git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python "$RUNNER_TEMP/fb052_v6_patch.py"
+          python -m unittest forgeboss.control.test_process_supervisor -v
+          git config user.name 'Worker C FB-052 V6'
+          git config user.email 'worker-c@users.noreply.github.com'
+          git checkout -B forgeboss/worker-c-fb052-supervisor-v6 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python "$RUNNER_TEMP/fb052_v6_patch.py"
+          git add forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
+          git diff --cached --quiet && { echo 'no candidate diff'; exit 1; }
+          git commit -m 'FB-052: bounded fail-closed Linux containment V6'
+          git push origin HEAD:refs/heads/forgeboss/worker-c-fb052-supervisor-v6
