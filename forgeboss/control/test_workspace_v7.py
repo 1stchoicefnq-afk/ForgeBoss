@@ -121,6 +121,30 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "WORKSPACE_GENERATION_MISMATCH")
         self.assertEqual(calls, [])
 
+    @unittest.skipIf(os.name == "nt", "POSIX retained-fd authority regression")
+    def test_service_boundary_revocation_denies_all_posix_state_operations_without_mutation(self):
+        original = self._record()
+        replacement = self._record(generation="b" * 32, oid="2" * 40)
+        self.state.write(self.workspaces, self.target, original)
+        record_path = self.state.path_for(self.workspaces, self.target)
+        before = record_path.read_bytes()
+        before_names = sorted(p.name for p in self.state.state_dir.iterdir())
+
+        self.boundary.deny = True
+        operations = (
+            lambda: self.state.read(self.workspaces, self.target),
+            lambda: self.state.write(self.workspaces, self.target, replacement),
+            lambda: self.state.delete(self.workspaces, self.target),
+            lambda: list(self.state.records()),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(ProtectedWorkspaceStateError) as cm:
+                    operation()
+                self.assertEqual(cm.exception.code, "PROTECTED_STATE_PRINCIPAL_DENIED")
+                self.assertEqual(record_path.read_bytes(), before)
+                self.assertEqual(sorted(p.name for p in self.state.state_dir.iterdir()), before_names)
+
     def test_service_boundary_failure_denies_later_state_operation(self):
         record = self._record(); self.state.write(self.workspaces, self.target, record)
         self.boundary.deny = True
@@ -152,8 +176,6 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         attacker_fake = visible / "evil.json"
         attacker_fake.write_text(json.dumps({"attacker": True}), encoding="utf-8")
 
-        # All live operations must stay on the already verified held directory
-        # fd. The replacement pathname must not receive/read authoritative data.
         self.state.write(self.workspaces, self.target, second)
         self.assertEqual(self.state.read(self.workspaces, self.target), second)
         rows = list(self.state.records())
@@ -168,8 +190,6 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         self.assertEqual(attacker_sentinel.read_text(encoding="utf-8"), "keep")
         self.assertTrue(attacker_fake.exists())
 
-        # A restart must not inherit the old handles. It must re-run protected
-        # path/service validation against the currently visible replacement.
         self.state.close()
         self.boundary.deny = True
         with self.assertRaises(ProtectedWorkspaceStateError):
