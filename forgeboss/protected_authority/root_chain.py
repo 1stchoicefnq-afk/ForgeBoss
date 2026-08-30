@@ -20,9 +20,11 @@ def _service_uid(boundary)->int:
     return int(expected[4:])
 
 def _assert_windows_ancestor(boundary,path:Path)->None:
+    if not hasattr(boundary,'trusted_storage'):
+        boundary.assert_protected_path(path,protected_root=path);return
     from .boundary import _windows_acl_facts
     owner,rights=_windows_acl_facts(path)
-    trusted=set(getattr(boundary,'trusted_storage',set()))|{_TRUSTED_INSTALLER_SID}
+    trusted=set(boundary.trusted_storage)|{_TRUSTED_INSTALLER_SID}
     if owner not in trusted:raise AuthorityError('PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
     for sid,mask in rights.items():
         if sid not in trusted and mask&_WIN_ANCESTOR_REPLACE_RIGHTS:raise AuthorityError('PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
