@@ -1,0 +1,60 @@
+name: FB-050 R3 exact proof
+
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-fb050-r3-exact
+
+permissions:
+  contents: read
+
+jobs:
+  exact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate production source
+        run: |
+          git diff --exit-code d49771984a2f8dba407a184ff27964f97b9c81c4 HEAD -- forgeboss/control/run_budget.py forgeboss/control/test_run_budget.py
+      - name: Run exact committed suite
+        run: python -m unittest forgeboss.control.test_run_budget -v
+      - name: Hostile missing and cross-token proof
+        shell: bash
+        run: |
+          python - <<'PY'
+          from forgeboss.control.run_budget import GlobalRunBudget, RunBudgetError
+          b=GlobalRunBudget('10')
+          b.reserve('a','1'); _,ta=b.start_paid('a')
+          b.reserve('b','1'); _,tb=b.start_paid('b')
+          before=b.snapshot()
+          for fn in (
+              lambda: b.settle('a','.2'),
+              lambda: b.settle_unknown('a'),
+              lambda: b.fail('a','.2'),
+              lambda: b.cancel('a','.2'),
+              lambda: b.settle('a','.2',authority_token=tb),
+          ):
+              try:
+                  fn()
+              except RunBudgetError as e:
+                  assert e.code == 'AUTHORITY_TOKEN_INVALID', (e.code, str(e))
+              else:
+                  raise AssertionError('unauthorized terminal mutation succeeded')
+              assert b.snapshot() == before
+          out=b.settle('a','.2',authority_token=ta)
+          assert out.state == 'SETTLED'
+          # duplicate replay requires the original capability and does not double-account
+          try:
+              b.settle('a','.2')
+          except RunBudgetError as e:
+              assert e.code == 'AUTHORITY_TOKEN_INVALID'
+          else:
+              raise AssertionError('terminal replay without token succeeded')
+          assert b.settle('a','.2',authority_token=ta).committed == out.committed
+          print('HOSTILE_TOKEN_PROOF_PASS')
+          PY
