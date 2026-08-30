@@ -1,0 +1,28 @@
+name: Proof Workspace R3 9bbee6bc
+on:
+  push:
+    branches: [forgeboss/proof-workspace-r3-9bbee6bc]
+permissions:
+  contents: read
+jobs:
+  exact-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 9bbee6bc4c8db9838ca8c13ce986858b67775536
+          persist-credentials: false
+      - name: Verify exact SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "9bbee6bc4c8db9838ca8c13ce986858b67775536"
+      - name: Install protected dependency
+        run: python -m pip install cryptography
+      - name: Run Workspace tests
+        run: python -m unittest forgeboss.control.test_workspace_v7 -v
+      - name: Compile Workspace files
+        run: python -m py_compile forgeboss/control/workspace.py forgeboss/control/workspace_state.py forgeboss/control/test_workspace_v7.py
