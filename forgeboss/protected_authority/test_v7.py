@@ -80,19 +80,23 @@ class LinuxAvailabilityV7Tests(unittest.TestCase):
 class WindowsRootChainV7Tests(unittest.TestCase):
     def _boundary(self):
         bootstrap=PlatformMachineBoundary(expected_service_principal='bootstrap',peer_principals={'p':'bootstrap'},peer_public_keys={'p':'AA=='},trusted_storage_principals=set());sid=bootstrap._current_windows_sid();return PlatformMachineBoundary(expected_service_principal=sid,peer_principals={'p':sid},peer_public_keys={'p':'AA=='},trusted_storage_principals=set()),sid
+    def _run_icacls(self,*args):
+        cp=subprocess.run(['icacls',*map(str,args)],capture_output=True,text=True)
+        if cp.returncode!=0:self.skipTest('icacls fixture unavailable: '+(cp.stderr or cp.stdout))
     def _protect(self,path,sid):
-        cp=subprocess.run(['icacls',str(path),'/inheritance:r','/grant:r',f'*{sid}:(OI)(CI)F','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F'],capture_output=True,text=True)
-        if cp.returncode!=0:self.skipTest('icacls protection unavailable: '+cp.stderr)
+        self._run_icacls(path,'/inheritance:r')
+        for principal in ('*S-1-1-0','*S-1-5-32-545','*S-1-5-11'):
+            subprocess.run(['icacls',str(path),'/remove:g',principal],capture_output=True,text=True)
+        self._run_icacls(path,'/grant:r',f'*{sid}:(OI)(CI)F','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
     def test_standard_volume_root_allows_genuinely_protected_child(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
-            root=Path(td)/'svc';root.mkdir();self._protect(root,sid);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
+            parent=Path(td);root=parent/'svc';root.mkdir();self._protect(root,sid);self.assertEqual(assert_machine_anchored_root(boundary,root),root.resolve())
     def test_delete_child_authority_on_ancestor_is_denied(self):
         boundary,sid=self._boundary()
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as td:
             parent=Path(td)/'hostile';parent.mkdir();root=parent/'svc';root.mkdir();self._protect(root,sid);self._protect(parent,sid)
-            cp=subprocess.run(['icacls',str(parent),'/grant','*S-1-1-0:(DC)'],capture_output=True,text=True)
-            if cp.returncode!=0:self.skipTest('icacls delete-child fixture unavailable: '+cp.stderr)
+            self._run_icacls(parent,'/grant','*S-1-1-0:(DC)')
             with self.assertRaises(AuthorityError) as cm:assert_machine_anchored_root(boundary,root)
             self.assertEqual(cm.exception.code,'PROTECTED_ROOT_ANCESTOR_PERMISSIONS')
 
