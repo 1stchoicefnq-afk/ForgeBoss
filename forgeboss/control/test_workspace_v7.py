@@ -81,10 +81,11 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
 
     def test_wrong_generation_reconcile_fails_before_mutation(self):
         record = self._record(); self.state.write(self.workspaces, self.target, record)
-        with mock.patch.object(w, "_rmtree_windows_safe") as rm:
+        with mock.patch.object(w, "_git_executable") as git_check, mock.patch.object(w, "_rmtree_windows_safe") as rm:
             with self.assertRaises(w.WorkspaceProvisionError) as cm:
-                w.reconcile_quarantined_workspace(self.target, self.workspaces, "b" * 32, "/bin/false", protected_state=self.state)
+                w.reconcile_quarantined_workspace(self.target, self.workspaces, "b" * 32, "/definitely/not/a/git/binary", protected_state=self.state)
         self.assertEqual(cm.exception.code, "WORKSPACE_GENERATION_MISMATCH")
+        git_check.assert_not_called()
         rm.assert_not_called()
 
     def test_content_oid_mismatch_blocks_delete_before_mutation(self):
