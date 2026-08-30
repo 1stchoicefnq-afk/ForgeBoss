@@ -8,6 +8,7 @@ from forgeboss.control.process_supervisor import (
     STATE_FAILED, STATE_IDENTITY_LOST, STATE_QUARANTINED,
     STATE_RUNNING, STATE_STOPPED, STATE_STOP_FAILED,
     _timeout, _owned_descendants_linux, _ProcQueryError, _reap_linux_children,
+    _pidfd_signal_linux,
 )
 
 PY = str(Path(sys.executable).resolve())
@@ -222,8 +223,6 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaises(SupervisorError) as cm:self.sup.stop("w",2,timeout=.1)
             self.assertEqual(cm.exception.code,"GENERATION_STALE")
 
-
-
     def _fake_proc_entry(self, root: Path, pid: int, ppid: int, children: str = ""):
         base = root / str(pid)
         task = base / "task" / str(pid)
@@ -343,6 +342,44 @@ class SupervisorTests(unittest.TestCase):
         root_rc, empty = _reap_linux_children(-999999, None)
         self.assertIsNone(root_rc)
         self.assertTrue(empty, "ECHILD must prove no child processes remain")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pidfd proof")
+    def test_pidfd_signal_unavailable_fails_closed(self):
+        with mock.patch("forgeboss.control.process_supervisor.os.pidfd_open", None, create=True), \
+             mock.patch("forgeboss.control.process_supervisor.signal.pidfd_send_signal", None, create=True):
+            with self.assertRaises(_ProcQueryError):
+                _pidfd_signal_linux(123, 456, signal.SIGTERM)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pidfd proof")
+    def test_pidfd_process_gone_before_open_is_not_signaled(self):
+        with mock.patch("forgeboss.control.process_supervisor.os.pidfd_open", side_effect=ProcessLookupError), \
+             mock.patch("forgeboss.control.process_supervisor.signal.pidfd_send_signal") as send:
+            self.assertFalse(_pidfd_signal_linux(123, 456, signal.SIGTERM))
+            send.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pidfd proof")
+    def test_pidfd_identity_replacement_after_open_fails_without_signal(self):
+        with mock.patch("forgeboss.control.process_supervisor.os.pidfd_open", return_value=77), \
+             mock.patch("forgeboss.control.process_supervisor._read_linux_identity", return_value=(1, 999)), \
+             mock.patch("forgeboss.control.process_supervisor.signal.pidfd_send_signal") as send, \
+             mock.patch("forgeboss.control.process_supervisor.os.close") as close:
+            with self.assertRaises(_ProcQueryError):
+                _pidfd_signal_linux(123, 456, signal.SIGTERM)
+            send.assert_not_called()
+            close.assert_called_once_with(77)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux pidfd proof")
+    def test_pidfd_term_and_kill_use_stable_handle(self):
+        sent=[]
+        def sender(fd, sig, info, flags): sent.append((fd, sig, info, flags))
+        with mock.patch("forgeboss.control.process_supervisor.os.pidfd_open", side_effect=[77, 78]), \
+             mock.patch("forgeboss.control.process_supervisor._read_linux_identity", return_value=(1, 456)), \
+             mock.patch("forgeboss.control.process_supervisor.signal.pidfd_send_signal", side_effect=sender), \
+             mock.patch("forgeboss.control.process_supervisor.os.close") as close:
+            self.assertTrue(_pidfd_signal_linux(123, 456, signal.SIGTERM))
+            self.assertTrue(_pidfd_signal_linux(123, 456, signal.SIGKILL))
+        self.assertEqual(sent, [(77, signal.SIGTERM, None, 0), (78, signal.SIGKILL, None, 0)])
+        self.assertEqual(close.call_args_list, [mock.call(77), mock.call(78)])
 
 if __name__=="__main__":
     unittest.main()

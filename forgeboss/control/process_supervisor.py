@@ -242,13 +242,8 @@ class _PosixKeeperContainment(_Containment):
         except subprocess.TimeoutExpired:
             return False
         rc = int(self._proc.returncode)
-        # During explicit stop, only the keeper's verified-empty terminal code
-        # proves that the owned containment is empty. Keeper death/crash is not
-        # descendant-absence evidence.
         if self._stop_requested:
             return rc == 75
-        # Natural keeper termination is not reassignment authority (refresh
-        # maps it to QUARANTINED/FAILED), but the keeper itself completed.
         return True
 
     def terminate(self, timeout: float) -> bool:
@@ -265,8 +260,6 @@ class _PosixKeeperContainment(_Containment):
         try:
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # Do not destroy the subreaper authority. The keeper continues its
-            # own bounded TERM/KILL/reap loop; this stop attempt fails closed.
             return False
         return int(self._proc.returncode) == 75
 
@@ -729,7 +722,6 @@ def _owned_descendants_linux(keeper_pid: int, root_pid: int, *, proc_root: Path 
                              timeout: float = LINUX_QUERY_TIMEOUT_SECONDS,
                              max_records: int = LINUX_MAX_DESCENDANTS,
                              root_known_exited: bool = False, clock=time.monotonic) -> set[int]:
-    """Return the keeper-owned set without scanning the global process table."""
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
         raise _ProcQueryError("owned process query timeout is invalid")
     if isinstance(max_records, bool) or not isinstance(max_records, int) or max_records <= 0:
@@ -765,8 +757,6 @@ def _owned_descendants_linux(keeper_pid: int, root_pid: int, *, proc_root: Path 
             ppid = _read_linux_ppid(child, proc_root=proc_root, deadline=deadline, clock=clock)
             if ppid is None:
                 continue
-            # A descendant may be reparented to the keeper while the walk is in
-            # progress. Any transition to an unrelated parent is ambiguous.
             if ppid not in ({keeper_pid, parent} | owned):
                 raise _ProcQueryError(f"owned pid {child} changed to unowned parent {ppid}")
             owned.add(child)
@@ -778,13 +768,6 @@ def _owned_descendants_linux(keeper_pid: int, root_pid: int, *, proc_root: Path 
 
 
 def _reap_linux_children(root_pid: int, root_rc: int | None) -> tuple[int | None, bool]:
-    """Reap terminal children and return whether the subreaper has ECHILD.
-
-    Unlike procfs children listings, waitpid(-1, WNOHANG) returning ECHILD is
-    kernel authority that this process has no child processes at all. A zero
-    return means at least one live child still exists and can never certify
-    containment empty.
-    """
     no_children = False
     while True:
         try:
@@ -797,6 +780,40 @@ def _reap_linux_children(root_pid: int, root_rc: int | None) -> tuple[int | None
         if waited == root_pid and root_rc is None:
             root_rc = os.waitstatus_to_exitcode(status)
     return root_rc, no_children
+
+
+def _pidfd_signal_linux(pid: int, expected_starttime: int, sig: int, *, proc_root: Path = Path("/proc"), clock=time.monotonic) -> bool:
+    opener = getattr(os, "pidfd_open", None)
+    sender = getattr(signal, "pidfd_send_signal", None)
+    if not callable(opener) or not callable(sender):
+        raise _ProcQueryError("pidfd signaling is unavailable")
+    try:
+        pidfd = opener(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except OSError as ex:
+        raise _ProcQueryError(f"cannot establish stable pidfd for owned pid {pid}") from ex
+    try:
+        identity = _read_linux_identity(
+            int(pid), proc_root=Path(proc_root),
+            deadline=clock() + LINUX_QUERY_TIMEOUT_SECONDS, clock=clock,
+        )
+        if identity is None:
+            return False
+        if identity[1] != int(expected_starttime):
+            raise _ProcQueryError(f"owned pid {pid} identity changed before pidfd signal")
+        try:
+            sender(pidfd, sig, None, 0)
+        except ProcessLookupError:
+            return False
+        except OSError as ex:
+            raise _ProcQueryError(f"pidfd signal failed for owned pid {pid}") from ex
+        return True
+    finally:
+        try:
+            os.close(pidfd)
+        except OSError:
+            pass
 
 
 def _keeper_main() -> int:
@@ -840,9 +857,6 @@ def _keeper_main() -> int:
         try:
             owned = _owned_descendants_linux(keeper_pid, proc.pid, root_known_exited=(root_rc is not None))
         except _ProcQueryError:
-            # Never relinquish subreaper containment merely because authority
-            # cannot be proved. A stop caller will time out/fail closed while
-            # the keeper remains alive and retries bounded queries.
             time.sleep(0.02)
             continue
         if stopping:
@@ -865,12 +879,12 @@ def _keeper_main() -> int:
                     signal_ambiguous = True
                     break
                 try:
-                    os.kill(pid, sig)
-                except ProcessLookupError:
-                    continue
-                except OSError:
+                    delivered = _pidfd_signal_linux(pid, starttime, sig)
+                except _ProcQueryError:
                     signal_ambiguous = True
                     break
+                if not delivered:
+                    continue
                 if sig == signal.SIGTERM:
                     term_sent[pid] = starttime
             if signal_ambiguous:
@@ -880,13 +894,10 @@ def _keeper_main() -> int:
         if root_rc is None:
             root_rc = proc.poll()
         try:
-            owned = _owned_descendants_linux(keeper_pid, proc.pid, root_known_exited=(root_rc is not None))
+            _owned_descendants_linux(keeper_pid, proc.pid, root_known_exited=(root_rc is not None))
         except _ProcQueryError:
             time.sleep(0.02)
             continue
-        # procfs children is discovery/signal assistance only. Linux documents
-        # that it may omit children during exit races, so STOPPED authority is
-        # granted only by the subreaper's waitpid ECHILD proof.
         if root_rc is not None and no_children:
             if stopping:
                 return 75
