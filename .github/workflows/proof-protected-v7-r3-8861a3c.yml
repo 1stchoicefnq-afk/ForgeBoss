@@ -21,6 +21,8 @@ jobs:
       - name: Verify exact SHA
         shell: bash
         run: test "$(git rev-parse HEAD)" = "8861a3ca1d00b04e5edabdc1735fa42a04c65a82"
+      - name: Install protected-authority test dependency
+        run: python -m pip install cryptography
       - name: Run protected authority tests
         run: python -m unittest discover -s forgeboss/protected_authority -p "test_*.py" -v
       - name: Compile protected authority tree
