@@ -48,8 +48,10 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         return {**base, "linuxHandle": {"mountId": 1, "handleType": 1, "handleHex": "aa"}}
 
     def _record(self, *, generation="a" * 32, oid="1" * 40, state="quarantined"):
-        stage = self.workspaces / (w.STAGE_PREFIX + "fixture-" + generation)
-        return {"version": w.QUARANTINE_VERSION, "generation": generation, "target": str(self.target), "stage": str(stage), "identity": self._identity(stage), "contentOid": oid, "state": state, "updatedAt": 1.0}
+        root = self.workspaces.resolve(strict=True)
+        canonical_target = root / self.target.name
+        stage = root / (w.STAGE_PREFIX + "fixture-" + generation)
+        return {"version": w.QUARANTINE_VERSION, "generation": generation, "target": str(canonical_target), "stage": str(stage), "identity": self._identity(stage), "contentOid": oid, "state": state, "updatedAt": 1.0}
 
     def test_workspace_operations_require_protected_state(self):
         with self.assertRaises(w.WorkspaceProvisionError) as cm:
