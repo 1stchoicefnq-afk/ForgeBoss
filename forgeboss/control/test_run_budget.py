@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import threading
 import unittest
 from decimal import Decimal
@@ -15,6 +16,9 @@ from forgeboss.control.run_budget import (
     STATE_UNKNOWN,
 )
 
+AUTH_KEY = b"run-budget-r4-test-auth-key-32by"
+WRONG_KEY = b"wrong-run-budget-r4-auth-key-32b"
+
 
 class T(unittest.TestCase):
     def code(self, expected, fn, *args, **kwargs):
@@ -22,6 +26,12 @@ class T(unittest.TestCase):
             fn(*args, **kwargs)
         self.assertEqual(ctx.exception.code, expected)
         return ctx.exception
+
+    def authenticated(self, budget, key=AUTH_KEY):
+        return budget.authenticated_snapshot(key)
+
+    def restored(self, budget, key=AUTH_KEY):
+        return GlobalRunBudget.from_snapshot(self.authenticated(budget, key), authentication_key=key)
 
     def test_exact_cap(self):
         b = GlobalRunBudget("1.00")
@@ -173,11 +183,83 @@ class T(unittest.TestCase):
         b = GlobalRunBudget(1)
         b.reserve("a", ".5")
         _, token = b.start_paid("a")
-        restored = GlobalRunBudget.from_snapshot(b.snapshot())
+        restored = self.restored(b)
         self.code("AUTHORITY_TOKEN_INVALID", restored.settle, "a", ".2")
         self.code("AUTHORITY_TOKEN_INVALID", restored.settle, "a", ".2", authority_token="wrong")
         self.assertEqual(restored.get("a").state, STATE_PAID_STARTED)
         self.assertEqual(restored.settle("a", ".2", authority_token=token).state, STATE_SETTLED)
+
+    def test_protected_restore_rejects_plain_snapshot_and_bad_key(self):
+        b = GlobalRunBudget(1); b.reserve("a", ".5")
+        self.code("SNAPSHOT_AUTH_REQUIRED", GlobalRunBudget.from_snapshot, b.snapshot())
+        wrapped = self.authenticated(b)
+        self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=WRONG_KEY)
+        for bad in (b"", b"short", "not-bytes"):
+            self.code("SNAPSHOT_AUTHORITY_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=bad)
+
+    def test_authenticated_snapshot_roundtrip(self):
+        b = GlobalRunBudget(1)
+        b.reserve("a", ".4", worker_id="w")
+        _, token = b.start_paid("a")
+        b.settle("a", ".3", authority_token=token)
+        c = self.restored(b)
+        self.assertEqual(c.cap, b.cap)
+        self.assertEqual(c.committed, b.committed)
+        self.assertEqual(c.get("a").as_dict(), b.get("a").as_dict())
+
+    def test_paid_started_terminal_forgery_is_rejected_before_refund(self):
+        for terminal, fields in (
+            (STATE_CANCELLED, {"committedUsd": "0", "measuredUsd": "0", "costKnown": True}),
+            (STATE_FAILED, {"committedUsd": "0", "measuredUsd": "0", "costKnown": True}),
+            (STATE_SETTLED, {"committedUsd": "0", "measuredUsd": "0", "costKnown": True}),
+            (STATE_UNKNOWN, {"committedUsd": ".5", "measuredUsd": None, "costKnown": False}),
+            (STATE_RELEASED, {"committedUsd": "0", "measuredUsd": None, "costKnown": True}),
+        ):
+            with self.subTest(terminal=terminal):
+                b = GlobalRunBudget(1); b.reserve("a", ".5"); b.start_paid("a")
+                wrapped = self.authenticated(b)
+                wrapped["payload"]["records"][0]["state"] = terminal
+                wrapped["payload"]["records"][0].update(fields)
+                self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=AUTH_KEY)
+
+    def test_complete_snapshot_state_is_authenticated(self):
+        b = GlobalRunBudget(3)
+        b.reserve("a", ".5", worker_id="w1")
+        _, token = b.start_paid("a")
+        b.settle("a", ".75", authority_token=token)
+        b2 = GlobalRunBudget(3); b2.reserve("x", ".25")
+        base = self.authenticated(b)
+        mutations = []
+        for field, value in (("capUsd", "30"), ("latched", False), ("latchReason", None)):
+            m = copy.deepcopy(base); m["payload"][field] = value; mutations.append(m)
+        for field, value in (
+            ("state", STATE_CANCELLED), ("reservedUsd", "0.1"), ("committedUsd", "0"),
+            ("measuredUsd", "0"), ("costKnown", False), ("workerId", "w2"),
+            ("authorityTokenSha256", "0" * 64), ("reason", "changed"),
+        ):
+            m = copy.deepcopy(base); m["payload"]["records"][0][field] = value; mutations.append(m)
+        added = copy.deepcopy(base); added["payload"]["records"].append(b2.snapshot()["records"][0]); mutations.append(added)
+        deleted = copy.deepcopy(base); deleted["payload"]["records"].clear(); mutations.append(deleted)
+        for m in mutations:
+            self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, m, authentication_key=AUTH_KEY)
+
+    def test_record_reordering_is_authenticated_not_ambiguous(self):
+        b = GlobalRunBudget(2); b.reserve("a", ".5"); b.reserve("b", ".5")
+        wrapped = self.authenticated(b)
+        wrapped["payload"]["records"].reverse()
+        self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=AUTH_KEY)
+
+    def test_authenticated_wrapper_shape_and_mac_are_strict(self):
+        b = GlobalRunBudget(1); wrapped = self.authenticated(b)
+        for mutate in (
+            lambda x: x.update(extra=True),
+            lambda x: x.update(authSchema=2),
+            lambda x: x.update(algorithm="sha256"),
+            lambda x: x.update(mac="A" * 64),
+            lambda x: x.update(mac="0" * 63),
+        ):
+            candidate = copy.deepcopy(wrapped); mutate(candidate)
+            self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, candidate, authentication_key=AUTH_KEY)
 
     def test_journal_veto_is_atomic(self):
         def journal(event):
@@ -189,26 +271,15 @@ class T(unittest.TestCase):
             b.start_paid("a")
         self.assertEqual(b.get("a").state, "RESERVED")
 
-    def test_snapshot_roundtrip(self):
-        b = GlobalRunBudget(1)
-        b.reserve("a", ".4", worker_id="w")
-        _, token = b.start_paid("a")
-        b.settle("a", ".3", authority_token=token)
-        snap = b.snapshot()
-        c = GlobalRunBudget.from_snapshot(snap)
-        self.assertEqual(c.cap, b.cap)
-        self.assertEqual(c.committed, b.committed)
-        self.assertEqual(c.get("a").as_dict(), b.get("a").as_dict())
-
-    def test_tampered_snapshot_over_cap_requires_latch(self):
+    def test_authenticated_tampered_over_cap_latch_removal_rejected(self):
         b = GlobalRunBudget(1)
         b.reserve("a", ".5")
         _, token = b.start_paid("a")
         b.settle("a", "2", authority_token=token)
-        snap = b.snapshot()
-        snap["latched"] = False
-        snap["latchReason"] = None
-        self.code("SNAPSHOT_INVALID", GlobalRunBudget.from_snapshot, snap)
+        wrapped = self.authenticated(b)
+        wrapped["payload"]["latched"] = False
+        wrapped["payload"]["latchReason"] = None
+        self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=AUTH_KEY)
 
     def test_concurrent_reserve_never_exceeds_cap(self):
         b = GlobalRunBudget(1)
@@ -274,13 +345,14 @@ class T(unittest.TestCase):
         b.reserve("a", "1")
         _, token = b.start_paid("a")
         b.settle("a", "2", authority_token=token)
-        snap = b.snapshot(); snap["latched"] = False; snap["latchReason"] = None
-        self.code("SNAPSHOT_INVALID", GlobalRunBudget.from_snapshot, snap)
+        wrapped = self.authenticated(b)
+        wrapped["payload"]["latched"] = False; wrapped["payload"]["latchReason"] = None
+        self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=AUTH_KEY)
 
     def test_snapshot_released_record_cannot_claim_spend(self):
         b = GlobalRunBudget(10); b.reserve("a", "1"); b.release("a")
-        snap=b.snapshot(); snap["records"][0]["committedUsd"]="0.5"
-        self.code("SNAPSHOT_INVALID", GlobalRunBudget.from_snapshot, snap)
+        wrapped=self.authenticated(b); wrapped["payload"]["records"][0]["committedUsd"]="0.5"
+        self.code("SNAPSHOT_AUTH_INVALID", GlobalRunBudget.from_snapshot, wrapped, authentication_key=AUTH_KEY)
 
     def test_journal_sees_latch_reason_before_overrun_mutation(self):
         events=[]

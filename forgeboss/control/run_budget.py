@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import secrets
 import threading
@@ -11,6 +12,9 @@ from typing import Callable
 
 MAX_IDENTIFIER_BYTES = 256
 ZERO = Decimal(0)
+SNAPSHOT_AUTH_SCHEMA = 1
+SNAPSHOT_AUTH_ALGORITHM = "hmac-sha256"
+MIN_SNAPSHOT_AUTH_KEY_BYTES = 32
 
 STATE_RESERVED = "RESERVED"
 STATE_PAID_STARTED = "PAID_STARTED"
@@ -63,6 +67,34 @@ def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _snapshot_auth_key(value) -> bytes:
+    if not isinstance(value, bytes) or len(value) < MIN_SNAPSHOT_AUTH_KEY_BYTES:
+        raise RunBudgetError(
+            "SNAPSHOT_AUTHORITY_INVALID",
+            f"snapshot authentication key must be external bytes >= {MIN_SNAPSHOT_AUTH_KEY_BYTES}",
+        )
+    return value
+
+
+def _canonical_snapshot_bytes(snapshot) -> bytes:
+    try:
+        return json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as ex:
+        raise RunBudgetError("SNAPSHOT_INVALID", "snapshot is not canonical JSON data") from ex
+
+
+def _snapshot_mac(snapshot, authentication_key) -> tuple[bytes, str]:
+    key = _snapshot_auth_key(authentication_key)
+    canonical = _canonical_snapshot_bytes(snapshot)
+    return canonical, hmac.new(key, canonical, hashlib.sha256).hexdigest()
+
+
 @dataclass(frozen=True)
 class Reservation:
     reservation_id: str
@@ -101,6 +133,10 @@ class GlobalRunBudget:
     terminal path records cost (or conservatively records the reservation when
     cost is unknown). New paid work is latched off after an overrun/unknown
     authority condition, but already-started work may still be truthfully settled.
+
+    ``snapshot()`` is diagnostic data only. Protected restoration requires an
+    externally authenticated snapshot wrapper produced with a caller-held key;
+    the mutable snapshot never authenticates its own transition history.
     """
 
     def __init__(self, cap_usd, *, journal: Callable[[dict], None] | None = None):
@@ -238,18 +274,64 @@ class GlobalRunBudget:
                 "records": [r.as_dict() for r in self._records.values()],
             }
 
+    def authenticated_snapshot(self, authentication_key) -> dict:
+        """Return a complete snapshot authenticated by caller-held authority.
+
+        The key is deliberately not persisted in the payload. The HMAC binds the
+        exact canonical snapshot bytes, including list order and every record
+        field. ``from_snapshot`` re-parses those verified bytes so a concurrent
+        mutation of the caller's mapping cannot race verification and restore.
+        """
+        with self._lock:
+            payload = self.snapshot()
+            _, mac = _snapshot_mac(payload, authentication_key)
+            return {
+                "authSchema": SNAPSHOT_AUTH_SCHEMA,
+                "algorithm": SNAPSHOT_AUTH_ALGORITHM,
+                "payload": payload,
+                "mac": mac,
+            }
+
     @classmethod
-    def from_snapshot(cls, snapshot: dict, *, journal=None) -> "GlobalRunBudget":
-        if not isinstance(snapshot, dict) or snapshot.get("schema") != 1:
+    def from_snapshot(cls, snapshot: dict, *, authentication_key=None, journal=None) -> "GlobalRunBudget":
+        """Restore only from externally authenticated snapshot bytes."""
+        if authentication_key is None:
+            raise RunBudgetError("SNAPSHOT_AUTH_REQUIRED", "protected restore requires external snapshot authority")
+        key = _snapshot_auth_key(authentication_key)
+        if not isinstance(snapshot, dict) or set(snapshot) != {"authSchema", "algorithm", "payload", "mac"}:
+            raise RunBudgetError("SNAPSHOT_AUTH_INVALID", "authenticated snapshot wrapper is invalid")
+        if snapshot.get("authSchema") != SNAPSHOT_AUTH_SCHEMA or snapshot.get("algorithm") != SNAPSHOT_AUTH_ALGORITHM:
+            raise RunBudgetError("SNAPSHOT_AUTH_INVALID", "authenticated snapshot scheme is unsupported")
+        mac = snapshot.get("mac")
+        if not isinstance(mac, str) or len(mac) != 64 or any(ch not in "0123456789abcdef" for ch in mac):
+            raise RunBudgetError("SNAPSHOT_AUTH_INVALID", "snapshot authentication tag is invalid")
+        canonical = _canonical_snapshot_bytes(snapshot.get("payload"))
+        expected = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, mac):
+            raise RunBudgetError("SNAPSHOT_AUTH_INVALID", "snapshot authentication failed")
+        try:
+            verified_payload = json.loads(canonical.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as ex:
+            raise RunBudgetError("SNAPSHOT_INVALID", "verified snapshot cannot be parsed") from ex
+        return cls._restore_verified_snapshot(verified_payload, journal=journal)
+
+    @classmethod
+    def _restore_verified_snapshot(cls, snapshot: dict, *, journal=None) -> "GlobalRunBudget":
+        if not isinstance(snapshot, dict) or set(snapshot) != {"schema", "capUsd", "latched", "latchReason", "records"} or snapshot.get("schema") != 1:
             raise RunBudgetError("SNAPSHOT_INVALID", "unsupported snapshot")
+        if type(snapshot.get("latched")) is not bool:
+            raise RunBudgetError("SNAPSHOT_INVALID", "latched must be boolean")
         obj = cls(snapshot.get("capUsd"), journal=journal)
         records = snapshot.get("records")
         if not isinstance(records, list):
             raise RunBudgetError("SNAPSHOT_INVALID", "records must be a list")
         seen = set()
         for item in records:
-            if not isinstance(item, dict):
-                raise RunBudgetError("SNAPSHOT_INVALID", "record must be an object")
+            if not isinstance(item, dict) or set(item) != {
+                "reservationId", "workerId", "state", "reservedUsd", "committedUsd",
+                "measuredUsd", "costKnown", "authorityTokenSha256", "reason",
+            }:
+                raise RunBudgetError("SNAPSHOT_INVALID", "record shape is invalid")
             rid = _identifier(item.get("reservationId"), "reservationId")
             if rid in seen:
                 raise RunBudgetError("SNAPSHOT_INVALID", "duplicate reservation")
@@ -265,17 +347,28 @@ class GlobalRunBudget:
                 raise RunBudgetError("SNAPSHOT_INVALID", "open reservation cannot be committed")
             if state == STATE_PAID_STARTED and not item.get("authorityTokenSha256"):
                 raise RunBudgetError("SNAPSHOT_INVALID", "paid-started record missing authority digest")
-            cost_known = bool(item.get("costKnown", True))
+            if type(item.get("costKnown")) is not bool:
+                raise RunBudgetError("SNAPSHOT_INVALID", "costKnown must be boolean")
+            cost_known = item["costKnown"]
             token_digest = item.get("authorityTokenSha256")
-            if token_digest is not None and (not isinstance(token_digest, str) or len(token_digest) != 64):
+            if token_digest is not None and (
+                not isinstance(token_digest, str)
+                or len(token_digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in token_digest)
+            ):
                 raise RunBudgetError("SNAPSHOT_INVALID", "invalid authority token digest")
+            reason = item.get("reason")
+            if reason is not None and (not isinstance(reason, str) or not reason or reason != reason.strip()):
+                raise RunBudgetError("SNAPSHOT_INVALID", "invalid reason")
             if state == STATE_RELEASED and (committed != ZERO or measured is not None):
                 raise RunBudgetError("SNAPSHOT_INVALID", "released record cannot contain spend")
             if state in {STATE_SETTLED, STATE_FAILED, STATE_CANCELLED} and cost_known and measured is None:
                 raise RunBudgetError("SNAPSHOT_INVALID", "known-cost terminal missing measured cost")
             if state == STATE_UNKNOWN and (cost_known or measured is not None or committed != reserved):
                 raise RunBudgetError("SNAPSHOT_INVALID", "unknown-cost terminal is inconsistent")
-            if not cost_known and state != STATE_UNKNOWN and not (state in {STATE_FAILED, STATE_CANCELLED} and measured is None and committed == reserved):
+            if not cost_known and state != STATE_UNKNOWN and not (
+                state in {STATE_FAILED, STATE_CANCELLED} and measured is None and committed == reserved
+            ):
                 raise RunBudgetError("SNAPSHOT_INVALID", "unknown cost state is inconsistent")
             rec = Reservation(
                 rid,
@@ -286,16 +379,18 @@ class GlobalRunBudget:
                 measured,
                 cost_known,
                 token_digest,
-                item.get("reason"),
+                reason,
             )
             obj._records[rid] = rec
         individual_overrun = any(r.measured is not None and r.measured > r.reserved for r in obj._records.values())
-        if (obj.committed + obj.outstanding > obj.cap or individual_overrun) and not snapshot.get("latched"):
+        if (obj.committed + obj.outstanding > obj.cap or individual_overrun) and not snapshot["latched"]:
             raise RunBudgetError("SNAPSHOT_INVALID", "unlatched snapshot contains exceeded authority")
-        obj._latched = bool(snapshot.get("latched"))
+        obj._latched = snapshot["latched"]
         obj._latch_reason = snapshot.get("latchReason")
         if obj._latched and (not isinstance(obj._latch_reason, str) or not obj._latch_reason):
             raise RunBudgetError("SNAPSHOT_INVALID", "latched snapshot missing reason")
+        if not obj._latched and obj._latch_reason is not None:
+            raise RunBudgetError("SNAPSHOT_INVALID", "unlatched snapshot cannot carry latch reason")
         return obj
 
     def _require(self, rid: str) -> Reservation:
