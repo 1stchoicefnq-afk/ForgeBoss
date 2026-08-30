@@ -26,9 +26,12 @@ def _assert_linux_endpoint_dir(path:Path,*,service_uid:int,allowed_gid:int)->Pat
         cur=cur.parent
     return r
 class LinuxAuthorityDaemon:
-    def __init__(self,*,service,boundary,protected_root:Path,endpoint_dir:Path,allowed_gid:int):
+    def __init__(self,*,service,boundary,protected_root:Path,endpoint_dir:Path,allowed_gid:int,max_workers:int=4,preauth_timeout:float=1.0,accept_poll:float=0.1):
         if os.name=='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
-        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.service_uid=int(boundary.expected[4:]);self.endpoint_dir=_assert_linux_endpoint_dir(endpoint_dir,service_uid=self.service_uid,allowed_gid=int(allowed_gid));self.allowed_gid=int(allowed_gid);self.path=self.endpoint_dir/FIXED_SOCKET_NAME;self.listener=None;self._stop=False
+        if not isinstance(max_workers,int) or not 2<=max_workers<=16:raise AuthorityError('IPC_CONCURRENCY_INVALID')
+        if not isinstance(preauth_timeout,(int,float)) or not 0.05<=float(preauth_timeout)<=30.0:raise AuthorityError('IPC_TIMEOUT_INVALID')
+        if not isinstance(accept_poll,(int,float)) or not 0.01<=float(accept_poll)<=1.0:raise AuthorityError('IPC_TIMEOUT_INVALID')
+        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.service_uid=int(boundary.expected[4:]);self.endpoint_dir=_assert_linux_endpoint_dir(endpoint_dir,service_uid=self.service_uid,allowed_gid=int(allowed_gid));self.allowed_gid=int(allowed_gid);self.path=self.endpoint_dir/FIXED_SOCKET_NAME;self.listener=None;self.max_workers=max_workers;self.preauth_timeout=float(preauth_timeout);self.accept_poll=float(accept_poll);self._stop=threading.Event();self._active=set();self._active_lock=threading.Lock();self._workers=[]
     def start(self):
         if self.listener is not None:raise AuthorityError('SERVICE_ALREADY_STARTED')
         if self.path.exists() or self.path.is_symlink():raise AuthorityError('IPC_ENDPOINT_EXISTS')
@@ -36,25 +39,56 @@ class LinuxAuthorityDaemon:
         try:
             s.bind(str(self.path));os.chown(self.path,self.service_uid,self.allowed_gid);os.chmod(self.path,0o660);st=self.path.stat()
             if st.st_uid!=self.service_uid or st.st_gid!=self.allowed_gid or stat.S_IMODE(st.st_mode)!=0o660 or not stat.S_ISSOCK(st.st_mode):raise AuthorityError('IPC_ENDPOINT_PERMISSIONS')
-            s.listen(16);self.listener=s;return self.path
+            s.listen(max(16,self.max_workers*2));s.settimeout(self.accept_poll);self.listener=s;self._stop.clear();return self.path
         except Exception:
             s.close()
             try:self.path.unlink()
             except OSError:pass
             raise
+    def _track(self,conn,add):
+        with self._active_lock:
+            if add:self._active.add(conn)
+            else:self._active.discard(conn)
     def serve_once(self):
         if self.listener is None:raise AuthorityError('SERVICE_NOT_STARTED')
-        return serve_unix_once(self.listener,self.service)
+        return serve_unix_once(self.listener,self.service,accept_timeout=self.accept_poll,preauth_timeout=self.preauth_timeout,stop_event=self._stop,on_connection=self._track)
+    def _worker_loop(self):
+        while not self._stop.is_set():
+            try:self.serve_once()
+            except AuthorityError as e:
+                if self._stop.is_set() or e.code=='IPC_STOPPED':break
+                if e.code in {'IPC_ACCEPT_TIMEOUT','IPC_PREAUTH_TIMEOUT','IPC_CLIENT_DISCONNECTED','REQUEST_SIZE_INVALID','IPC_READ_FAILED','PEER_CONTEXT_UNAVAILABLE'}:continue
+            except Exception:
+                if self._stop.is_set():break
     def run_forever(self):
-        self.start()
+        self.start();self._workers=[]
         try:
-            while not self._stop:self.serve_once()
+            for _ in range(self.max_workers):
+                t=threading.Thread(target=self._worker_loop,daemon=True);self._workers.append(t);t.start()
+            while not self._stop.wait(self.accept_poll):
+                if any(not t.is_alive() for t in self._workers) and not self._stop.is_set():raise AuthorityError('IPC_WORKER_STUCK')
         finally:self.close()
-    def stop(self):self._stop=True;self.close()
+    def stop(self):self.close()
     def close(self):
-        if self.listener is not None:self.listener.close();self.listener=None
+        self._stop.set();listener=self.listener;self.listener=None
+        if listener is not None:
+            try:listener.close()
+            except OSError:pass
+        with self._active_lock:active=list(self._active)
+        for conn in active:
+            try:conn.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
+            try:conn.close()
+            except OSError:pass
+        current=threading.current_thread()
+        for t in list(self._workers):
+            if t is not current:t.join(self.preauth_timeout+self.accept_poll+0.5)
+        self._workers=[]
+        with self._active_lock:self._active.clear()
         try:self.path.unlink()
         except FileNotFoundError:pass
+        except OSError:
+            if not self._stop.is_set():raise
 
 def _windows_sddl(allowed_peer_sids:set[str])->str:
     sids=[]
@@ -125,7 +159,7 @@ class WindowsNamedPipeServer:
             if read.value:chunks.append(buf.raw[:read.value]);total+=read.value
             if total>MAX_REQUEST_BYTES:raise AuthorityError('REQUEST_SIZE_INVALID')
             if ok:
-                if not total: self._check_wait(deadline);continue
+                if not total:self._check_wait(deadline);continue
                 return b''.join(chunks)
             if err==_ERROR_MORE_DATA:continue
             if err in (_ERROR_NO_DATA,_ERROR_PIPE_LISTENING):self._check_wait(deadline);continue
