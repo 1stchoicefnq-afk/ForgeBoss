@@ -398,9 +398,10 @@ def _current_content_oid(path: Path, git: Path, expected_len: int) -> str:
 
 
 def reconcile_quarantined_workspace(workspace, workspace_root, generation_id, git_executable, *, protected_state: ProtectedWorkspaceState | None = None) -> dict:
-    state = _require_state(protected_state); git = _git_executable(git_executable); root, target = _candidate_under_root(workspace, workspace_root); record = _read_record(state, root, target)
+    state = _require_state(protected_state); root, target = _candidate_under_root(workspace, workspace_root); record = _read_record(state, root, target)
     if record is None: raise WorkspaceProvisionError("WORKSPACE_QUARANTINE_NOT_FOUND", "no protected record")
     if record["generation"] != generation_id: raise WorkspaceProvisionError("WORKSPACE_GENERATION_MISMATCH", "generation mismatch", generation_id=record["generation"])
+    git = _git_executable(git_executable)
     stage = Path(record["stage"]); existing = target if (target.exists() or target.is_symlink() or _is_reparse(target)) else stage
     if existing.exists() or existing.is_symlink() or _is_reparse(existing):
         _assert_no_link_components(existing, "WORKSPACE_CLEANUP_DENIED"); _assert_plain_existing_path(existing, "WORKSPACE_CLEANUP_DENIED")
