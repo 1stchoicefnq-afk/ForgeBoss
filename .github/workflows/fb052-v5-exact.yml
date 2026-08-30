@@ -37,17 +37,19 @@ jobs:
           $a=(git rev-parse '7811824fd2c5629cf72bfba8a0df7108b53b54a8^{tree}:forgeboss').Trim()
           $b=(git rev-parse 'HEAD^{tree}:forgeboss').Trim()
           if ($a -ne $b) { throw 'forgeboss tree mismatch' }
-      - name: Verify local tested byte hashes
+      - name: Verify exact Git blob hashes against local tested bytes
         shell: python
         run: |
-          import hashlib,pathlib
+          import hashlib,subprocess
+          candidate='7811824fd2c5629cf72bfba8a0df7108b53b54a8'
           expected={
             'forgeboss/control/process_supervisor.py':'f42b29c67cc1357edb0d0fdf2b49d53a1e5ddef0481c9458c135303ae1bbb2ec',
             'forgeboss/control/process_supervisor_windows.py':'fdf6d0ee5c7b637f5cb33a4cf0a9de1a2c114a428104e1921f3d10983eb056b0',
             'forgeboss/control/test_process_supervisor.py':'a78941fdd924544fd15379638e52451203bfa2264345cd5bcf4f6fd341e1a3a5',
           }
           for p,want in expected.items():
-              got=hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+              raw=subprocess.check_output(['git','show',f'{candidate}:{p}'])
+              got=hashlib.sha256(raw).hexdigest()
               assert got==want,(p,got,want)
       - name: Compile V5
         run: python -m py_compile forgeboss/control/process_supervisor.py forgeboss/control/process_supervisor_windows.py forgeboss/control/test_process_supervisor.py
