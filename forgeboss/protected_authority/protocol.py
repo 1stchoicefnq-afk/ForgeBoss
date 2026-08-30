@@ -93,7 +93,11 @@ def unsigned_request(raw):
     if canonical_digest(u)!=dig:raise AuthorityError('REQUEST_DIGEST_MISMATCH')
     return {**u,'requestDigest':dig,'signature':sig}
 def build_request(*,operation,request_id,peer_id,repository,control_revision,payload,signature):
-    u={'schema':SCHEMA,'operation':operation,'requestId':request_id,'peerId':peer_id,'repository':repository,'controlRevision':control_revision,'payload':dict(payload)};return unsigned_request({**u,'requestDigest':canonical_digest(u),'signature':signature})
+    # Canonicalize fields that unsigned_request canonicalizes before computing
+    # the digest, otherwise mixed-case repository names produce a self-invalid
+    # request even though the repository syntax itself is valid.
+    repo=_text(repository,'REPOSITORY_INVALID',201,_REPO,True);rid=_rid(request_id);op=_text(operation,'OPERATION_INVALID',64);peer=_text(peer_id,'PEER_ID_INVALID',128,_PEER);rev=_int(control_revision,'CONTROL_REVISION_INVALID');normalized_payload=_payload(op,dict(payload))
+    u={'schema':SCHEMA,'operation':op,'requestId':rid,'peerId':peer,'repository':repo,'controlRevision':rev,'payload':normalized_payload};return unsigned_request({**u,'requestDigest':canonical_digest(u),'signature':signature})
 def assert_public_result(value,private_values=()):
     clean=_jsonable(value);texts=[]
     for item in private_values:
