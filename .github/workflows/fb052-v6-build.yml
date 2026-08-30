@@ -24,8 +24,8 @@ jobs:
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch.py "$RUNNER_TEMP/fb052_v6_patch.py"
-          python -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); bs=chr(92)+"n"; s=s.replace("unittest.main()"+bs+chr(34),"unittest.main()"+chr(34)).replace("unittest.main()"+bs+chr(39),"unittest.main()"+chr(39)); p.write_text(s)' "$RUNNER_TEMP/fb052_v6_patch.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python -c "from pathlib import Path; p=Path('forgeboss/control/test_process_supervisor.py'); s=p.read_text(); p.write_text(s if s.endswith(chr(10)) else s+chr(10))"
           python "$RUNNER_TEMP/fb052_v6_patch.py"
           test "$(git diff --name-only | sort | tr '\n' ' ')" = "forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py "
       - name: Preserve patch and checkout exact V5 Windows
@@ -33,10 +33,10 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           Copy-Item tmp/fb052_v6_patch.py "$env:RUNNER_TEMP\fb052_v6_patch.py"
-          python -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); bs=chr(92)+"n"; s=s.replace("unittest.main()"+bs+chr(34),"unittest.main()"+chr(34)).replace("unittest.main()"+bs+chr(39),"unittest.main()"+chr(39)); p.write_text(s)' "$env:RUNNER_TEMP\fb052_v6_patch.py"
-          if ($LASTEXITCODE -ne 0) { throw 'patch-normalization failed' }
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
           if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+          python -c "from pathlib import Path; p=Path('forgeboss/control/test_process_supervisor.py'); s=p.read_text(); p.write_text(s if s.endswith(chr(10)) else s+chr(10))"
+          if ($LASTEXITCODE -ne 0) { throw 'newline normalization failed' }
           python "$env:RUNNER_TEMP\fb052_v6_patch.py"
           if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
           $files = @(git diff --name-only | Sort-Object)
@@ -62,13 +62,14 @@ jobs:
         run: |
           set -euo pipefail
           cp tmp/fb052_v6_patch.py "$RUNNER_TEMP/fb052_v6_patch.py"
-          python -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); bs=chr(92)+"n"; s=s.replace("unittest.main()"+bs+chr(34),"unittest.main()"+chr(34)).replace("unittest.main()"+bs+chr(39),"unittest.main()"+chr(39)); p.write_text(s)' "$RUNNER_TEMP/fb052_v6_patch.py"
           git checkout --detach d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python -c "from pathlib import Path; p=Path('forgeboss/control/test_process_supervisor.py'); s=p.read_text(); p.write_text(s if s.endswith(chr(10)) else s+chr(10))"
           python "$RUNNER_TEMP/fb052_v6_patch.py"
           python -m unittest forgeboss.control.test_process_supervisor -v
           git config user.name 'Worker C FB-052 V6'
           git config user.email 'worker-c@users.noreply.github.com'
           git checkout -B forgeboss/worker-c-fb052-supervisor-v6 d1f9bc1281ec0398ba5e345e65a443ad9bd6e8c3
+          python -c "from pathlib import Path; p=Path('forgeboss/control/test_process_supervisor.py'); s=p.read_text(); p.write_text(s if s.endswith(chr(10)) else s+chr(10))"
           python "$RUNNER_TEMP/fb052_v6_patch.py"
           git add forgeboss/control/process_supervisor.py forgeboss/control/test_process_supervisor.py
           git diff --cached --quiet && { echo 'no candidate diff'; exit 1; }
