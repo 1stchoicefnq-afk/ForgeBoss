@@ -17,6 +17,10 @@ from typing import Mapping, Sequence
 
 MAX_TIMEOUT_SECONDS = 3600.0
 DEFAULT_POLL_SECONDS = 0.05
+LINUX_QUERY_TIMEOUT_SECONDS = 0.25
+LINUX_MAX_DESCENDANTS = 4096
+LINUX_PROC_RECORD_MAX_BYTES = 64 * 1024
+LINUX_STOP_ESCALATION_SECONDS = 1.0
 
 STATE_RUNNING = "RUNNING"
 STATE_STOPPING = "STOPPING"
@@ -173,6 +177,7 @@ class _PosixKeeperContainment(_Containment):
     def __init__(self, argv: tuple[str, ...], cwd: str | None, env: dict[str, str]):
         if not _linux_subreaper_available():
             raise SupervisorError("CONTAINMENT_UNAVAILABLE", "Linux subreaper containment is unavailable")
+        self._stop_requested = False
         spec = json.dumps({"argv": list(argv), "cwd": cwd, "env": env}, separators=(",", ":"))
         keeper_env = {"PYTHONIOENCODING": "utf-8"}
         self._proc = subprocess.Popen(
@@ -234,31 +239,36 @@ class _PosixKeeperContainment(_Containment):
         timeout = _timeout(timeout, "containment query timeout")
         try:
             self._proc.wait(timeout=timeout)
-            return True
         except subprocess.TimeoutExpired:
             return False
+        rc = int(self._proc.returncode)
+        # During explicit stop, only the keeper's verified-empty terminal code
+        # proves that the owned containment is empty. Keeper death/crash is not
+        # descendant-absence evidence.
+        if self._stop_requested:
+            return rc == 75
+        # Natural keeper termination is not reassignment authority (refresh
+        # maps it to QUARANTINED/FAILED), but the keeper itself completed.
+        return True
 
     def terminate(self, timeout: float) -> bool:
         timeout = _timeout(timeout, "termination timeout")
-        if self._proc.poll() is not None:
-            return True
+        self._stop_requested = True
+        rc = self._proc.poll()
+        if rc is not None:
+            return int(rc) == 75
         try:
             os.kill(self._proc.pid, signal.SIGTERM)
         except ProcessLookupError:
-            return True
+            rc = self._proc.poll()
+            return rc is not None and int(rc) == 75
         try:
             self._proc.wait(timeout=timeout)
-            return True
         except subprocess.TimeoutExpired:
-            try:
-                os.kill(self._proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return True
-            try:
-                self._proc.wait(timeout=min(timeout, 5.0))
-                return True
-            except subprocess.TimeoutExpired:
-                return False
+            # Do not destroy the subreaper authority. The keeper continues its
+            # own bounded TERM/KILL/reap loop; this stop attempt fails closed.
+            return False
+        return int(self._proc.returncode) == 75
 
     def _kill_keeper(self):
         try:
@@ -632,26 +642,139 @@ class ProcessSupervisor:
                 pass
 
 
-def _descendants_linux(root_pid: int) -> set[int]:
-    parent: dict[int, int] = {}
-    for item in Path("/proc").iterdir():
-        if not item.name.isdigit():
-            continue
-        try:
-            raw = (item / "stat").read_text(encoding="utf-8")
-            tail = raw[raw.rfind(")") + 2:].split()
-            parent[int(item.name)] = int(tail[1])
-        except Exception:
-            continue
-    out: set[int] = set()
-    frontier = [root_pid]
+class _ProcQueryError(RuntimeError):
+    """The keeper could not positively prove its owned Linux process set."""
+
+
+def _proc_query_check(deadline: float, clock) -> None:
+    if clock() > deadline:
+        raise _ProcQueryError("owned process query deadline exceeded")
+
+
+def _proc_pid_exists_linux(pid: int, proc_root: Path) -> bool:
+    try:
+        os.stat(proc_root / str(pid))
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as ex:
+        raise _ProcQueryError(f"cannot establish /proc existence for pid {pid}") from ex
+
+
+def _read_proc_record_linux(pid: int, relative: str, *, proc_root: Path, deadline: float, clock) -> str | None:
+    _proc_query_check(deadline, clock)
+    path = proc_root / str(pid) / relative
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as handle:
+            raw = handle.read(LINUX_PROC_RECORD_MAX_BYTES + 1)
+    except FileNotFoundError:
+        if not _proc_pid_exists_linux(pid, proc_root):
+            return None
+        raise _ProcQueryError(f"owned pid {pid} exists but {relative} is unavailable")
+    except (OSError, UnicodeError) as ex:
+        if not _proc_pid_exists_linux(pid, proc_root):
+            return None
+        raise _ProcQueryError(f"owned pid {pid} has unreadable {relative}") from ex
+    if len(raw.encode("utf-8", "strict")) > LINUX_PROC_RECORD_MAX_BYTES:
+        raise _ProcQueryError(f"owned pid {pid} {relative} exceeds record ceiling")
+    _proc_query_check(deadline, clock)
+    return raw
+
+
+def _read_linux_identity(pid: int, *, proc_root: Path, deadline: float, clock) -> tuple[int, int] | None:
+    raw = _read_proc_record_linux(pid, "stat", proc_root=proc_root, deadline=deadline, clock=clock)
+    if raw is None:
+        return None
+    close = raw.rfind(")")
+    if close < 0:
+        raise _ProcQueryError(f"owned pid {pid} has malformed stat record")
+    tail = raw[close + 1:].split()
+    if len(tail) < 20:
+        raise _ProcQueryError(f"owned pid {pid} has truncated stat record")
+    try:
+        ppid = int(tail[1])
+        starttime = int(tail[19])
+    except ValueError as ex:
+        raise _ProcQueryError(f"owned pid {pid} has malformed process identity") from ex
+    if ppid < 0 or starttime <= 0:
+        raise _ProcQueryError(f"owned pid {pid} has invalid process identity")
+    return ppid, starttime
+
+
+def _read_linux_ppid(pid: int, *, proc_root: Path, deadline: float, clock) -> int | None:
+    identity = _read_linux_identity(pid, proc_root=proc_root, deadline=deadline, clock=clock)
+    return None if identity is None else identity[0]
+
+
+def _read_linux_children(pid: int, *, proc_root: Path, deadline: float, clock) -> tuple[int, ...] | None:
+    raw = _read_proc_record_linux(pid, f"task/{pid}/children", proc_root=proc_root, deadline=deadline, clock=clock)
+    if raw is None:
+        return None
+    if not raw.strip():
+        return ()
+    out: list[int] = []
+    seen: set[int] = set()
+    for token in raw.split():
+        if not token.isdigit():
+            raise _ProcQueryError(f"owned pid {pid} has malformed children record")
+        child = int(token)
+        if child <= 1 or child > 2 ** 31 - 1 or child in seen:
+            raise _ProcQueryError(f"owned pid {pid} has invalid children record")
+        seen.add(child)
+        out.append(child)
+    return tuple(out)
+
+
+def _owned_descendants_linux(keeper_pid: int, root_pid: int, *, proc_root: Path = Path("/proc"),
+                             timeout: float = LINUX_QUERY_TIMEOUT_SECONDS,
+                             max_records: int = LINUX_MAX_DESCENDANTS,
+                             root_known_exited: bool = False, clock=time.monotonic) -> set[int]:
+    """Return the keeper-owned set without scanning the global process table."""
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+        raise _ProcQueryError("owned process query timeout is invalid")
+    if isinstance(max_records, bool) or not isinstance(max_records, int) or max_records <= 0:
+        raise _ProcQueryError("owned process record ceiling is invalid")
+    proc_root = Path(proc_root)
+    deadline = clock() + float(timeout)
+    keeper_pid = int(keeper_pid)
+    root_pid = int(root_pid)
+    owned: set[int] = set()
+    frontier: list[int] = [keeper_pid]
+    scanned: set[int] = set()
+    records = 0
     while frontier:
-        pid = frontier.pop()
-        for child, ppid in tuple(parent.items()):
-            if ppid == pid and child not in out:
-                out.add(child)
-                frontier.append(child)
-    return out
+        _proc_query_check(deadline, clock)
+        parent = frontier.pop(0)
+        if parent in scanned:
+            continue
+        scanned.add(parent)
+        children = _read_linux_children(parent, proc_root=proc_root, deadline=deadline, clock=clock)
+        if children is None:
+            if parent == keeper_pid:
+                raise _ProcQueryError("keeper proc identity disappeared during query")
+            continue
+        for child in children:
+            _proc_query_check(deadline, clock)
+            if child == keeper_pid:
+                raise _ProcQueryError("keeper appears in its own child set")
+            if child in owned:
+                continue
+            records += 1
+            if records > max_records:
+                raise _ProcQueryError("owned process record ceiling exceeded")
+            ppid = _read_linux_ppid(child, proc_root=proc_root, deadline=deadline, clock=clock)
+            if ppid is None:
+                continue
+            # A descendant may be reparented to the keeper while the walk is in
+            # progress. Any transition to an unrelated parent is ambiguous.
+            if ppid not in ({keeper_pid, parent} | owned):
+                raise _ProcQueryError(f"owned pid {child} changed to unowned parent {ppid}")
+            owned.add(child)
+            frontier.append(child)
+    if not root_known_exited and root_pid not in owned and _proc_pid_exists_linux(root_pid, proc_root):
+        raise _ProcQueryError("worker root exists but is absent from keeper-owned child authority")
+    _proc_query_check(deadline, clock)
+    return owned
 
 
 def _keeper_main() -> int:
@@ -669,14 +792,9 @@ def _keeper_main() -> int:
             raise ValueError("missing keeper launch spec")
         spec = json.loads(line)
         proc = subprocess.Popen(
-            spec["argv"],
-            cwd=spec.get("cwd"),
-            env=spec.get("env"),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+            spec["argv"], cwd=spec.get("cwd"), env=spec.get("env"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
         )
     except Exception as ex:
         print(json.dumps({"ok": False, "error": str(ex)}), flush=True)
@@ -692,33 +810,50 @@ def _keeper_main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     root_rc: int | None = None
     stop_started: float | None = None
+    keeper_pid = os.getpid()
+    term_sent: dict[int, int] = {}
     while True:
         if root_rc is None:
             root_rc = proc.poll()
-        descendants = _descendants_linux(os.getpid())
-        descendants.discard(proc.pid)
+        try:
+            owned = _owned_descendants_linux(keeper_pid, proc.pid, root_known_exited=(root_rc is not None))
+        except _ProcQueryError:
+            # Never relinquish subreaper containment merely because authority
+            # cannot be proved. A stop caller will time out/fail closed while
+            # the keeper remains alive and retries bounded queries.
+            time.sleep(0.02)
+            continue
         if stopping:
             if stop_started is None:
                 stop_started = time.monotonic()
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            for pid in descendants:
+            sig = signal.SIGKILL if time.monotonic() - stop_started >= LINUX_STOP_ESCALATION_SECONDS else signal.SIGTERM
+            signal_ambiguous = False
+            for pid in sorted(owned, reverse=True):
                 try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            if time.monotonic() - stop_started > 1.0:
+                    ident = _read_linux_identity(pid, proc_root=Path("/proc"), deadline=time.monotonic() + LINUX_QUERY_TIMEOUT_SECONDS, clock=time.monotonic)
+                except _ProcQueryError:
+                    signal_ambiguous = True
+                    break
+                if ident is None:
+                    continue
+                starttime = ident[1]
+                if sig == signal.SIGTERM and term_sent.get(pid) == starttime:
+                    continue
+                if sig == signal.SIGTERM and pid not in term_sent and len(term_sent) >= LINUX_MAX_DESCENDANTS:
+                    signal_ambiguous = True
+                    break
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    os.kill(pid, sig)
                 except ProcessLookupError:
-                    pass
-                for pid in descendants:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    continue
+                except OSError:
+                    signal_ambiguous = True
+                    break
+                if sig == signal.SIGTERM:
+                    term_sent[pid] = starttime
+            if signal_ambiguous:
+                time.sleep(0.02)
+                continue
         while True:
             try:
                 waited, status = os.waitpid(-1, os.WNOHANG)
@@ -728,8 +863,14 @@ def _keeper_main() -> int:
                 break
             if waited == proc.pid and root_rc is None:
                 root_rc = os.waitstatus_to_exitcode(status)
-        descendants = _descendants_linux(os.getpid())
-        if root_rc is not None and not descendants:
+        if root_rc is None:
+            root_rc = proc.poll()
+        try:
+            owned = _owned_descendants_linux(keeper_pid, proc.pid, root_known_exited=(root_rc is not None))
+        except _ProcQueryError:
+            time.sleep(0.02)
+            continue
+        if root_rc is not None and not owned:
             if stopping:
                 return 75
             if root_rc < 0:

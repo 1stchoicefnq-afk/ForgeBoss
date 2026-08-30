@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, sys, threading, time, unittest
+import os, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -7,7 +7,7 @@ from forgeboss.control.process_supervisor import (
     ProcessSupervisor, SupervisorError,
     STATE_FAILED, STATE_IDENTITY_LOST, STATE_QUARANTINED,
     STATE_RUNNING, STATE_STOPPED, STATE_STOP_FAILED,
-    _timeout,
+    _timeout, _owned_descendants_linux, _ProcQueryError,
 )
 
 PY = str(Path(sys.executable).resolve())
@@ -221,6 +221,110 @@ class SupervisorTests(unittest.TestCase):
             self.sup=ProcessSupervisor(); self.sup.launch("w",[PY,"-c","pass"])
             with self.assertRaises(SupervisorError) as cm:self.sup.stop("w",2,timeout=.1)
             self.assertEqual(cm.exception.code,"GENERATION_STALE")
+
+
+
+    def _fake_proc_entry(self, root: Path, pid: int, ppid: int, children: str = ""):
+        base = root / str(pid)
+        task = base / "task" / str(pid)
+        task.mkdir(parents=True, exist_ok=True)
+        (base / "stat").write_text(f"{pid} (worker) S {ppid} " + "0 " * 18, encoding="utf-8")
+        (task / "children").write_text(children, encoding="utf-8")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux procfs query proof")
+    def test_owned_query_unreadable_existing_child_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._fake_proc_entry(root, 10, 1, "11")
+            self._fake_proc_entry(root, 11, 10, "")
+            stat_path = root / "11" / "stat"
+            stat_path.unlink(); stat_path.mkdir()
+            with self.assertRaises(_ProcQueryError):
+                _owned_descendants_linux(10, 11, proc_root=root)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux procfs query proof")
+    def test_owned_query_malformed_child_record_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._fake_proc_entry(root, 10, 1, "not-a-pid")
+            with self.assertRaises(_ProcQueryError):
+                _owned_descendants_linux(10, 11, proc_root=root, root_known_exited=True)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux procfs query proof")
+    def test_owned_query_deadline_and_record_ceiling_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._fake_proc_entry(root, 10, 1, "11 12")
+            self._fake_proc_entry(root, 11, 10, "")
+            self._fake_proc_entry(root, 12, 10, "")
+            ticks = [0]
+            def deadline_clock():
+                ticks[0] += 1
+                return 0.0 if ticks[0] == 1 else 1.0
+            with self.assertRaises(_ProcQueryError):
+                _owned_descendants_linux(10, 11, proc_root=root, timeout=.1, clock=deadline_clock)
+            with self.assertRaises(_ProcQueryError):
+                _owned_descendants_linux(10, 11, proc_root=root, max_records=1)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux procfs query proof")
+    def test_owned_query_disappearing_child_is_gone_only_after_proc_absence(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._fake_proc_entry(root, 10, 1, "11")
+            got = _owned_descendants_linux(10, 11, proc_root=root, root_known_exited=True)
+            self.assertEqual(got, set())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper proof")
+    def test_short_timeout_never_kills_keeper_and_false_certifies_empty(self):
+        self.sup = ProcessSupervisor()
+        with tempfile.TemporaryDirectory() as td:
+            marker = Path(td) / "child.pid"
+            code = (
+                "import os,signal,sys,time\n"
+                "marker=sys.argv[1]\n"
+                "pid=os.fork()\n"
+                "if pid==0:\n"
+                " os.setsid(); signal.signal(signal.SIGTERM,signal.SIG_IGN); open(marker,'w').write(str(os.getpid()))\n"
+                " while True: time.sleep(1)\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "while True: time.sleep(1)\n"
+            )
+            a = self.sup.launch("short-timeout", [PY, "-c", code, str(marker)])
+            deadline = time.time() + 5
+            while time.time() < deadline and not marker.exists():
+                time.sleep(.02)
+            self.assertTrue(marker.exists(), "daemon child did not start")
+            child = int(marker.read_text())
+            started = time.monotonic()
+            first = self.sup.stop("short-timeout", a.generation, timeout=.10)
+            self.assertLess(time.monotonic() - started, .75, "short stop exceeded bounded caller window")
+            if first.state == STATE_STOPPED:
+                self.assertTrue(first.containment_empty)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
+                return
+            self.assertEqual(first.state, STATE_STOP_FAILED)
+            self.assertFalse(first.containment_empty)
+            os.kill(child, 0)
+            with self.assertRaises(SupervisorError) as cm:
+                self.sup.reassign("short-timeout", a.generation, [PY, "-c", "pass"])
+            self.assertEqual(cm.exception.code, "GENERATION_NOT_STOPPED")
+            deadline = time.time() + 4
+            second = None
+            while time.time() < deadline:
+                try:
+                    candidate = self.sup.stop("short-timeout", a.generation, timeout=.5)
+                except SupervisorError:
+                    time.sleep(.1)
+                    continue
+                if candidate.state == STATE_STOPPED:
+                    second = candidate
+                    break
+                time.sleep(.1)
+            self.assertIsNotNone(second, "bounded keeper never reached verified empty after escalation")
+            self.assertTrue(second.containment_empty)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child, 0)
 
 if __name__=="__main__":
     unittest.main()
