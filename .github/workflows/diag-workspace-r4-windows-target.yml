@@ -1,0 +1,46 @@
+name: Diagnose Workspace R4 Windows target
+on:
+  push:
+    branches:
+      - forgeboss/proof-workspace-r4-840df971
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 840df971d0eef557de8b19369f902d67b876e95d
+          persist-credentials: false
+      - run: python -m pip install cryptography
+      - name: Diagnose canonical target
+        shell: pwsh
+        run: |
+          @'
+          import tempfile
+          from pathlib import Path
+          from forgeboss.control import workspace as w
+          from forgeboss.control.test_workspace_v7 import FakeBoundary, WorkspaceV7ProtectedStateTests
+          from forgeboss.control.workspace_state import ProtectedWorkspaceState
+          td=tempfile.TemporaryDirectory(); base=Path(td.name)
+          protected=base/'protected'; protected.mkdir()
+          workspaces=base/'workspaces'; workspaces.mkdir()
+          target=workspaces/'worker-a'
+          boundary=FakeBoundary(); state=ProtectedWorkspaceState(protected_root=protected,boundary=boundary)
+          t=WorkspaceV7ProtectedStateTests(methodName='test_wrong_generation_reconcile_fails_before_mutation')
+          t.td=td; t.base=base; t.protected=protected; t.workspaces=workspaces; t.target=target; t.boundary=boundary; t.state=state
+          rec=t._record(); state.write(workspaces,target,rec)
+          raw=state.read(workspaces,target)
+          root,canon=w._candidate_under_root(target,workspaces)
+          print('record_target=',repr(raw['target']))
+          print('canonical_target=',repr(str(canon)))
+          print('equal=',raw['target']==str(canon))
+          print('record_stage=',repr(raw['stage']))
+          try:
+              w._validate_record(raw,root,canon)
+              print('validate=PASS')
+          except Exception as ex:
+              print('validate=',type(ex).__name__,getattr(ex,'code',None),repr(str(ex)))
+          state.close()
+          '@ | python -
