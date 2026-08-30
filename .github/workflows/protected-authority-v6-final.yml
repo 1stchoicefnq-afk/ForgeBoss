@@ -1,0 +1,43 @@
+name: Protected Authority V6 final exact proof
+on:
+  push:
+    branches:
+      - forgeboss/controller-test-protected-authority-v6-final
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source tree
+        run: |
+          git cat-file -e 360f1e81575b3963f1c2ea384f470887a8b85786^{commit}
+          test "$(git rev-parse 360f1e81575b3963f1c2ea384f470887a8b85786^{tree})" = "$(git rev-parse HEAD^{tree})"
+      - run: python -m compileall -q forgeboss/protected_authority
+      - run: python -m unittest forgeboss.protected_authority.test_service forgeboss.protected_authority.test_v3 forgeboss.protected_authority.test_v6 -v
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check cryptography
+      - name: Verify exact candidate source tree
+        shell: pwsh
+        run: |
+          git cat-file -e '360f1e81575b3963f1c2ea384f470887a8b85786^{commit}'
+          $a=(git rev-parse '360f1e81575b3963f1c2ea384f470887a8b85786^{tree}').Trim()
+          $b=(git rev-parse 'HEAD^{tree}').Trim()
+          if ($a -ne $b) { throw "tree mismatch $a != $b" }
+      - run: python -m compileall -q forgeboss/protected_authority
+      - run: python -m unittest forgeboss.protected_authority.test_v4 forgeboss.protected_authority.test_v6 -v
