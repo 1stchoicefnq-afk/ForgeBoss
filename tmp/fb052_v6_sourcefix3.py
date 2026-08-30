@@ -70,6 +70,14 @@ new='''    _timeout, _owned_descendants_linux, _ProcQueryError, _reap_linux_chil
 )'''
 if t.count(old)!=1:raise SystemExit('test import sourcefix3 anchor mismatch')
 t=t.replace(old,new,1)
+if 'import os, sys, threading, time, unittest' in t:
+    t=t.replace('import os, sys, threading, time, unittest','import os, signal, sys, threading, time, unittest',1)
+elif 'import os,sys,tempfile,threading,time,unittest' in t:
+    t=t.replace('import os,sys,tempfile,threading,time,unittest','import os,signal,sys,tempfile,threading,time,unittest',1)
+elif 'import os, sys, tempfile, threading, time, unittest' in t:
+    t=t.replace('import os, sys, tempfile, threading, time, unittest','import os, signal, sys, tempfile, threading, time, unittest',1)
+else:
+    raise SystemExit('test import line signal anchor mismatch')
 test='''    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subreaper wait proof")
     def test_waitpid_echild_not_procfs_empty_is_final_empty_authority(self):
         pid = os.fork()
