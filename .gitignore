@@ -8,3 +8,6 @@ __pycache__/
 *.bak
 .DS_Store
 Thumbs.db
+
+# ForgeBoss GitHub write-gate runtime state
+.forgeboss-github-write-state*
