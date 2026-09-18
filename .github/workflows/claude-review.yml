@@ -1,6 +1,10 @@
 name: Claude Hostile Review
 
 on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '.github/workflows/claude-review.yml'
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -9,6 +13,37 @@ on:
     types: [submitted]
 
 jobs:
+  workflow-selftest:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact checkout and expected-head parser
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+          expected = os.environ["EXPECTED_HEAD"].lower()
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip().lower()
+          if actual != expected:
+              print(f"checkout mismatch: expected={expected} actual={actual}", file=sys.stderr)
+              raise SystemExit(11)
+          body = f"expected head: `{expected}`"
+          m = re.search(r"(?im)expected\s+head\s*:\s*`?([0-9a-f]{40})`?", body)
+          if not m or m.group(1).lower() != expected:
+              raise SystemExit("expected-head parser regression")
+          print("Claude hostile-review workflow selftest PASS")
+          PY
+
   claude-review:
     if: |
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude-review')) ||
