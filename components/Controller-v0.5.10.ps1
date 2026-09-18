@@ -1,6 +1,9 @@
 ﻿$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent $PSScriptRoot) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Config = @{
   AppId="4608230"
   InstallationId="154040429"
@@ -38,26 +41,20 @@ function New-GitHubInstallationToken {
   $jwt="$u.$(B64Url $sig)"
   $hdr=@{Authorization="Bearer $jwt";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -ContentType "application/json" -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -Body $body -CacheTtlMs 0
 }
 
 function GHHeaders($token){ @{Authorization="Bearer $token";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"} }
-function GHGet($path,$token){ Invoke-RestMethod -Uri "https://api.github.com$path" -Headers (GHHeaders $token) }
+function GHGet($path,$token){ Invoke-GovernedGitHubJson -Method GET -Url "https://api.github.com$path" -Headers (GHHeaders $token) -CacheTtlMs 0 }
 function GHGetDiagnostic($path,$token){
-  try {
-    return @{ok=$true;status=200;value=(GHGet $path $token);error=$null}
-  } catch {
-    $status=$null
-    try { $status=[int]$_.Exception.Response.StatusCode } catch {}
-    $detail="$($_.Exception.Message)"
-    try {
-      if($_.ErrorDetails -and $_.ErrorDetails.Message){ $detail="$($_.ErrorDetails.Message)" }
-    } catch {}
-    return @{ok=$false;status=$status;value=$null;error=$detail}
-  }
+  try{
+    $r=Invoke-GovernedGitHubRaw -Method GET -Url "https://api.github.com$path" -Headers (GHHeaders $token) -CacheTtlMs 0 -AllowHttpError
+    if([int]$r.status-ge200-and[int]$r.status-lt300){$v=if([string]::IsNullOrWhiteSpace("$($r.body)")){$null}else{"$($r.body)"|ConvertFrom-Json};return @{ok=$true;status=[int]$r.status;value=$v;error=$null}}
+    return @{ok=$false;status=[int]$r.status;value=$null;error="$($r.body)"}
+  }catch{return @{ok=$false;status=$null;value=$null;error="$($_.Exception.Message)"}}
 }
-function GHPost($path,$token,$body){ Invoke-RestMethod -Method Post -Uri "https://api.github.com$path" -Headers (GHHeaders $token) -ContentType "application/json" -Body ($body|ConvertTo-Json -Depth 60) }
-function GHPatch($path,$token,$body){ Invoke-RestMethod -Method Patch -Uri "https://api.github.com$path" -Headers (GHHeaders $token) -ContentType "application/json" -Body ($body|ConvertTo-Json -Depth 60) }
+function GHPost($path,$token,$body){ Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com$path" -Headers (GHHeaders $token) -Body $body -CacheTtlMs 0 }
+function GHPatch($path,$token,$body){ Invoke-GovernedGitHubJson -Method PATCH -Url "https://api.github.com$path" -Headers (GHHeaders $token) -Body $body -CacheTtlMs 0 }
 
 function Assert-ControllerPermissions($auth){
   $perms=$auth.permissions

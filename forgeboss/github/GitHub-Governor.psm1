@@ -48,7 +48,7 @@ function Invoke-GovernedGitHubRaw {
     [hashtable]$Headers=@{},
     $Body=$null,
     [string]$DedupeKey='',
-    [int]$CacheTtlMs=-1,
+    [int]$CacheTtlMs=0,
     [switch]$AllowHttpError
   )
   $h=@{};foreach($k in $Headers.Keys){$h[$k]=$Headers[$k]}
@@ -68,7 +68,7 @@ function Invoke-GovernedGitHubJson {
     [hashtable]$Headers=@{},
     $Body=$null,
     [string]$DedupeKey='',
-    [int]$CacheTtlMs=-1
+    [int]$CacheTtlMs=0
   )
   $r=Invoke-GovernedGitHubRaw -Method $Method -Url $Url -Headers $Headers -Body $Body -DedupeKey $DedupeKey -CacheTtlMs $CacheTtlMs
   if($r.deduplicated){return [pscustomobject]@{deduplicated=$true}}

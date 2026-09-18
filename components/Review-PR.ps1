@@ -12,6 +12,9 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent $PSScriptRoot) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Config = @{
   AppId="4608230"
   InstallationId="154040429"
@@ -47,30 +50,25 @@ function New-GitHubInstallationToken {
   $jwt="$u.$(B64Url $sig)"
   $hdr=@{Authorization="Bearer $jwt";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -ContentType "application/json" -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -Body $body -CacheTtlMs 0
 }
 
 function GHHeaders($token){ @{Authorization="Bearer $token";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"} }
 
 function GHGet($path,$token){
   $uri="https://api.github.com$path"
-  $resp=Invoke-WebRequest -Method Get -Uri $uri -Headers (GHHeaders $token) -SkipHttpErrorCheck
-  if([int]$resp.StatusCode -lt 200 -or [int]$resp.StatusCode -ge 300){
-    $accepted=''
-    try { $accepted="$($resp.Headers['X-Accepted-GitHub-Permissions'])" } catch {}
-    $detail="$($resp.Content)"
-    try {
-      $j=$detail|ConvertFrom-Json
-      if($j.message){ $detail="$($j.message)" }
-    } catch {}
-    throw "GitHub GET $path failed: HTTP $([int]$resp.StatusCode); accepted_permissions=[$accepted]; message=$detail"
+  $resp=Invoke-GovernedGitHubRaw -Method GET -Url $uri -Headers (GHHeaders $token) -CacheTtlMs 0 -AllowHttpError
+  if([int]$resp.status -lt 200 -or [int]$resp.status -ge 300){
+    $accepted='';try{$accepted="$($resp.headers.'x-accepted-github-permissions')"}catch{}
+    $detail="$($resp.body)";try{$j=$detail|ConvertFrom-Json;if($j.message){$detail="$($j.message)"}}catch{}
+    throw "GitHub GET $path failed: HTTP $([int]$resp.status); accepted_permissions=[$accepted]; message=$detail"
   }
-  if([string]::IsNullOrWhiteSpace("$($resp.Content)")){ return $null }
-  $resp.Content|ConvertFrom-Json
+  if([string]::IsNullOrWhiteSpace("$($resp.body)")){return $null}
+  "$($resp.body)"|ConvertFrom-Json
 }
 
 function GHPut($path,$token,$body){
-  Invoke-RestMethod -Method Put -Uri "https://api.github.com$path" -Headers (GHHeaders $token) -ContentType "application/json" -Body ($body|ConvertTo-Json -Depth 30)
+  Invoke-GovernedGitHubJson -Method PUT -Url "https://api.github.com$path" -Headers (GHHeaders $token) -Body $body -CacheTtlMs 0
 }
 
 function Get-OptionalProperty($obj,[string]$name){

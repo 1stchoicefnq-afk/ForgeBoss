@@ -5,6 +5,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent $PSScriptRoot) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Config=@{
   AppId='4608230'
   InstallationId='154040429'
@@ -42,11 +45,11 @@ function New-GitHubInstallationToken{
   $jwt="$u.$(B64Url $sig)"
   $hdr=@{Authorization="Bearer $jwt";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -ContentType 'application/json' -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -Body $body -CacheTtlMs 0
 }
 function GHHeaders($t){@{Authorization="Bearer $t";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}}
-function GHGet($p,$t){Invoke-RestMethod -Uri "https://api.github.com$p" -Headers (GHHeaders $t)}
-function GHPost($p,$t,$b){Invoke-RestMethod -Method Post -Uri "https://api.github.com$p" -Headers (GHHeaders $t) -ContentType 'application/json' -Body ($b|ConvertTo-Json -Depth 50)}
+function GHGet($p,$t){Invoke-GovernedGitHubJson -Method GET -Url "https://api.github.com$p" -Headers (GHHeaders $t) -CacheTtlMs 0}
+function GHPost($p,$t,$b){Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com$p" -Headers (GHHeaders $t) -Body $b -CacheTtlMs 0}
 
 function New-AskPass([string]$dir){
   $p=Join-Path $dir 'git-askpass.cmd'
@@ -681,8 +684,7 @@ The result must address the stated independent-review defect and be testable by 
   $repairHead=Invoke-GitProcess -CommandArgs $gitArgs -WorkingDir $repo -Capture
 
   $env:SITEBOSS_GITHUB_TOKEN=$token;$env:GIT_ASKPASS=$ask;$env:GIT_TERMINAL_PROMPT='0'
-  [string[]]$gitArgs=@('push','--set-upstream','origin',"HEAD:refs/heads/$branch")
-  try{Invoke-GitProcess -CommandArgs $gitArgs -WorkingDir $repo}
+  try{Invoke-GovernedGitPush -WorkingDirectory $repo -Remote 'origin' -RefSpec "HEAD:refs/heads/$branch" -ExtraArgs @('--set-upstream') | Out-Null}
   finally{Remove-Item Env:SITEBOSS_GITHUB_TOKEN -ErrorAction SilentlyContinue;Remove-Item Env:GIT_ASKPASS -ErrorAction SilentlyContinue}
 
   $body=@"
