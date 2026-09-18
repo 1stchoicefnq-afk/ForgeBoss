@@ -76,6 +76,13 @@ function Invoke-GovernedGitHubJson {
   "$($r.body)"|ConvertFrom-Json
 }
 
+function Invoke-GovernedGitNetwork {
+  param([string]$WorkingDirectory='',[Parameter(Mandatory=$true)][string[]]$CommandArgs)
+  $i=@{mode='git-network';args=@($CommandArgs)}
+  if($WorkingDirectory){$i.cwd=$WorkingDirectory}
+  $r=Invoke-GitHubGovernorCli -InputObject $i -AllowNonZero
+  [pscustomobject]@{exit_code=[int]$r.exitCode;stdout="$($r.stdout)";stderr="$($r.stderr)"}
+}
 function Invoke-GovernedGitPush {
   param(
     [Parameter(Mandatory=$true)][string]$WorkingDirectory,
@@ -88,4 +95,4 @@ function Invoke-GovernedGitPush {
   $r
 }
 
-Export-ModuleMember -Function Invoke-GovernedGitHubRaw,Invoke-GovernedGitHubJson,Invoke-GovernedGitPush
+Export-ModuleMember -Function Invoke-GovernedGitHubRaw,Invoke-GovernedGitHubJson,Invoke-GovernedGitNetwork,Invoke-GovernedGitPush

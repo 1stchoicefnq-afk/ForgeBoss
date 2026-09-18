@@ -76,6 +76,19 @@ async function githubRequest(url,options={},g={}){
   save(p,s);metric(p,'response',{method,path:cleanUrl(url),status:Number(r.status),mutation:isMutation,duration_ms:done-started,remaining:hs['x-ratelimit-remaining']||null});return result(r.status,hs,body);
  },g);
 }
+async function governedGitNetwork({cwd,args=[]},g={}){
+ if(!Array.isArray(args)||args.length<1)throw new Error('git network args are required');
+ const joined=args.join(' '),allowed=args[0]==='clone'||args[0]==='ls-remote'||args.includes('fetch')||(args.includes('remote')&&args.includes('update'));
+ if(!allowed)throw new Error('refusing non-network git command through GitHub governor: '+joined);
+ return guarded(async({p,c})=>{
+  const s=load(p),now=Date.now();prune(s,now);if(Number(s.circuitUntil||0)>now)throw new GitHubCircuitOpenError(Number(s.circuitUntil),s.circuitReason||'rate-limit protection');
+  await budget(s,c,false,p);const started=Date.now(),r=spawnSync('git',args,{cwd:cwd||undefined,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:20*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
+  s.lastRequestAt=done;s.requests.push(done);
+  if(r.status!==0&&/(rate limit|too many requests|abuse detection|secondary rate|temporarily blocked)/i.test(stderr)){const strikes=Math.max(1,Number(s.secondaryLimitStrikes||0)+1),wait=Math.min(3600000,60000*(2**Math.min(5,strikes-1)))+Math.floor(Math.random()*1000);s.secondaryLimitStrikes=strikes;s.circuitUntil=done+wait;s.circuitReason='git network rate-limit/abuse signal'}else if(r.status===0)s.secondaryLimitStrikes=0;
+  save(p,s);metric(p,'git_network',{operation:String(args.find(x=>['clone','fetch','ls-remote','remote'].includes(x))||args[0]),status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});
+  return{exitCode:Number.isInteger(r.status)?r.status:-1,stdout:String(r.stdout||''),stderr};
+ },g);
+}
 async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
  if(!cwd||!refspec)throw new Error('cwd and refspec are required for governed git push');
  return guarded(async({p,c})=>{
@@ -87,4 +100,4 @@ async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
  },g);
 }
 function status(o={}){const p=paths(o.root||root());ensure(p);const s=load(p);prune(s,Date.now());return{root:p.root,...s}}
-module.exports={GitHubCircuitOpenError,githubRequest,governedGitPush,governorStatus:status,getConfig:cfg,stateRoot:root,_internal:{pathsFor:paths,loadState:load,saveState:save,limitInfo}};
+module.exports={GitHubCircuitOpenError,githubRequest,governedGitNetwork,governedGitPush,governorStatus:status,getConfig:cfg,stateRoot:root,_internal:{pathsFor:paths,loadState:load,saveState:save,limitInfo}};
