@@ -82,7 +82,7 @@ async function governedGitNetwork({cwd,args=[]},g={}){
  if(!allowed)throw new Error('refusing non-network git command through GitHub governor: '+joined);
  return guarded(async({p,c})=>{
   const s=load(p),now=Date.now();prune(s,now);if(Number(s.circuitUntil||0)>now)throw new GitHubCircuitOpenError(Number(s.circuitUntil),s.circuitReason||'rate-limit protection');
-  await budget(s,c,false,p);const started=Date.now(),r=spawnSync('git',args,{cwd:cwd||undefined,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:20*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
+  await budget(s,c,false,p);const started=Date.now(),spawn=g.spawnImpl||spawnSync,gitExe=process.platform==='win32'?'git.exe':'git',r=spawn(gitExe,args,{cwd:cwd||undefined,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:20*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
   s.lastRequestAt=done;s.requests.push(done);
   if(r.status!==0&&/(rate limit|too many requests|abuse detection|secondary rate|temporarily blocked)/i.test(stderr)){const strikes=Math.max(1,Number(s.secondaryLimitStrikes||0)+1),wait=Math.min(3600000,60000*(2**Math.min(5,strikes-1)))+Math.floor(Math.random()*1000);s.secondaryLimitStrikes=strikes;s.circuitUntil=done+wait;s.circuitReason='git network rate-limit/abuse signal'}else if(r.status===0)s.secondaryLimitStrikes=0;
   save(p,s);metric(p,'git_network',{operation:String(args.find(x=>['clone','fetch','ls-remote','remote'].includes(x))||args[0]),status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});
@@ -93,7 +93,7 @@ async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
  if(!cwd||!refspec)throw new Error('cwd and refspec are required for governed git push');
  return guarded(async({p,c})=>{
   const s=load(p),now=Date.now();prune(s,now);if(Number(s.circuitUntil||0)>now)throw new GitHubCircuitOpenError(Number(s.circuitUntil),s.circuitReason||'rate-limit protection');await budget(s,c,true,p);
-  const started=Date.now(),r=spawnSync('git',['push',...extraArgs,remote,refspec],{cwd,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:10*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
+  const started=Date.now(),spawn=g.spawnImpl||spawnSync,gitExe=process.platform==='win32'?'git.exe':'git',r=spawn(gitExe,['push',...extraArgs,remote,refspec],{cwd,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:10*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
   s.lastRequestAt=done;s.lastMutationAt=done;s.requests.push(done);s.mutations.push(done);
   if(r.status!==0&&/(rate limit|too many requests|abuse detection|secondary rate)/i.test(stderr)){const strikes=Math.max(1,Number(s.secondaryLimitStrikes||0)+1),wait=Math.min(3600000,60000*(2**Math.min(5,strikes-1)))+Math.floor(Math.random()*1000);s.secondaryLimitStrikes=strikes;s.circuitUntil=done+wait;s.circuitReason='git push rate-limit/abuse signal'}else if(r.status===0)s.secondaryLimitStrikes=0;
   save(p,s);metric(p,'git_push',{status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});return{exitCode:Number.isInteger(r.status)?r.status:-1,stdout:String(r.stdout||''),stderr};
