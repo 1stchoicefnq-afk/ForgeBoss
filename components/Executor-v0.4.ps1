@@ -150,8 +150,10 @@ function New-IsolatedCheckout($p,$token){
   $env:GIT_TERMINAL_PROMPT='0'
   try {
     $repoDir=Join-Path $dir 'repo'
-    Invoke-Git @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repoDir)
-    Invoke-Git @('fetch','--no-tags','origin',$p.base_sha) $repoDir
+    $net=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repoDir)
+    if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
+    $net=Invoke-GovernedGitNetwork -WorkingDirectory $repoDir -CommandArgs @('fetch','--no-tags','origin',$p.base_sha)
+    if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
     Invoke-Git @('checkout','--detach',$p.base_sha) $repoDir
     $actual=Invoke-Git @('rev-parse','HEAD') $repoDir -Capture
     if($actual -ne $p.base_sha){ throw "Checkout mismatch: $actual" }

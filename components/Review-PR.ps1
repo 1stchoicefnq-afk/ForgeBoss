@@ -179,9 +179,11 @@ function New-ReviewSnapshot([string]$baseSha,[string]$headSha,[string]$token){
   $env:GIT_TERMINAL_PROMPT='0'
   try {
     [string[]]$gitArgs=@('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
-    Invoke-Git -CommandArgs $gitArgs
+    $net=Invoke-GovernedGitNetwork -CommandArgs $gitArgs
+    if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
     [string[]]$gitArgs=@('fetch','--no-tags','origin',$baseSha,$headSha)
-    Invoke-Git -CommandArgs $gitArgs -WorkingDir $repo
+    $net=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs $gitArgs
+    if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
     [string[]]$gitArgs=@('checkout','--detach',$headSha)
     Invoke-Git -CommandArgs $gitArgs -WorkingDir $repo
     [string[]]$gitArgs=@('rev-parse','HEAD')

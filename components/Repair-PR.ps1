@@ -553,7 +553,8 @@ try{
   $env:SITEBOSS_GITHUB_TOKEN=$token;$env:GIT_ASKPASS=$ask;$env:GIT_TERMINAL_PROMPT='0'
   try{
     [string[]]$gitArgs=@('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
-    Invoke-GitProcess -CommandArgs $gitArgs
+    $net=Invoke-GovernedGitNetwork -CommandArgs $gitArgs
+    if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
 
     # Disposable repair workspace: preserve model-authored file content exactly.
     # Disable Git line-ending conversion/warnings locally in this clone only.
@@ -570,7 +571,8 @@ try{
     Invoke-GitProcess -CommandArgs $gitArgs -WorkingDir $repo
 
     [string[]]$gitArgs=@('fetch','--no-tags','origin',$targetHeadSha)
-    Invoke-GitProcess -CommandArgs $gitArgs -WorkingDir $repo
+    $net=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs $gitArgs
+    if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
 
     Assert-NoUnrepresentableCaseCollision $repo $targetHeadSha
 
