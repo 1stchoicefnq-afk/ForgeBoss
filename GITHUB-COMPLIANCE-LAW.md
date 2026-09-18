@@ -57,6 +57,8 @@ Forbidden:
 
 If more throughput is legitimately required, stop and obtain owner approval plus a fresh GitHub-policy review.
 
+Only one active automated GitHub writer/controller may operate for the same GitHub account/repository scope at a time unless an independently reviewed cross-host coordination mechanism enforces the same global budgets. A second machine/process fleet must stand down rather than multiply request volume.
+
 ## LAW 5 — GitHub is not a high-frequency message bus
 
 GitHub issues/comments/PRs/workflow dispatches are durable records, not a worker message queue.

@@ -40,16 +40,21 @@ function scan(rel,abs){
  const txt=fs.readFileSync(abs,'utf8');
  const lines=txt.split(/\r?\n/);
  const governed=/request-governor|github-gate-cli|GitHub-Governor\.psm1|Invoke-GovernedGitHub|Invoke-GovernedGitNetwork|Invoke-GovernedGitPush|githubWrite\(/.test(txt);
- if(/\bgh\s+api\b/i.test(txt)&&!allowed.has(rel))failures.push(rel+': direct gh api is forbidden');
- if(/curl[^\r\n]*(?:api\.github\.com|github\.com)/i.test(txt)&&!allowed.has(rel))failures.push(rel+': direct curl GitHub access is forbidden');
+ if(/\bgh\s+(?:api|pr|issue|repo|run|workflow|release|auth|search|gist)\b/i.test(txt)&&!allowed.has(rel))failures.push(rel+': unmanaged gh command is forbidden');
+ if(/(?:curl|wget)[^\r\n]*(?:api\.github\.com|github\.com|raw\.githubusercontent\.com)/i.test(txt)&&!allowed.has(rel))failures.push(rel+': direct curl/wget GitHub access is forbidden');
+ if(/@octokit|new\s+Octokit|octokit\.request/i.test(txt)&&!allowed.has(rel)&&!governed)failures.push(rel+': unmanaged Octokit GitHub client is forbidden');
  for(let i=0;i<lines.length;i++){
   const line=lines[i],win=lines.slice(Math.max(0,i-3),Math.min(lines.length,i+4)).join('\n');
-  if(/api\.github\.com/i.test(win)&&/(Invoke-RestMethod|Invoke-WebRequest|HttpClient|axios\.|\bfetch\s*\()/i.test(line)&&!governed&&!allowed.has(rel)){
+  if(/(?:api\.github\.com|raw\.githubusercontent\.com|https?:\/\/github\.com)/i.test(win)&&/(Invoke-RestMethod|Invoke-WebRequest|HttpClient|axios\.|\bfetch\s*\()/i.test(line)&&!governed&&!allowed.has(rel)){
    failures.push(rel+':'+(i+1)+': unmanaged GitHub HTTP client');break;
   }
   const directPush=/@\(\s*['"]push['"]|(?:^|[\\s'"`])git(?:\.exe)?\\s+push\\b|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"]push['"]/i.test(line);
   if(directPush&&!/Invoke-GovernedGitPush|governedGitPush/.test(win)&&!allowed.has(rel)){
    failures.push(rel+':'+(i+1)+': unmanaged git push');break;
+  }
+  const directNetwork=/(?:Run|Invoke-Git|Invoke-GitProcess|Invoke-External)[^\r\n]{0,120}@\(\s*['"](?:clone|fetch)['"]|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"](?:clone|fetch)['"]|(?:^|[\\s'"`])git(?:\.exe)?\\s+(?:clone|fetch)\\b/i.test(line);
+  if(directNetwork&&/(?:github\.com|\\borigin\\b|RepoUrl)/i.test(win)&&!/Invoke-GovernedGitNetwork|governedGitNetwork/.test(win)&&!allowed.has(rel)){
+   failures.push(rel+':'+(i+1)+': unmanaged GitHub clone/fetch');break;
   }
  }
 }
