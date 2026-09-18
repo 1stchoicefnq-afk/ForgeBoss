@@ -1,6 +1,7 @@
 ﻿param([int]$RepairPullRequest=525,[int]$RepeatCount=5)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'forgeboss\github\GitHub-Governor.psm1') -Force
 
 $Root=$PSScriptRoot
 $Out=Join-Path $Root 'state\repair-lab'
@@ -96,11 +97,11 @@ Write-Host "Repair PR #$RepairPullRequest | repeats=$RepeatCount"
 # Read exact PR head with gh-free GitHub App logic borrowed from diagnostics by invoking it only for read state is avoided here:
 # fetch PR ref directly, then resolve exact remote SHA.
 New-Item -ItemType Directory -Force -Path (Split-Path $repo -Parent)|Out-Null
-$r=Run 'git.exe' @('clone','--no-checkout','--filter=blob:none',"https://github.com/1stchoicefnq-afk/siteboss-monster.git",$repo)
+$r=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/1stchoicefnq-afk/siteboss-monster.git",$repo)
 if($r.exit_code-ne0){throw "clone failed: $($r.stderr)"}
 [void](Run 'git.exe' @('config','--local','core.autocrlf','false') $repo)
 [void](Run 'git.exe' @('config','--local','core.safecrlf','false') $repo)
-$r=Run 'git.exe' @('fetch','origin',"pull/$RepairPullRequest/head:refs/remotes/origin/repair-lab-target") $repo
+$r=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs @('fetch','origin',"pull/$RepairPullRequest/head:refs/remotes/origin/repair-lab-target")
 if($r.exit_code-ne0){throw "fetch PR failed: $($r.stderr)"}
 $r=Run 'git.exe' @('rev-parse','refs/remotes/origin/repair-lab-target') $repo
 if($r.exit_code-ne0){throw "resolve PR head failed: $($r.stderr)"}
