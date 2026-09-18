@@ -2,6 +2,9 @@ name: GitHub governor acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'security/issue-163-github-governor'
   pull_request:
     paths:
       - 'forgeboss/github/**'
