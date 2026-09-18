@@ -1,9 +1,23 @@
 'use strict';
 
 const fs=require('fs'),os=require('os'),path=require('path'),crypto=require('crypto');
-const {spawnSync}=require('child_process');
+const {spawn}=require('child_process');
 const sleep=ms=>new Promise(r=>setTimeout(r,Math.max(0,ms)));
 const sha=v=>crypto.createHash('sha256').update(String(v)).digest('hex');
+function runGitAsync(exe,args,opts={}){
+ return new Promise((resolve,reject)=>{
+  const child=spawn(exe,args,{cwd:opts.cwd||undefined,env:opts.env||process.env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const cap=Number(opts.maxBuffer||20*1024*1024);let out=[],err=[],outN=0,errN=0,settled=false;
+  const finish=(code,signal,error)=>{
+   if(settled)return;settled=true;
+   if(error){reject(error);return}
+   resolve({status:Number.isInteger(code)?code:-1,signal:signal||null,stdout:Buffer.concat(out).toString('utf8'),stderr:Buffer.concat(err).toString('utf8')});
+  };
+  child.stdout.on('data',b=>{outN+=b.length;if(outN<=cap)out.push(Buffer.from(b));else{try{child.kill()}catch{};finish(null,null,new Error('git stdout exceeded governor buffer'))}});
+  child.stderr.on('data',b=>{errN+=b.length;if(errN<=cap)err.push(Buffer.from(b));else{try{child.kill()}catch{};finish(null,null,new Error('git stderr exceeded governor buffer'))}});
+  child.on('error',e=>finish(null,null,e));child.on('close',(code,signal)=>finish(code,signal,null));
+ });
+}
 
 class GitHubCircuitOpenError extends Error{
  constructor(until,reason){super('GitHub governor circuit open until '+new Date(until).toISOString()+': '+(reason||'rate-limit protection'));this.name='GitHubCircuitOpenError';this.until=until;this.reason=reason||'rate-limit protection'}
@@ -30,7 +44,7 @@ async function lock(p,c){
  throw new Error('GitHub governor lock timeout');
 }
 function unlock(p){try{fs.rmSync(p.lock,{recursive:true,force:true})}catch{}}
-async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(o.root||root());await lock(p,c);const hbMs=Math.max(1000,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
+async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(o.root||root());await lock(p,c);const hbMs=Math.max(100,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
 function prune(s,now){s.requests=s.requests.filter(t=>now-t<60000);s.mutations=s.mutations.filter(t=>now-t<3600000);for(const[k,t]of Object.entries(s.dedupe))if(now-t>3600000)delete s.dedupe[k];for(const[k,v]of Object.entries(s.notFound))if(!v||Number(v.until||0)<=now)delete s.notFound[k]}
 const mutation=m=>!['GET','HEAD','OPTIONS'].includes(String(m||'GET').toUpperCase());
 async function budget(s,c,isMutation,p){
@@ -82,7 +96,7 @@ async function governedGitNetwork({cwd,args=[]},g={}){
  if(!allowed)throw new Error('refusing non-network git command through GitHub governor: '+joined);
  return guarded(async({p,c})=>{
   const s=load(p),now=Date.now();prune(s,now);if(Number(s.circuitUntil||0)>now)throw new GitHubCircuitOpenError(Number(s.circuitUntil),s.circuitReason||'rate-limit protection');
-  await budget(s,c,false,p);const started=Date.now(),spawn=g.spawnImpl||spawnSync,gitExe=process.platform==='win32'?'git.exe':'git',r=spawn(gitExe,args,{cwd:cwd||undefined,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:20*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
+  await budget(s,c,false,p);const started=Date.now(),gitExe=process.platform==='win32'?'git.exe':'git',r=g.spawnImpl?await Promise.resolve(g.spawnImpl(gitExe,args,{cwd:cwd||undefined,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:20*1024*1024})):await runGitAsync(gitExe,args,{cwd:cwd||undefined,env:process.env,maxBuffer:20*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
   s.lastRequestAt=done;s.requests.push(done);
   if(r.status!==0&&/(rate limit|too many requests|abuse detection|secondary rate|temporarily blocked)/i.test(stderr)){const strikes=Math.max(1,Number(s.secondaryLimitStrikes||0)+1),wait=Math.min(3600000,60000*(2**Math.min(5,strikes-1)))+Math.floor(Math.random()*1000);s.secondaryLimitStrikes=strikes;s.circuitUntil=done+wait;s.circuitReason='git network rate-limit/abuse signal'}else if(r.status===0)s.secondaryLimitStrikes=0;
   save(p,s);metric(p,'git_network',{operation:String(args.find(x=>['clone','fetch','ls-remote','remote'].includes(x))||args[0]),status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});
@@ -93,7 +107,7 @@ async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
  if(!cwd||!refspec)throw new Error('cwd and refspec are required for governed git push');
  return guarded(async({p,c})=>{
   const s=load(p),now=Date.now();prune(s,now);if(Number(s.circuitUntil||0)>now)throw new GitHubCircuitOpenError(Number(s.circuitUntil),s.circuitReason||'rate-limit protection');await budget(s,c,true,p);
-  const started=Date.now(),spawn=g.spawnImpl||spawnSync,gitExe=process.platform==='win32'?'git.exe':'git',r=spawn(gitExe,['push',...extraArgs,remote,refspec],{cwd,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:10*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
+  const started=Date.now(),gitExe=process.platform==='win32'?'git.exe':'git',pushArgs=['push',...extraArgs,remote,refspec],r=g.spawnImpl?await Promise.resolve(g.spawnImpl(gitExe,pushArgs,{cwd,env:process.env,encoding:'utf8',windowsHide:true,maxBuffer:10*1024*1024})):await runGitAsync(gitExe,pushArgs,{cwd,env:process.env,maxBuffer:10*1024*1024}),done=Date.now(),stderr=String(r.stderr||'');
   s.lastRequestAt=done;s.lastMutationAt=done;s.requests.push(done);s.mutations.push(done);
   if(r.status!==0&&/(rate limit|too many requests|abuse detection|secondary rate)/i.test(stderr)){const strikes=Math.max(1,Number(s.secondaryLimitStrikes||0)+1),wait=Math.min(3600000,60000*(2**Math.min(5,strikes-1)))+Math.floor(Math.random()*1000);s.secondaryLimitStrikes=strikes;s.circuitUntil=done+wait;s.circuitReason='git push rate-limit/abuse signal'}else if(r.status===0)s.secondaryLimitStrikes=0;
   save(p,s);metric(p,'git_push',{status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});return{exitCode:Number.isInteger(r.status)?r.status:-1,stdout:String(r.stdout||''),stderr};
