@@ -53,8 +53,6 @@ jobs:
     name: Windows native PowerShell and Git
     runs-on: windows-latest
     timeout-minutes: 15
-    env:
-      SITEBOSS_GITHUB_GOVERNOR_DIR: ${{ runner.temp }}\siteboss-github-governor
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
