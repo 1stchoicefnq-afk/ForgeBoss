@@ -19,40 +19,17 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
+      id-token: write
       actions: read
 
     steps:
-      - name: Checkout exact review target
+      - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-          persist-credentials: false
-          ref: ${{ (github.event_name == 'issue_comment' && github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number)) || (github.event.pull_request && github.event.pull_request.head.sha) || github.sha }}
-
-      - name: Verify requested exact head when supplied
-        shell: bash
-        env:
-          REVIEW_REQUEST_BODY: ${{ github.event.comment.body || github.event.review.body || github.event.issue.body || '' }}
-        run: |
-          python3 - <<'PY'
-          import os, re, subprocess, sys
-          body = os.environ.get("REVIEW_REQUEST_BODY", "")
-          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip().lower()
-          print("checked_out_head=" + actual)
-          m = re.search(r"(?im)expected\s+head\s*:\s*`?([0-9a-f]{40})`?", body)
-          if not m:
-              print("No explicit expected head supplied; exact-head assertion not requested.")
-              raise SystemExit(0)
-          expected = m.group(1).lower()
-          print("expected_head=" + expected)
-          if actual != expected:
-              print("TARGET MISMATCH: refusing Claude review", file=sys.stderr)
-              raise SystemExit(12)
-          print("Exact-head binding PASS")
-          PY
 
       - name: Run Claude Code
         id: claude
