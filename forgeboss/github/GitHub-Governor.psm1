@@ -53,7 +53,6 @@ function Invoke-GovernedGitHubRaw {
   )
   $h=@{};foreach($k in $Headers.Keys){$h[$k]=$Headers[$k]}
   if($null-ne$Body-and-not($h.ContainsKey('Content-Type'))){$h['Content-Type']='application/json'}
-  if(-not$DedupeKey){$DedupeKey=Get-GitHubMutationKey -Method $Method -Url $Url -Body $Body}
   $i=@{mode='request';method=$Method;url=$Url;headers=$h}
   if($null-ne$Body){$i.body=$Body}
   if($DedupeKey){$i.dedupeKey=$DedupeKey}
@@ -95,4 +94,4 @@ function Invoke-GovernedGitPush {
   $r
 }
 
-Export-ModuleMember -Function Invoke-GovernedGitHubRaw,Invoke-GovernedGitHubJson,Invoke-GovernedGitNetwork,Invoke-GovernedGitPush
+Export-ModuleMember -Function Get-GitHubMutationKey,Invoke-GovernedGitHubRaw,Invoke-GovernedGitHubJson,Invoke-GovernedGitNetwork,Invoke-GovernedGitPush

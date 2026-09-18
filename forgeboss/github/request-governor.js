@@ -30,7 +30,7 @@ async function lock(p,c){
  throw new Error('GitHub governor lock timeout');
 }
 function unlock(p){try{fs.rmSync(p.lock,{recursive:true,force:true})}catch{}}
-async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(o.root||root());await lock(p,c);try{return await fn({p,c})}finally{unlock(p)}}
+async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(o.root||root());await lock(p,c);const hbMs=Math.max(1000,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
 function prune(s,now){s.requests=s.requests.filter(t=>now-t<60000);s.mutations=s.mutations.filter(t=>now-t<3600000);for(const[k,t]of Object.entries(s.dedupe))if(now-t>3600000)delete s.dedupe[k];for(const[k,v]of Object.entries(s.notFound))if(!v||Number(v.until||0)<=now)delete s.notFound[k]}
 const mutation=m=>!['GET','HEAD','OPTIONS'].includes(String(m||'GET').toUpperCase());
 async function budget(s,c,isMutation,p){
@@ -40,7 +40,7 @@ async function budget(s,c,isMutation,p){
   if(isMutation&&c.maxMutationsPerMinute>0){const a=s.mutations.filter(t=>now-t<60000);if(a.length>=c.maxMutationsPerMinute)wait=Math.max(wait,60000-(now-a[0])+100)}
   if(isMutation&&c.maxMutationsPerHour>0&&s.mutations.length>=c.maxMutationsPerHour)wait=Math.max(wait,3600000-(now-s.mutations[0])+100);
   const gap=isMutation?Math.max(c.minRequestGapMs,c.minMutationGapMs):c.minRequestGapMs,last=isMutation?Math.max(s.lastRequestAt||0,s.lastMutationAt||0):(s.lastRequestAt||0);
-  wait=Math.max(wait,gap-(now-last));if(wait<=0)return;metric(p,'local_throttle',{wait_ms:wait,mutation:isMutation});await sleep(wait);
+  wait=Math.max(wait,gap-(now-last));if(wait<=0)return;if(wait>60000){s.circuitUntil=now+wait;s.circuitReason='local GitHub governor budget exhausted';save(p,s);metric(p,'local_budget_circuit_open',{wait_ms:wait,mutation:isMutation});throw new GitHubCircuitOpenError(s.circuitUntil,s.circuitReason)}metric(p,'local_throttle',{wait_ms:wait,mutation:isMutation});await sleep(wait);
  }
 }
 function hobj(h){const o={};if(!h)return o;if(typeof h.forEach==='function')h.forEach((v,k)=>o[String(k).toLowerCase()]=String(v));else for(const[k,v]of Object.entries(h))o[String(k).toLowerCase()]=String(v);return o}
