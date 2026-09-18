@@ -95,7 +95,7 @@ jobs:
           foreach($file in $files){
             $tokens=$null;$errors=$null
             [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors)
-            if($errors.Count){$errors|ForEach-Object{Write-Error "$file:$($_.Extent.StartLineNumber): $($_.Message)"};throw "PowerShell parse failed: $file"}
+            if($errors.Count){$errors|ForEach-Object{Write-Error "${file}:$($_.Extent.StartLineNumber): $($_.Message)"};throw "PowerShell parse failed: $file"}
           }
           "Parsed $($files.Count) PowerShell files"
       - name: Import governor module without network access
