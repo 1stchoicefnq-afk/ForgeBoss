@@ -1,5 +1,7 @@
 # GitHub Recovery Request Safety
 
+**Mandatory parent rule:** `GITHUB-COMPLIANCE-LAW.md`. If this file and the hard law differ, the stricter compliance rule wins until reviewed.
+
 ForgeBoss/SiteBoss GitHub automation resumed only after account access was restored. **No software can guarantee that GitHub will never restrict or suspend an account.** The required strategy is conservative traffic, fail-closed rate-limit handling, least privilege, and no runtime bypass around the shared governor.
 
 ## Shared governor

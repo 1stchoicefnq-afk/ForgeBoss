@@ -39,6 +39,8 @@ jobs:
           node-version: '22'
       - name: Governor functional tests
         run: node forgeboss/github/test-request-governor.js
+      - name: GitHub compliance LAW
+        run: node forgeboss/github/check-github-compliance-law.js
       - name: Runtime bypass audit
         run: node forgeboss/github/audit-governor-bypasses.js
       - name: JavaScript syntax checks
@@ -68,6 +70,9 @@ jobs:
       - name: Governor functional tests on Windows
         shell: pwsh
         run: node forgeboss/github/test-request-governor.js
+      - name: GitHub compliance LAW on Windows
+        shell: pwsh
+        run: node forgeboss/github/check-github-compliance-law.js
       - name: Runtime bypass audit on Windows
         shell: pwsh
         run: node forgeboss/github/audit-governor-bypasses.js

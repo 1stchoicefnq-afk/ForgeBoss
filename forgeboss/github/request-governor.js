@@ -24,8 +24,28 @@ class GitHubCircuitOpenError extends Error{
 }
 function root(){return path.resolve(process.env.SITEBOSS_GITHUB_GOVERNOR_DIR||path.join(os.homedir(),'.siteboss','github-governor'))}
 function cfg(o={}){
- const n=(k,d)=>{const v=Number(process.env[k]);return Number.isFinite(v)&&v>=0?v:d};
- return{maxRequestsPerMinute:n('SITEBOSS_GITHUB_MAX_REQUESTS_PER_MINUTE',30),maxMutationsPerMinute:n('SITEBOSS_GITHUB_MAX_MUTATIONS_PER_MINUTE',6),maxMutationsPerHour:n('SITEBOSS_GITHUB_MAX_MUTATIONS_PER_HOUR',60),minRequestGapMs:n('SITEBOSS_GITHUB_MIN_REQUEST_GAP_MS',500),minMutationGapMs:n('SITEBOSS_GITHUB_MIN_MUTATION_GAP_MS',2500),cacheTtlMs:n('SITEBOSS_GITHUB_CACHE_TTL_MS',15000),notFoundTtlMs:n('SITEBOSS_GITHUB_NOT_FOUND_TTL_MS',300000),mutationDedupeMs:n('SITEBOSS_GITHUB_MUTATION_DEDUPE_MS',300000),staleLockMs:n('SITEBOSS_GITHUB_STALE_LOCK_MS',300000),lockTimeoutMs:n('SITEBOSS_GITHUB_LOCK_TIMEOUT_MS',180000),maxCacheBodyBytes:n('SITEBOSS_GITHUB_MAX_CACHE_BODY_BYTES',1048576),...o}
+ const num=(v,d)=>{const n=Number(v);return Number.isFinite(n)?n:d};
+ const env=(k,d)=>num(process.env[k],d);
+ const requested={
+  maxRequestsPerMinute:o.maxRequestsPerMinute===undefined?env('SITEBOSS_GITHUB_MAX_REQUESTS_PER_MINUTE',30):num(o.maxRequestsPerMinute,30),
+  maxMutationsPerMinute:o.maxMutationsPerMinute===undefined?env('SITEBOSS_GITHUB_MAX_MUTATIONS_PER_MINUTE',6):num(o.maxMutationsPerMinute,6),
+  maxMutationsPerHour:o.maxMutationsPerHour===undefined?env('SITEBOSS_GITHUB_MAX_MUTATIONS_PER_HOUR',60):num(o.maxMutationsPerHour,60),
+  minRequestGapMs:o.minRequestGapMs===undefined?env('SITEBOSS_GITHUB_MIN_REQUEST_GAP_MS',500):num(o.minRequestGapMs,500),
+  minMutationGapMs:o.minMutationGapMs===undefined?env('SITEBOSS_GITHUB_MIN_MUTATION_GAP_MS',2500):num(o.minMutationGapMs,2500)
+ };
+ return{
+  maxRequestsPerMinute:Math.max(1,Math.min(30,requested.maxRequestsPerMinute)),
+  maxMutationsPerMinute:Math.max(1,Math.min(6,requested.maxMutationsPerMinute)),
+  maxMutationsPerHour:Math.max(1,Math.min(60,requested.maxMutationsPerHour)),
+  minRequestGapMs:Math.max(500,requested.minRequestGapMs),
+  minMutationGapMs:Math.max(2500,requested.minMutationGapMs),
+  cacheTtlMs:num(o.cacheTtlMs===undefined?process.env.SITEBOSS_GITHUB_CACHE_TTL_MS:o.cacheTtlMs,15000),
+  notFoundTtlMs:Math.max(60000,num(o.notFoundTtlMs===undefined?process.env.SITEBOSS_GITHUB_NOT_FOUND_TTL_MS:o.notFoundTtlMs,300000)),
+  mutationDedupeMs:Math.max(60000,num(o.mutationDedupeMs===undefined?process.env.SITEBOSS_GITHUB_MUTATION_DEDUPE_MS:o.mutationDedupeMs,300000)),
+  staleLockMs:Math.max(5000,num(o.staleLockMs===undefined?process.env.SITEBOSS_GITHUB_STALE_LOCK_MS:o.staleLockMs,300000)),
+  lockTimeoutMs:Math.max(5000,num(o.lockTimeoutMs===undefined?process.env.SITEBOSS_GITHUB_LOCK_TIMEOUT_MS:o.lockTimeoutMs,180000)),
+  maxCacheBodyBytes:Math.max(1024,num(o.maxCacheBodyBytes===undefined?process.env.SITEBOSS_GITHUB_MAX_CACHE_BODY_BYTES:o.maxCacheBodyBytes,1048576))
+ };
 }
 function paths(r=root()){return{root:r,lock:path.join(r,'request.lock'),state:path.join(r,'state.json'),metrics:path.join(r,'metrics.jsonl'),cache:path.join(r,'cache')}}
 function ensure(p){fs.mkdirSync(p.root,{recursive:true});fs.mkdirSync(p.cache,{recursive:true})}

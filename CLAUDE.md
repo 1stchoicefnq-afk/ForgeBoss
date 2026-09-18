@@ -1,5 +1,18 @@
 # ForgeBoss Claude Worker Rules
 
+## GitHub compliance HARD LAW
+
+Before any GitHub API call, automated clone/fetch/push, issue/PR/comment mutation, workflow dispatch or GitHub-backed polling, read and obey `GITHUB-COMPLIANCE-LAW.md`.
+
+- No worker may bypass the shared GitHub governor.
+- No worker may raise/disable the hard governor ceilings or reduce the minimum spacing.
+- No worker may use extra tokens/accounts/processes to evade limits or cooldowns.
+- 403/429/rate-limit/abuse signals fail closed.
+- GitHub issues/comments are not a high-frequency worker message bus.
+- New GitHub automation is blocked until the compliance checker and bypass audit cover it.
+
+If speed conflicts with GitHub compliance, **compliance wins and the worker stops**.
+
 These rules apply to every Claude Code worker in this repository.
 
 ## Parallel-worker safety is mandatory
