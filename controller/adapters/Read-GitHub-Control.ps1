@@ -11,6 +11,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 function B64Url([byte[]]$Bytes){
  [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
 }
@@ -61,9 +64,7 @@ function New-ReadToken {
    statuses='read'
   }
  }|ConvertTo-Json -Depth 10
- $tok=Invoke-RestMethod -Method Post `
-  -Uri "https://api.github.com/app/installations/$InstallationId/access_tokens" `
-  -Headers $headers -ContentType 'application/json' -Body $body
+ $tok=Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$InstallationId/access_tokens" -Headers $headers -Body $body -CacheTtlMs 0
  "$($tok.token)"
 }
 function Headers([string]$Token){
@@ -74,14 +75,12 @@ function Headers([string]$Token){
  }
 }
 function Get-Pr([int]$Number,[string]$Token){
- Invoke-RestMethod -Method Get `
-  -Uri "https://api.github.com/repos/$Owner/$Repo/pulls/$Number" `
-  -Headers (Headers $Token)
+ Invoke-GovernedGitHubJson -Method GET -Url "https://api.github.com/repos/$Owner/$Repo/pulls/$Number" -Headers (Headers $Token) -CacheTtlMs 0
 }
 function Get-OpenBasePrs([string]$BaseRef,[string]$Token){
  $encoded=[Uri]::EscapeDataString($BaseRef)
  $uri="https://api.github.com/repos/$Owner/$Repo/pulls?state=open&base=$encoded&per_page=100&sort=updated&direction=desc"
- @(Invoke-RestMethod -Method Get -Uri $uri -Headers (Headers $Token))
+ @(Invoke-GovernedGitHubJson -Method GET -Url $uri -Headers (Headers $Token) -CacheTtlMs 0)
 }
 function PrSummary([object]$Pr){
  $h=Optional $Pr 'head';$b=Optional $Pr 'base'
