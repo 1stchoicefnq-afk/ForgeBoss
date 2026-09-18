@@ -47,7 +47,7 @@ function scan(rel,abs){
   if(/api\.github\.com/i.test(win)&&/(Invoke-RestMethod|Invoke-WebRequest|HttpClient|axios\.|\bfetch\s*\()/i.test(line)&&!governed&&!allowed.has(rel)){
    failures.push(rel+':'+(i+1)+': unmanaged GitHub HTTP client');break;
   }
-  const directPush=/@\(['"]push['"]|git(?:\.exe)?[^\r\n]{0,80}\bpush\b|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"]push['"]/i.test(line);
+  const directPush=/@\(\s*['"]push['"]|(?:^|[\\s'"`])git(?:\.exe)?\\s+push\\b|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"]push['"]/i.test(line);
   if(directPush&&!/Invoke-GovernedGitPush|governedGitPush/.test(win)&&!allowed.has(rel)){
    failures.push(rel+':'+(i+1)+': unmanaged git push');break;
   }
