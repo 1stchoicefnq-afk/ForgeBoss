@@ -133,8 +133,10 @@ function New-ReadOnlySnapshot([string]$sha,[string]$token){
   $repo=Join-Path $dir 'repo'
   $env:SITEBOSS_GITHUB_TOKEN=$token; $env:GIT_ASKPASS=$ask; $env:GIT_TERMINAL_PROMPT='0'
   try {
-    Invoke-Git -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
-    Invoke-Git -CommandArgs @('fetch','--no-tags','origin',$sha) -WorkingDir $repo
+    $net=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
+    if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
+    $net=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs @('fetch','--no-tags','origin',$sha)
+    if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
     Invoke-Git -CommandArgs @('checkout','--detach',$sha) -WorkingDir $repo
     $actual=Invoke-Git -CommandArgs @('rev-parse','HEAD') -WorkingDir $repo -Capture
     if($actual -ne $sha){ throw "Snapshot checkout mismatch: $actual" }

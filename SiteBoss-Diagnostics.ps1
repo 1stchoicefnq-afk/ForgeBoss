@@ -507,11 +507,13 @@ Run-Check 'repo.clone_exact_repair_head' {
   $repo=Join-Path $diagRoot 'repo'
   New-Item -ItemType Directory -Force -Path $diagRoot|Out-Null
   $script:DiagRepo=$repo
-  [void](Invoke-External 'git.exe' @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo))
+  $net=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
+  if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
   $script:Counters.clones++
   [void](Invoke-External 'git.exe' @('config','--local','core.autocrlf','false') $repo)
   [void](Invoke-External 'git.exe' @('config','--local','core.safecrlf','false') $repo)
-  [void](Invoke-External 'git.exe' @('fetch','--no-tags','origin',$head.sha) $repo)
+  $net=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs @('fetch','--no-tags','origin',$head.sha)
+  if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
   [void](Invoke-External 'git.exe' @('checkout','--detach',$head.sha) $repo)
   @{repo=$repo;head=$head.sha}
 } @('git.executable','filesystem.case_sensitive_root','github.repair_pr_shape')

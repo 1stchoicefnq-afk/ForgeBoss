@@ -522,11 +522,11 @@ Assert-CaseSensitive $Config.WorkspaceRoot
 $clean=Join-Path $Config.WorkspaceRoot "$Stamp\repo"
 New-Item -ItemType Directory -Force -Path (Split-Path $clean -Parent)|Out-Null
 $script:CleanWorkspace=$clean
-$r=Run 'git.exe' @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$clean)
+$r=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$clean)
 if($r.exit_code-ne0){throw "Clean clone failed: $($r.stderr)"}
 [void](Run 'git.exe' @('config','--local','core.autocrlf','false') $clean)
 [void](Run 'git.exe' @('config','--local','core.safecrlf','false') $clean)
-$r=Run 'git.exe' @('fetch','--no-tags','origin',$exactHead) $clean
+$r=Invoke-GovernedGitNetwork -WorkingDirectory $clean -CommandArgs @('fetch','--no-tags','origin',$exactHead)
 if($r.exit_code-ne0){throw "Fetch parent head failed: $($r.stderr)"}
 # Fetch candidate commit from the local Repair Rat workspace, not GitHub.
 $r=Run 'git.exe' @('fetch','--no-tags',$sourceRepo,$localCommit) $clean
