@@ -71,6 +71,11 @@ mutate('M2-state-regression','request-governor.js',
  "if(false&&(Number(a.sequence)!==Number(s.sequence)||String(a.stateHash||'')!==stateDigest(s)))throw new GitHubStateTamperError('state sequence/hash regressed or was replaced');",
  'state reset/regression after protection history fails closed');
 
+mutate('M2-anchor-outside-reset-root','request-governor.js',
+ "anchor:path.join(path.dirname(r),'github-governor-authority.json')",
+ "anchor:path.join(r,'state-authority.json')",
+ 'whole governor state-root deletion after history fails closed');
+
 mutate('M3-cache-floor','request-governor.js',
  'CACHE_TTL_MIN_MS=5000,CACHE_TTL_MAX_MS=300000',
  'CACHE_TTL_MIN_MS=0,CACHE_TTL_MAX_MS=300000',
@@ -81,5 +86,5 @@ mutate('M4-root-override-authority','request-governor.js',
  "function rejectRootOverride(o={}){void o}",
  'production root ignores env and argv spoofing and rejects option override');
 
-console.log('Mutation replay PASS: '+pass+'/11 mutations detected');
-if(pass!==11)process.exit(2);
+console.log('Mutation replay PASS: '+pass+'/12 mutations detected');
+if(pass!==12)process.exit(2);
