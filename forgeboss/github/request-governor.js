@@ -58,7 +58,7 @@ function cfg(o={}){
   maxCacheBodyBytes:Math.max(1024,num(o.maxCacheBodyBytes===undefined?process.env.SITEBOSS_GITHUB_MAX_CACHE_BODY_BYTES:o.maxCacheBodyBytes,1048576))
  };
 }
-function paths(r=root()){return{root:r,lock:path.join(r,'request.lock'),state:path.join(r,'state.json'),anchor:path.join(r,'state-authority.json'),metrics:path.join(r,'metrics.jsonl'),cache:path.join(r,'cache')}}
+function paths(r=root()){return{root:r,lock:path.join(r,'request.lock'),state:path.join(r,'state.json'),anchor:path.join(path.dirname(r),'github-governor-authority.json'),metrics:path.join(r,'metrics.jsonl'),cache:path.join(r,'cache')}}
 function ensure(p){fs.mkdirSync(p.root,{recursive:true});fs.mkdirSync(p.cache,{recursive:true})}
 function readJson(f,d){try{return JSON.parse(fs.readFileSync(f,'utf8'))}catch{return d}}
 function readJsonStrict(f){try{return JSON.parse(fs.readFileSync(f,'utf8'))}catch(e){throw new GitHubStateTamperError('unreadable '+path.basename(f))}}
