@@ -119,7 +119,7 @@ class ProtectedAuthorityClient:
             except OSError:pass
 
     def _exchange_windows(self,raw:bytes)->bytes:
-        if not isinstance(self.pipe_name,str) or not self.pipe_name.startswith(r"\\.\pipe\"):
+        if not isinstance(self.pipe_name,str) or not self.pipe_name.startswith("\\\\.\\pipe\\"):
             raise AuthorityError("IPC_ENDPOINT_INVALID")
         k=ctypes.WinDLL("kernel32",use_last_error=True)
         k.WaitNamedPipeW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD];k.WaitNamedPipeW.restype=wintypes.BOOL
