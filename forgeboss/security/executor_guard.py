@@ -3,7 +3,8 @@ import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
-STATE=ROOT/"state"/"executor-security";STATE.mkdir(parents=True,exist_ok=True)
+RUNTIME_STATE_ROOT=Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
+STATE=RUNTIME_STATE_ROOT/"executor-security";STATE.mkdir(parents=True,exist_ok=True)
 CNW=getattr(subprocess,"CREATE_NO_WINDOW",0)
 class SecurityError(RuntimeError):pass
 
