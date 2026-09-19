@@ -18,8 +18,9 @@ class Boundary:
     def verify_peer(self,peer_id,_digest,_signature,peer_context):return self.peer_ok and peer_id=='controller-a' and peer_context==PeerContext('test','principal-a')
 class Secrets:
     private_key='PEM-PRIVATE-DO-NOT-LEAK';trust_root='ED25519-TRUST-DO-NOT-LEAK'
-    def github_app_private_key(self):return self.private_key
-    def launch_trust_root(self):return self.trust_root
+    def __init__(self):self.github_reads=0;self.launch_reads=0
+    def github_app_private_key(self):self.github_reads+=1;return self.private_key
+    def launch_trust_root(self):self.launch_reads+=1;return self.trust_root
 class Backend:
     def __init__(self):self.calls=[];self.fail=False;self.leak=False;self.lock=threading.Lock()
     def _r(self,op,kw,private):
@@ -37,10 +38,19 @@ def req(op,payload,request_id=None,repo='owner/repo'):
 CTX=PeerContext('test','principal-a')
 
 class TestService(ProtectedAuthorityService):
-    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer):
-        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'}
+    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer,self_build_runtime=None):
+        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'};self.self_build_runtime=self_build_runtime
         from forgeboss.protected_authority.service import ReplayJournal
         self.journal=ReplayJournal(self.root)
+
+class Runtime:
+    def __init__(self,leak=False):self.calls=[];self.leak=leak
+    def prepare(self,payload):
+        self.calls.append(('prepare',dict(payload)))
+        if self.leak:return {'assignmentToken':'must-not-escape'}
+        return {'schema':1,'run_id':payload['runId'],'base_sha':payload['baseSha'],'builders':[]}
+    def prepare_replacement(self,payload):self.calls.append(('replacement',dict(payload)));return {'schema':1,'replacement':True,'run_id':payload['runId']}
+    def status(self,payload):self.calls.append(('status',dict(payload)));return {'schema':1,'phase':'PREPARED','run_id':payload['runId']}
 
 class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
     def setUp(self):
@@ -67,6 +77,31 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         p={'baseSha':'a'*40,'headSha':'b'*40,'baseRef':'main','headRef':'repair/fix','title':'Reviewed fix','body':'evidence','reviewDigest':'c'*64};out=self.service.handle(req('publish_reviewed_draft_pr',p),peer_context=CTX);self.assertTrue(verify_signed_receipt(out,self.public_b64));self.backend.leak=True
         with self.assertRaises(AuthorityError) as cm:self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX)
         self.assertEqual(cm.exception.code,'SECRET_FIELD_DENIED')
+    def test_self_build_prepare_uses_local_runtime_without_github_private_key(self):
+        runtime=Runtime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        payload={'sourceRoot':'C:\\ForgeBoss' if __import__('os').name=='nt' else '/opt/ForgeBoss','baseSha':'a'*40,'runId':'fl1-one'}
+        out=svc.handle(req('prepare_self_build',payload),peer_context=CTX)
+        self.assertTrue(verify_signed_receipt(out,self.public_b64))
+        self.assertEqual(runtime.calls[0][0],'prepare')
+        self.assertEqual(self.secrets.github_reads,0)
+        self.assertEqual(self.backend.calls,[])
+
+    def test_self_build_runtime_secret_shaped_result_is_refused(self):
+        runtime=Runtime(leak=True)
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        payload={'sourceRoot':'C:\\ForgeBoss' if __import__('os').name=='nt' else '/opt/ForgeBoss','baseSha':'a'*40,'runId':'fl1-leak'}
+        with self.assertRaises(AuthorityError) as cm:
+            svc.handle(req('prepare_self_build',payload),peer_context=CTX)
+        self.assertEqual(cm.exception.code,'SECRET_FIELD_DENIED')
+        self.assertEqual(self.secrets.github_reads,0)
+
+    def test_self_build_operation_fails_closed_without_runtime(self):
+        payload={'sourceRoot':'C:\\ForgeBoss' if __import__('os').name=='nt' else '/opt/ForgeBoss','baseSha':'a'*40,'runId':'fl1-none'}
+        with self.assertRaises(AuthorityError) as cm:
+            self.service.handle(req('prepare_self_build',payload),peer_context=CTX)
+        self.assertEqual(cm.exception.code,'SELF_BUILD_RUNTIME_UNAVAILABLE')
+
     def test_strict_json(self):
         for raw in ('{"x":1,"x":2}','{"x":NaN}','{"x":Infinity}',''):
             with self.subTest(raw=raw),self.assertRaises(AuthorityError):strict_loads(raw)

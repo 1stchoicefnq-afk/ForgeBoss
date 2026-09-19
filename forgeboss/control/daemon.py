@@ -6,6 +6,7 @@ from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_M
 from .envelope import secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
+from .known_good import runtime_identity_from_env
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -14,6 +15,7 @@ DB=STATE/"forgeboss.db"
 HOST="127.0.0.1"
 PORT=18765
 WORKTREE_ROOT=Path(os.environ.get("FORGEBOSS_WORKTREE_ROOT") or (STATE/"worktrees")).resolve()
+RUNTIME_IDENTITY=runtime_identity_from_env(ROOT)
 SAFE_TOOL_IDS={"git","node","npm","python","pytest","docker"}
 
 class ForgeBossDaemon:
@@ -60,7 +62,7 @@ class ForgeBossDaemon:
                     "capabilities":["tasks","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
-            return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
+            return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"identity":dict(RUNTIME_IDENTITY),"state":self.store.snapshot()}
         if m=="task.create":
             def create():
                 try:validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})

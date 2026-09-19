@@ -1,6 +1,50 @@
 from __future__ import annotations
-import json, os, sys, traceback, subprocess
+import hashlib, json, os, sys, traceback, subprocess
 from pathlib import Path
+
+def _persist_result(result:dict)->None:
+    raw=os.environ.get("FORGEBOSS_RESULT_FILE")
+    if not raw:return
+    state_raw=os.environ.get("FORGEBOSS_STATE_ROOT")
+    if not state_raw:raise RuntimeError("FORGEBOSS_STATE_ROOT required for result evidence")
+    root=Path(state_raw).expanduser().resolve()
+    target=Path(raw).expanduser().resolve()
+    try:
+        if Path(os.path.commonpath([str(root),str(target)]))!=root:
+            raise RuntimeError("result evidence path escapes external state root")
+    except ValueError as ex:
+        raise RuntimeError("result evidence path escapes external state root") from ex
+    target.parent.mkdir(parents=True,exist_ok=True)
+    tmp=target.with_name(target.name+f".tmp-{os.getpid()}")
+    data=(json.dumps(result,sort_keys=True,indent=2,allow_nan=False)+"\n").encode("utf-8")
+    fd=os.open(str(tmp),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    try:
+        with os.fdopen(fd,"wb",closefd=False) as fh:
+            fh.write(data);fh.flush();os.fsync(fh.fileno())
+    finally:
+        try:os.close(fd)
+        except OSError:pass
+    os.replace(tmp,target)
+
+def _initial_result(packet_path:str|os.PathLike[str],workspace:str,model_name:str)->dict:
+    pp=Path(packet_path)
+    packet=json.loads(pp.read_text(encoding="utf-8"))
+    return {
+        "schema":1,
+        "executor":"mini-swe",
+        "model":model_name,
+        "cost_usd":0.0,
+        "calls":0,
+        "completed":False,
+        "error":None,
+        "task_id":str(packet.get("task_id") or ""),
+        "builder_id":str(packet.get("builder_id") or ""),
+        "run_id":str(packet.get("run_id") or ""),
+        "expected_head_revision":str(packet.get("expected_head_revision") or "").lower(),
+        "workspace":str(Path(workspace).resolve()),
+        "packet_sha256":hashlib.sha256(pp.read_bytes()).hexdigest(),
+        "postflight":None,
+    }
 
 def main() -> int:
     if len(sys.argv)<4:
@@ -13,12 +57,20 @@ def main() -> int:
     budget=float(sys.argv[3])
     model_name=os.environ.get("FORGEBOSS_MINISWE_MODEL","openai/gpt-5.6-luna")
 
-    result={"executor":"mini-swe","model":model_name,"cost_usd":0.0,"completed":False,"error":None}
+    result=_initial_result(sys.argv[1],workspace,model_name)
     guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
-    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+    if os.environ.get("FORGEBOSS_SELF_BUILD_MODE")=="YES":
+        launch_bundle=os.environ.get("FORGEBOSS_PROTECTED_LAUNCH_BUNDLE","")
+        if not launch_bundle:
+            print("FORGEBOSS SAFE STOP: protected self-build launch bundle missing.",file=sys.stderr);return 13
+        v=subprocess.run([sys.executable,str(guard),"protected-paid-start","--lease",lease,"--token",lease_token,
+                          "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+                          "--launch-bundle",launch_bundle,"--budget",str(budget)],capture_output=True,text=True)
+    else:
+        v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
     if v.returncode:
         print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
     env_obj=None
@@ -63,7 +115,8 @@ You are in {{ cwd }}. Work only inside the bounded repository and obey the task 
             step_limit=30,
             wall_time_limit_seconds=900,
         )
-        task=f"""You are a bounded coding worker inside ForgeBoss. Product: SiteBoss.
+        product=str(packet.get("product") or "ForgeBoss")
+        task=f"""You are a bounded coding worker inside ForgeBoss. Product: {product}.
 Objective: {packet.get('objective','')}
 
 IMMUTABLE RULES:
@@ -85,6 +138,16 @@ Required acceptance intent:
         if post.returncode:
             result["error"]="ForgeBoss postflight denied worker result: "+(post.stdout or post.stderr)[-1200:]
             return 13
+        try:
+            line=(post.stdout or "").strip().splitlines()[-1]
+            postflight=json.loads(line)
+        except Exception:
+            result["error"]="ForgeBoss postflight produced unreadable evidence"
+            return 13
+        if postflight.get("ok") is not True or postflight.get("scope_ok") is not True or postflight.get("paid_consumed") is not True:
+            result["error"]="ForgeBoss postflight evidence did not prove paid bounded execution"
+            return 13
+        result["postflight"]=postflight
         result["completed"]=True
         return 0
     except Exception as e:
@@ -100,6 +163,10 @@ Required acceptance intent:
         try:
             if env_obj is not None: env_obj.cleanup()
         except Exception: pass
+        try:
+            _persist_result(result)
+        except Exception as evidence_error:
+            print("FORGEBOSS RESULT EVIDENCE ERROR: "+str(evidence_error),file=sys.stderr)
         print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
 
 if __name__=="__main__":raise SystemExit(main())

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re,sqlite3
+import base64,re,sqlite3
 from pathlib import Path
 from typing import Any,Mapping
 from .boundary import FileSecretProvider,PeerContext,PlatformMachineBoundary
@@ -8,6 +8,7 @@ from .github_backend import GitHubAppBackend
 from .protocol import AuthorityError,assert_public_result,canonical_digest,canonical_json,strict_loads,unsigned_request
 from .root_chain import assert_machine_anchored_root
 from .signing import ReceiptSigner
+from forgeboss.control.self_build_runtime import SelfBuildRuntime,SelfBuildRuntimeError
 _REPO_RE=re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
 
 def _canonical_repository_map(values)->dict[str,str]:
@@ -45,12 +46,12 @@ class ReplayJournal:
         finally:db.close()
 
 class ProtectedAuthorityService:
-    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner,allowed_repositories):
+    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner,allowed_repositories,self_build_runtime=None):
         root=Path(protected_root)
         if not root.is_absolute():raise AuthorityError('PROTECTED_ROOT_INVALID')
         resolved=assert_machine_anchored_root(boundary,root)
         if receipt_signer is None:raise AuthorityError('RECEIPT_SIGNER_REQUIRED')
-        self.root=resolved;self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.allowed_repositories=_canonical_repository_map(allowed_repositories);self.service_principal=boundary.assert_service_principal(resolved);self.journal=ReplayJournal(resolved)
+        self.root=resolved;self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.allowed_repositories=_canonical_repository_map(allowed_repositories);self.service_principal=boundary.assert_service_principal(resolved);self.journal=ReplayJournal(resolved);self.self_build_runtime=self_build_runtime
     def handle_json(self,raw:str|bytes,*,peer_context:PeerContext)->bytes:return canonical_json(self.handle(unsigned_request(strict_loads(raw)),peer_context=peer_context))
     def handle(self,raw_request:Mapping[str,Any],*,peer_context:PeerContext)->dict:
         r=unsigned_request(raw_request)
@@ -60,13 +61,26 @@ class ProtectedAuthorityService:
         r=dict(r);r['repository']=canonical_repo
         self.journal.consume(r['requestId'],r['requestDigest']);private=[]
         try:
-            if r['operation']=='verify_launch_authority':
+            op=r['operation']
+            if op=='verify_launch_authority':
                 trust=self.secrets_provider.launch_trust_root();private.append(trust);result=self.backend.verify_launch_authority(repository=r['repository'],control_revision=r['controlRevision'],payload=r['payload'],trust_root=trust)
+            elif op in {'prepare_self_build','prepare_self_build_replacement','self_build_status','revoke_self_build_worker','record_self_build_handoff','record_self_build_review','accept_self_build_candidate'}:
+                if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
+                try:
+                    if op=='prepare_self_build':result=self.self_build_runtime.prepare(r['payload'])
+                    elif op=='prepare_self_build_replacement':result=self.self_build_runtime.prepare_replacement(r['payload'])
+                    elif op=='revoke_self_build_worker':result=self.self_build_runtime.revoke_worker(r['payload'])
+                    elif op=='record_self_build_handoff':result=self.self_build_runtime.record_handoff(r['payload'])
+                    elif op=='record_self_build_review':result=self.self_build_runtime.record_review(r['payload'])
+                    elif op=='accept_self_build_candidate':result=self.self_build_runtime.accept_candidate(r['payload'],controller_id=r['peerId'])
+                    else:result=self.self_build_runtime.status(r['payload'])
+                except SelfBuildRuntimeError as ex:
+                    raise AuthorityError(ex.code,str(ex)) from ex
             else:
                 key=self.secrets_provider.github_app_private_key();private.append(key);kw={'repository':r['repository'],'control_revision':r['controlRevision'],'payload':r['payload'],'private_key':key}
-                if r['operation']=='read_github_control':result=self.backend.read_github_control(**kw)
-                elif r['operation']=='publish_report_comment':result=self.backend.publish_report_comment(**kw)
-                elif r['operation']=='publish_reviewed_draft_pr':result=self.backend.publish_reviewed_draft_pr(**kw)
+                if op=='read_github_control':result=self.backend.read_github_control(**kw)
+                elif op=='publish_report_comment':result=self.backend.publish_report_comment(**kw)
+                elif op=='publish_reviewed_draft_pr':result=self.backend.publish_reviewed_draft_pr(**kw)
                 else:raise AuthorityError('OPERATION_DENIED')
             public=assert_public_result(result,tuple(private))
         except AuthorityError:raise
@@ -78,4 +92,6 @@ def create_production_service(*,protected_root:str,expected_service_principal:st
     root=Path(protected_root);boundary=PlatformMachineBoundary(expected_service_principal=expected_service_principal,peer_principals=peer_principals,peer_public_keys=peer_public_keys,trusted_storage_principals=trusted_storage_principals);root=assert_machine_anchored_root(boundary,root)
     repos=_canonical_repository_map(allowed_repositories)
     secrets=FileSecretProvider(root=root,private_key_path=Path(github_private_key_file),launch_trust_path=Path(launch_trust_file),boundary=boundary);signer=ReceiptSigner.from_file(root=root,path=Path(receipt_signing_key_file),boundary=boundary);backend=GitHubAppBackend(app_id=github_app_id,installation_id=github_installation_id)
-    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values())
+    receipt_pin=base64.b64encode(signer.public_raw).decode('ascii')
+    runtime=SelfBuildRuntime(protected_root=root,boundary=boundary,receipt_public_key_b64=receipt_pin)
+    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values(),self_build_runtime=runtime)
