@@ -12,7 +12,8 @@ const gov=require('./request-governor');
 const {githubRequest,governedGitNetwork,governedGitPush,governorStatus,stateRoot,getConfig}=gov;
 const resp=(status,body='',headers={})=>({status,ok:status>=200&&status<300,headers:new Headers(headers),async text(){return body}});
 const c={minRequestGapMs:0,minMutationGapMs:0,maxRequestsPerMinute:1000,maxMutationsPerMinute:1000,maxMutationsPerHour:1000,cacheTtlMs:0,notFoundTtlMs:60000};
-let pass=0,selected=0;\nconst FILTER=process.env.FB_GOV_TEST_FILTER||'';
+let pass=0,selected=0;
+const FILTER=process.env.FB_GOV_TEST_FILTER||'';
 
 function useHome(name){
  activeHome=path.join(base,name);
