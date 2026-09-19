@@ -407,10 +407,10 @@ def main():
     api=Api()
 
     # Load the dashboard as a LOCAL FILE. Do not inject a giant HTML string.
-    # Also let pywebview choose the best installed Windows renderer instead of
-    # forcing EdgeChromium; this avoids a black window on machines where the
-    # WebView2 runtime/backend is incomplete.
-    webview.create_window(
+    # pywebview exposes absolute Explorer drop paths on the Python DOM event
+    # as dataTransfer.files[*].pywebviewFullPath. Browser File objects alone
+    # do not provide an authoritative local path.
+    window=webview.create_window(
         "ForgeBoss - Self Build",
         url=page.as_uri(),
         js_api=api,
@@ -420,7 +420,25 @@ def main():
         resizable=True,
         background_color="#07120f",
     )
-    webview.start(debug=False)
+
+    def bind_project_drop(win):
+        from webview.dom import DOMEventHandler
+        def on_drop(event):
+            result={"ok":False,"message":"Drop the ForgeBoss folder or ZIP."}
+            try:
+                files=((event or {}).get("dataTransfer") or {}).get("files") or []
+                full=files[0].get("pywebviewFullPath") if files else None
+                result=api.attach_project(full)
+            except Exception as e:
+                result={"ok":False,"message":str(e)}
+            try:
+                win.evaluate_js("window.forgeBossDropResult("+json.dumps(result)+")")
+            except Exception:
+                pass
+        win.dom.document.events.dragover += DOMEventHandler(lambda _e: None, prevent_default=True, stop_propagation=True, debounce=250)
+        win.dom.document.events.drop += DOMEventHandler(on_drop, prevent_default=True, stop_propagation=True)
+
+    webview.start(bind_project_drop, window, debug=False)
 
 if __name__=="__main__":
     try:
