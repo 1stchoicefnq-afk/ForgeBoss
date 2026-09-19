@@ -13,7 +13,7 @@ from forgeboss.control.self_build_coordinator import SelfBuildCoordinator,SelfBu
 from forgeboss.control.store import ControlStore
 from forgeboss.control.workspace_state import ProtectedWorkspaceState
 from forgeboss.security.executor_guard import _resolve_git_executable
-from forgeboss.control.receipts import CandidateHandoff,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
+from forgeboss.control.receipts import CandidateHandoff,ReviewerReceipt,ControllerAcceptanceReference,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
 
 
 class SelfBuildRuntimeError(RuntimeError):
@@ -331,6 +331,112 @@ class SelfBuildRuntime:
         record.setdefault("handoffs",[]).append(entry)
         _atomic_json(path,record);self._assert_path(path)
         return entry
+
+    @staticmethod
+    def _entry_for_task(record:dict,key:str,task_id:str):
+        return next((x for x in (record.get(key) or []) if x.get("taskId")==task_id),None)
+
+    def record_review(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        _prepared,_item,task_id,worker_run_id,owner_epoch=self._handoff_item(record,payload)
+        handoff_entry=self._entry_for_task(record,"handoffs",task_id)
+        if handoff_entry is None:raise SelfBuildRuntimeError("HANDOFF_REQUIRED","candidate handoff must freeze before review")
+        existing=self._entry_for_task(record,"reviews",task_id)
+        review_raw=payload.get("review")
+        if not isinstance(review_raw,dict) or set(review_raw)!={"reviewerId","verdict","evidenceSha256","reviewerTestReceipts"}:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","review evidence fields invalid")
+        if existing is not None:
+            if existing.get("sourceReviewDigest")!=receipt_digest(review_raw):
+                raise SelfBuildRuntimeError("REVIEW_CONFLICT","candidate review already recorded differently")
+            return existing
+        try:
+            handoff=CandidateHandoff.from_dict(handoff_entry["handoff"],store=self.store)
+        except Exception as ex:raise SelfBuildRuntimeError("HANDOFF_RECEIPT_INVALID",str(ex)) from ex
+        verdict=str(review_raw.get("verdict") or "").lower()
+        reviewer_tests=review_raw.get("reviewerTestReceipts")
+        if verdict=="pass" and (not isinstance(reviewer_tests,list) or not reviewer_tests):
+            raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_REQUIRED","PASS review requires independent test receipt")
+        raw={
+            "assignment":handoff.assignment.to_store_packet(),
+            "handoffSha256":handoff.digest,
+            "candidateSha":handoff.candidate_sha,
+            "candidateTreeSha":handoff.candidate_tree_sha,
+            "reviewerId":review_raw.get("reviewerId"),
+            "verdict":review_raw.get("verdict"),
+            "evidenceSha256":review_raw.get("evidenceSha256"),
+            "reviewerTestReceipts":reviewer_tests,
+        }
+        try:review=ReviewerReceipt.from_dict(raw,store=self.store,handoff=handoff)
+        except Exception as ex:raise SelfBuildRuntimeError("REVIEW_RECEIPT_INVALID",str(ex)) from ex
+        entry={"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
+               "review":review.to_dict(),"reviewDigest":review.digest,
+               "sourceReviewDigest":receipt_digest(review_raw),"status":review.verdict.upper()}
+        record.setdefault("reviews",[]).append(entry)
+        _atomic_json(path,record);self._assert_path(path)
+        return entry
+
+    def _finalize_acceptance(self,path:Path,record:dict,pending:dict)->dict:
+        task_id=pending["taskId"]
+        accepted=self._entry_for_task(record,"accepted",task_id)
+        if accepted is not None:return accepted
+        record.setdefault("accepted",[]).append(pending)
+        record.pop("acceptancePending",None)
+        _atomic_json(path,record);self._assert_path(path)
+        return pending
+
+    def accept_candidate(self,payload:dict,*,controller_id:str)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        prepared,item,task_id,worker_run_id,owner_epoch=self._handoff_item(record,payload)
+        accepted=self._entry_for_task(record,"accepted",task_id)
+        if accepted is not None:return accepted
+
+        pending=record.get("acceptancePending")
+        if pending is not None:
+            if not isinstance(pending,dict) or pending.get("taskId")!=task_id or pending.get("workerRunId")!=worker_run_id or int(pending.get("ownerEpoch") or 0)!=owner_epoch:
+                raise SelfBuildRuntimeError("ACCEPTANCE_PENDING_CONFLICT","another acceptance is pending")
+            task=self.store.get_task(task_id)
+            if not isinstance(task,dict):raise SelfBuildRuntimeError("ACCEPTANCE_TASK_MISSING","task state unavailable")
+            status=str(task.get("status") or "")
+            if status=="released":
+                if str(task.get("result_head") or "").lower()!=str(pending.get("candidateSha") or "").lower():
+                    raise SelfBuildRuntimeError("ACCEPTANCE_RELEASE_MISMATCH","released task head differs from pending acceptance")
+                return self._finalize_acceptance(path,record,pending)
+            if status!="running":
+                raise SelfBuildRuntimeError("ACCEPTANCE_TASK_STATE_INVALID","pending acceptance task is not releasable")
+            try:self.store.release(task_id,worker_run_id,owner_epoch,result_head=pending["candidateSha"],outcome="released",expected_head=str(prepared.get("base_sha") or ""))
+            except Exception as ex:
+                code=getattr(ex,"code","ACCEPTANCE_RELEASE_FAILED")
+                raise SelfBuildRuntimeError(code,str(ex)) from ex
+            return self._finalize_acceptance(path,record,pending)
+
+        handoff_entry=self._entry_for_task(record,"handoffs",task_id)
+        review_entry=self._entry_for_task(record,"reviews",task_id)
+        if handoff_entry is None or review_entry is None:
+            raise SelfBuildRuntimeError("REVIEW_REQUIRED","candidate requires frozen handoff and independent review")
+        try:
+            handoff=CandidateHandoff.from_dict(handoff_entry["handoff"],store=self.store)
+            review=ReviewerReceipt.from_dict(review_entry["review"],store=self.store,handoff=handoff)
+            acceptance=ControllerAcceptanceReference.from_records(controller_id=controller_id,handoff=handoff,review=review)
+        except Exception as ex:raise SelfBuildRuntimeError("CONTROLLER_ACCEPTANCE_DENIED",str(ex)) from ex
+        pending={"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
+                 "candidateSha":handoff.candidate_sha,"candidateTreeSha":handoff.candidate_tree_sha,
+                 "acceptance":acceptance.to_dict(),"acceptanceDigest":acceptance.digest,
+                 "handoffDigest":handoff.digest,"reviewDigest":review.digest,"status":"ACCEPTED"}
+        record["acceptancePending"]=pending
+        _atomic_json(path,record);self._assert_path(path)
+        try:self.store.release(task_id,worker_run_id,owner_epoch,result_head=handoff.candidate_sha,outcome="released",expected_head=str(prepared.get("base_sha") or ""))
+        except Exception as ex:
+            code=getattr(ex,"code","ACCEPTANCE_RELEASE_FAILED")
+            raise SelfBuildRuntimeError(code,str(ex)) from ex
+        return self._finalize_acceptance(path,record,pending)
 
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")

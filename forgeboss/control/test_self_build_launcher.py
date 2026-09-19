@@ -34,7 +34,7 @@ class E:
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[];self.handoffs=[]
+        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[]
     def attest_launch_payload(self,signed):
         self.attested.append(dict(signed))
         return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
@@ -42,6 +42,10 @@ class Client(ProtectedAuthorityClient):
         self.revoked.append(dict(kw));return {"result":{"revoked":True}}
     def record_self_build_handoff(self,**kw):
         self.handoffs.append(dict(kw));return {"result":{"status":"FROZEN_AWAITING_INDEPENDENT_REVIEW"},"receipt":{"operation":"record_self_build_handoff"}}
+    def record_self_build_review(self,**kw):
+        self.reviews.append(dict(kw));return {"result":{"status":"PASS"},"receipt":{"operation":"record_self_build_review"}}
+    def accept_self_build_candidate(self,**kw):
+        self.accepted.append(dict(kw));return {"result":{"status":"ACCEPTED"},"receipt":{"operation":"accept_self_build_candidate"}}
 
 
 
@@ -224,6 +228,13 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.client.handoffs[-1]["evidence"]["candidate_sha"],"c"*40)
         self.assertEqual(self.client.handoffs[-1]["evidence"]["measured_cost_usd"],"0.20")
         self.assertTrue(Path(first["result_file"]).parent.joinpath("candidate-evidence.json").is_file())
+        review={"reviewerId":"reviewer-independent","verdict":"pass","evidenceSha256":"9"*64,"reviewerTestReceipts":["8"*64]}
+        review_response=handoff.record_review(prepared_run=self.prepared,launched_run=out,builder_id="builder-a",review=review)
+        self.assertEqual(review_response["result"]["status"],"PASS")
+        self.assertEqual(self.client.reviews[-1]["review"],review)
+        accepted=handoff.accept_reviewed_candidate(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
+        self.assertEqual(accepted["result"]["status"],"ACCEPTED")
+        self.assertEqual(self.client.accepted[-1]["task_id"],"task-a")
 
     @unittest.skipUnless(__import__("shutil").which("git"),"git required")
     def test_freeze_candidate_real_git_scope_test_and_exact_sha(self):

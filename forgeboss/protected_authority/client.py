@@ -163,6 +163,18 @@ class ProtectedAuthorityClient:
             "ownerEpoch":int(owner_epoch),"evidence":dict(evidence),
         })
 
+    def record_self_build_review(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,review:Mapping[str,Any])->dict:
+        return self.call("record_self_build_review",{
+            "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
+            "ownerEpoch":int(owner_epoch),"review":dict(review),
+        })
+
+    def accept_self_build_candidate(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int)->dict:
+        return self.call("accept_self_build_candidate",{
+            "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
+            "ownerEpoch":int(owner_epoch),
+        })
+
     def _exchange(self,raw:bytes)->bytes:
         if os.name=="nt": return self._exchange_windows(raw)
         path=self.unix_socket_path

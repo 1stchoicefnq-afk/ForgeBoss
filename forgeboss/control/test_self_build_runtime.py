@@ -61,10 +61,13 @@ class RuntimeTests(unittest.TestCase):
                "workspaceGeneration":1,"workspaceContentIdentity":base,"budgetRunId":"fl1-run"}
         packet={"identity":ident,"assignmentIdentitySha256":hashlib.sha256(json.dumps(ident,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()}
         class Store:
-            def __init__(self):self.released=False
+            def __init__(self):self.released=False;self.status="running";self.result_head=None
             def assignment_identity(self,task_id,run_id,owner_epoch):
                 self.last=(task_id,run_id,owner_epoch);return packet
-            def release(self,*a,**k):self.released=True
+            def get_task(self,task_id):
+                return {"task_id":task_id,"status":self.status,"result_head":self.result_head}
+            def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released",expected_head=None):
+                self.released=True;self.status="released";self.result_head=result_head
         store=Store();self.runtime.store=store;self.runtime.git_resolver=lambda:git
         item={"task_id":"task-a","builder_id":"builder-a","worktree":str(work),"owner_epoch":1,
               "packet":{"allowed_files":["candidate.txt"]},
@@ -82,6 +85,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(store.released)
         again=self.runtime.record_handoff({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,"evidence":evidence})
         self.assertEqual(again,out)
+        with self.assertRaises(SelfBuildRuntimeError) as self_review:
+            self.runtime.record_review({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
+                                        "review":{"reviewerId":"builder-a","verdict":"pass","evidenceSha256":"7"*64,
+                                                  "reviewerTestReceipts":[test_row["receipt_digest"]]}})
+        self.assertEqual(self_review.exception.code,"REVIEW_RECEIPT_INVALID")
+        review=self.runtime.record_review({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
+                                           "review":{"reviewerId":"reviewer-independent","verdict":"pass","evidenceSha256":"7"*64,
+                                                     "reviewerTestReceipts":[test_row["receipt_digest"]]}})
+        self.assertEqual(review["status"],"PASS")
+        accepted=self.runtime.accept_candidate({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1},controller_id="controller-a")
+        self.assertEqual(accepted["status"],"ACCEPTED")
+        self.assertTrue(store.released)
+        self.assertEqual(store.result_head,candidate)
+        self.assertEqual(self.runtime.accept_candidate({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1},controller_id="controller-a"),accepted)
 
     def setUp(self):
         self.td=tempfile.TemporaryDirectory()

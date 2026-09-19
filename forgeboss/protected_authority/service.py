@@ -64,13 +64,15 @@ class ProtectedAuthorityService:
             op=r['operation']
             if op=='verify_launch_authority':
                 trust=self.secrets_provider.launch_trust_root();private.append(trust);result=self.backend.verify_launch_authority(repository=r['repository'],control_revision=r['controlRevision'],payload=r['payload'],trust_root=trust)
-            elif op in {'prepare_self_build','prepare_self_build_replacement','self_build_status','revoke_self_build_worker','record_self_build_handoff'}:
+            elif op in {'prepare_self_build','prepare_self_build_replacement','self_build_status','revoke_self_build_worker','record_self_build_handoff','record_self_build_review','accept_self_build_candidate'}:
                 if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
                 try:
                     if op=='prepare_self_build':result=self.self_build_runtime.prepare(r['payload'])
                     elif op=='prepare_self_build_replacement':result=self.self_build_runtime.prepare_replacement(r['payload'])
                     elif op=='revoke_self_build_worker':result=self.self_build_runtime.revoke_worker(r['payload'])
                     elif op=='record_self_build_handoff':result=self.self_build_runtime.record_handoff(r['payload'])
+                    elif op=='record_self_build_review':result=self.self_build_runtime.record_review(r['payload'])
+                    elif op=='accept_self_build_candidate':result=self.self_build_runtime.accept_candidate(r['payload'],controller_id=r['peerId'])
                     else:result=self.self_build_runtime.status(r['payload'])
                 except SelfBuildRuntimeError as ex:
                     raise AuthorityError(ex.code,str(ex)) from ex
