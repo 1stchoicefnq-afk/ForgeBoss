@@ -22,6 +22,10 @@
 .top{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}.title h2{margin:0;font-size:24px}.title p{margin:4px 0 0;color:var(--muted);font-size:13px}.badges{display:flex;gap:8px;flex-wrap:wrap}.badge{padding:8px 11px;border:1px solid var(--line);background:rgba(15,30,24,.75);border-radius:10px;color:#c5d6ce;font-size:12px}.badge strong{color:var(--mint)}
 .grid{display:grid;grid-template-columns:1.35fr .65fr;gap:18px}.card{background:linear-gradient(180deg,rgba(16,33,27,.96),rgba(10,23,19,.96));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px}
 .card h3{margin:0 0 14px;font-size:14px;letter-spacing:.3px}.muted{color:var(--muted)}
+.dropzone{margin:0 0 14px;padding:18px;border:1px dashed #2c6552;border-radius:13px;background:linear-gradient(145deg,#081812,#06110d);text-align:center;transition:.18s}
+.dropzone.drag{border-color:var(--mint);background:#0b241b;box-shadow:0 0 0 3px rgba(110,242,207,.08)}
+.dropzone b{display:block;font-size:14px;color:var(--mint);margin-bottom:5px}.dropzone small{color:var(--muted)}
+.dropzone .selected{margin-top:9px;color:#d9eee5;font-size:11px;word-break:break-all}
 .controls{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}.field label{display:block;color:var(--muted);font-size:11px;margin:0 0 6px}.field select,.field input{width:100%;border:1px solid #24463a;background:#0a1713;color:var(--text);border-radius:10px;padding:11px 12px;outline:none}.start{border:0;border-radius:10px;padding:12px 18px;background:linear-gradient(135deg,var(--mint),var(--mint2));color:#042019;font-weight:900;cursor:pointer;box-shadow:0 0 24px rgba(110,242,207,.2)}.start:hover{filter:brightness(1.06)}
 .secondary{border:1px solid #315347;border-radius:10px;padding:10px 14px;background:#13251f;color:#dbe9e3;cursor:pointer}.danger{border:1px solid #6c3737;background:#2b1717;color:#ffb7b7}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.stat{padding:13px;border:1px solid #1b3a2f;background:#091711;border-radius:12px}.stat b{font-size:18px;display:block}.stat span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
@@ -87,7 +91,7 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
 <div id="bootGuard" style="position:fixed;right:22px;bottom:18px;z-index:9999;background:#0d1915;border:1px solid #1f3c31;color:#8ea79c;padding:8px 12px;border-radius:9px;font:11px Segoe UI,Arial">Connecting to ForgeBoss engine…</div>
 <div class="app">
 <aside class="sidebar">
- <div class="brand"><img src="assets/siteboss-logo.png"><div><h1>ForgeBoss</h1><small>BUILDING SITEBOSS</small></div></div>
+ <div class="brand"><img src="assets/siteboss-logo.png"><div><h1>ForgeBoss</h1><small>SELF-BUILD MODE</small></div></div>
  <div class="nav">
   <button class="active" onclick="page('dashboard',this)">▦ &nbsp; Dashboard</button><button onclick="page('tasks',this)">◈ &nbsp; Tasks</button><button onclick="page('workers',this)">⚙ &nbsp; Workers</button><button onclick="page('costs',this)">$ &nbsp; Costs</button><button onclick="page('activity',this)">↻ &nbsp; Activity</button><button onclick="page('settings',this)">◌ &nbsp; Settings</button>
  </div>
@@ -96,12 +100,12 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
 
 <main class="main">
  <section id="dashboard" class="page active"><div class="top">
-  <div class="title"><h2>Engineering Control Center</h2><p>Autonomous diagnose, repair, test and review control for SiteBoss &nbsp; <span class="intel-chip">UNIFIED EXECUTOR SECURITY</span></p></div>
+  <div class="title"><h2>Engineering Control Center</h2><p>Autonomous diagnose, repair, test and review control for ForgeBoss &nbsp; <span class="intel-chip">UNIFIED EXECUTOR SECURITY</span></p></div>
   <div class="badges"><div class="badge">STATUS <strong id="statusBadge">IDLE</strong></div><div class="badge">SPEND <strong id="topSpend">$0.00</strong></div></div>
  </div>
 
  <div class="insight-grid">
-   <div class="insight" id="blockerCard"><label>Current blocker</label><b id="blockerTitle">Waiting for run evidence</b><p id="blockerDetail">ForgeBoss will explain exactly what failed and why.</p></div>
+   <div class="insight" id="blockerCard"><label>Current blocker</label><b id="blockerTitle">Waiting for ForgeBoss self-build target</b><p id="blockerDetail">ForgeBoss will explain exactly what failed and why.</p></div>
    <div class="insight good"><label>Repair Rat memory</label><b id="memoryTitle">LEARNING ENGINE ACTIVE</b><p id="memoryDetail">Proven repairs replay at $0. Failed/refused strategies teach the next evidence search.</p></div>
    <div class="insight"><label>Next best action</label><b id="nextActionTitle">Run focused repair</b><p id="nextActionDetail">No blind retries. New evidence first.</p></div>
   </div>
@@ -115,7 +119,12 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
  <div class="grid">
   <div>
    <section class="card">
-    <h3>Work Session</h3>
+    <h3>Self-Build Project</h3>
+    <div id="projectDrop" class="dropzone">
+      <b id="projectDropTitle">DROP FORGEBOSS HERE</b>
+      <small>Drop the ForgeBoss folder, a file from inside that folder, or the ForgeBoss ZIP.</small>
+      <div id="projectSelected" class="selected">No project selected.</div>
+    </div>
     <div class="controls">
      <div class="field"><label>DURATION</label><select id="duration"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120" selected>2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="until-stop">RUN UNTIL STOPPED</option></select></div>
      <div class="field"><label>MAX API SPEND</label><input id="budget" type="number" step=".10" min=".10" value="3.00"></div>
@@ -165,7 +174,7 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
    </section>
   </div>
  </div>
- <div class="footer"><span>ForgeBoss <span class="orange">v2.2.7</span> · SiteBoss engineering system</span><span>POWER TO THE TRADIES. NO BULL.</span></div>
+ <div class="footer"><span>ForgeBoss <span class="orange">P0 SELF-BUILD</span> · known-good self-build shell</span><span>POWER TO THE TRADIES. NO BULL.</span></div>
 </section>
 <section id="tasks" class="page"><div class="pagehead"><div><h2>Tasks</h2><p>Current SiteBoss work packets, locked scope and authoritative Git state.</p></div></div>
 <div class="hero-strip"><div class="hero-metric"><small>Queue</small><b id="taskCount">0</b></div><div class="hero-metric"><small>Write Policy</small><b>BOUNDED</b></div><div class="hero-metric"><small>Git State</small><b>EXACT HEAD</b></div><div class="hero-metric"><small>Publish</small><b>DRAFT ONLY</b></div></div>
@@ -192,6 +201,8 @@ function tog(id,on){let e=document.getElementById(id);if(e)e.classList.toggle('o
 async function toggleAuth(n){let cur=!!last.owner_settings?.[n],next=!cur;if(next&&!confirm(`Arm ${n.startsWith('merge')?'MERGE':'DEPLOY'} permission?\n\nThis does not bypass tests/review and automatic execution is not wired yet.`))return;await window.pywebview.api.set_safety_toggle(n,next);await snapshot()}
 async function savePolicy(){await window.pywebview.api.save_settings({daily_budget_usd:Number(dailyBudget.value),risk_mode:riskMode.value,require_review:true});alert('Settings saved')}
 function extended(s){let st=s.owner_settings||{};tog('sideMerge',st.merge_enabled);tog('sideDeploy',st.deploy_enabled);tog('setMerge',st.merge_enabled);tog('setDeploy',st.deploy_enabled);dailyBudget.value=st.daily_budget_usd??10;riskMode.value=st.risk_mode||'conservative';
+const selected=s.selected_project||null,ps=document.getElementById('projectSelected'),pt=document.getElementById('projectDropTitle');
+if(ps&&pt){if(selected){pt.textContent='FORGEBOSS SELECTED';ps.textContent=(selected.source_kind||'folder').toUpperCase()+' · '+(selected.source_path||'');}else{pt.textContent='DROP FORGEBOSS HERE';ps.textContent='No project selected.';}}
 taskRows.innerHTML=(s.tasks||[]).map(x=>`<tr><td>${esc(x.id)}<br><span class="muted">${esc(x.title||'')}</span></td><td>${esc(x.status)}</td><td>${esc(x.scope??'-')}</td><td>${esc(x.head||'-')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No task packet saved yet.</td></tr>';
 workerGrid.innerHTML=Object.entries(s.engines||{}).map(([n,v])=>`<div class="worker-card"><b>${esc(n)}</b><p class="muted">${v.ready?'READY':'CHECKING'} ${esc(v.version||'')}</p></div>`).join('');
 designationRows.innerHTML=Object.entries(s.league?.winners||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v||'Not designated')}</td></tr>`).join('')||'<tr><td class="muted">Run category league to create assignments.</td></tr>';
@@ -222,7 +233,7 @@ async function snapshot(){
   runReportSummary.textContent=rm.run_id?`${rm.run_id} · ${gr.ok?'findings published to GitHub':'local report ready'}`:'No completed autonomous run report yet.';
   reportOutcome.textContent=s.stage||'—';reportSpend.textContent=`$${Number(s.spent_usd||0).toFixed(4)}`;reportCycles.textContent=String(s.current_cycle||0);
   let stageText=String(s.stage||'').toUpperCase(),msg=String(s.message||'');
-  blockerTitle.textContent=stageText==='DRAFT_READY'?'Green candidate ready':stageText==='GATHERING_EVIDENCE'?'AI needs more evidence':stageText==='NEEDS_OWNER'?'Repair unresolved':stageText==='BUDGET_BLOCKED'?'Budget protected':(stageText||'Watching SiteBoss');
+  blockerTitle.textContent=stageText==='DRAFT_READY'?'Green candidate ready':stageText==='GATHERING_EVIDENCE'?'AI needs more evidence':stageText==='NEEDS_OWNER'?'Repair unresolved':stageText==='BUDGET_BLOCKED'?'Budget protected':(stageText||'Watching ForgeBoss');
   blockerDetail.textContent=msg||'ForgeBoss is monitoring the current engineering state.';
   blockerCard.classList.toggle('warn',['NEEDS_OWNER','BUDGET_BLOCKED','INFRA_ERROR','GATHERING_EVIDENCE'].includes(stageText));
   nextActionTitle.textContent=stageText==='GATHERING_EVIDENCE'?'Gather locally, then retry once':stageText==='DRAFT_READY'?'Review draft evidence':stageText==='BUDGET_BLOCKED'?'Use cheaper/smaller lane':stageText==='NEEDS_OWNER'?'Inspect full diagnosis':'Continue focused workflow';
@@ -263,11 +274,32 @@ async function snapshot(){
   }extended(s)
  }catch(e){}
 }
+async function attachDroppedProject(path){
+ try{
+  const r=await window.pywebview.api.attach_project(path);
+  if(!r.ok){alert(r.message||'ForgeBoss could not recognise that project.');return false}
+  await snapshot();return true;
+ }catch(e){alert('Project selection failed: '+e);return false}
+}
+function installProjectDrop(){
+ const z=document.getElementById('projectDrop');if(!z)return;
+ z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('drag')});
+ z.addEventListener('dragleave',()=>z.classList.remove('drag'));
+ z.addEventListener('drop',async e=>{
+  e.preventDefault();z.classList.remove('drag');
+  const files=[...(e.dataTransfer?.files||[])];
+  if(!files.length){alert('Drop the ForgeBoss folder or ZIP.');return}
+  const f=files[0],full=f.pywebviewFullPath||f.path||f.name;
+  await attachDroppedProject(full);
+ });
+}
 async function startBuild(){
  let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw);
  let dur=forever?'until you stop the session':`${d} minutes`;
- if(!confirm(`ForgeBoss will work ${dur} and may spend up to $${b.toFixed(2)}.\n\nIt will diagnose failed cycles and retry with fresh evidence. Draft PR only after green gates. Merge/deploy execution remains disabled.\n\nStart?`))return;
- await window.pywebview.api.start_build({budget_usd:b,duration_minutes:d,duration_mode:forever?'until-stopped':'timed',mode:mode.value})
+ if(!last.selected_project){alert('Drop ForgeBoss onto the Self-Build Project box first.');return}
+ if(!confirm(`ForgeBoss will work on FORGEBOSS ITSELF ${dur} and may spend up to $${b.toFixed(2)}.\n\nThe running known-good ForgeBoss must stay untouched while candidates build in isolated workspaces.\n\nStart?`))return;
+ const r=await window.pywebview.api.start_build({budget_usd:b,duration_minutes:d,duration_mode:forever?'until-stopped':'timed',mode:mode.value});
+ if(!r?.ok)alert(r?.message||'ForgeBoss refused to start safely.');
 }
 async function safeStop(){await window.pywebview.api.safe_stop()}
 async function retest(){if(confirm('Re-test the saved mini-SWE and OpenHands candidates?\n\nNew AI spend: $0.00'))await window.pywebview.api.run_retest()}
@@ -294,7 +326,7 @@ async function showEventDetails(key,title){
 function closeCodeModal(){document.getElementById('codeModal').classList.remove('show')}
 async function copyCode(){const t=document.getElementById('codeText');try{await navigator.clipboard.writeText(t.value)}catch(e){t.focus();t.select();document.execCommand('copy')}}
 function saveCode(){const t=document.getElementById('codeText').value,b=new Blob([t],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='forgeboss-candidate-details.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-window.addEventListener('pywebviewready',()=>{const b=document.getElementById('bootGuard');if(b)b.remove();snapshot();setInterval(snapshot,1200)});
+window.addEventListener('pywebviewready',()=>{const b=document.getElementById('bootGuard');if(b)b.remove();installProjectDrop();snapshot();setInterval(snapshot,1200)});
 </script>
 
 <div id="codeModal" class="code-modal" onclick="if(event.target.id==='codeModal')closeCodeModal()">
