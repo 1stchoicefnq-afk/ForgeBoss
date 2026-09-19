@@ -40,8 +40,9 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
         def bad(raw):
             obj=strict_loads(self.transport(raw));obj["result"]["verified"]=False
             return __import__("forgeboss.protected_authority.protocol",fromlist=["canonical_json"]).canonical_json(obj)
-        with self.assertRaisesRegex(AuthorityError,"SERVICE_RECEIPT_INVALID"):
+        with self.assertRaises(AuthorityError) as cm:
             self.client(bad).verify_launch_authority(envelope={"signed":{"taskId":"A"},"signature":"x"},envelope_digest=canonical_digest({"taskId":"A"}))
+        self.assertEqual(cm.exception.code,"SERVICE_RECEIPT_INVALID")
 
     def test_wrong_request_binding_rejected_even_with_valid_service_signature(self):
         def bad(raw):
@@ -50,8 +51,9 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
                      "peerPrincipal":"test","repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":req["controlRevision"],
                      "requestDigest":req["requestDigest"],"resultDigest":canonical_digest(result),"servicePrincipal":"service"}
             return __import__("forgeboss.protected_authority.protocol",fromlist=["canonical_json"]).canonical_json({**self.signer.sign(receipt),"result":result})
-        with self.assertRaisesRegex(AuthorityError,"SERVICE_RECEIPT_BINDING_MISMATCH"):
+        with self.assertRaises(AuthorityError) as cm:
             self.client(bad).verify_launch_authority(envelope={"signed":{"taskId":"A"},"signature":"x"},envelope_digest=canonical_digest({"taskId":"A"}))
+        self.assertEqual(cm.exception.code,"SERVICE_RECEIPT_BINDING_MISMATCH")
 
     def test_from_files_loads_raw_ed25519_key_and_pin(self):
         with tempfile.TemporaryDirectory() as td:
