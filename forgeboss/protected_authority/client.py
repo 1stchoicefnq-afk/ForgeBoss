@@ -121,6 +121,15 @@ class ProtectedAuthorityClient:
         response=self.verify_launch_authority(envelope=envelope,envelope_digest=digest)
         return {"schema":1,"envelope":envelope,"authorityResponse":response}
 
+    def prepare_self_build(self,*,source_root:str,base_sha:str,run_id:str)->dict:
+        return self.call("prepare_self_build",{"sourceRoot":source_root,"baseSha":base_sha,"runId":run_id})
+
+    def prepare_self_build_replacement(self,*,run_id:str)->dict:
+        return self.call("prepare_self_build_replacement",{"runId":run_id})
+
+    def self_build_status(self,*,run_id:str)->dict:
+        return self.call("self_build_status",{"runId":run_id})
+
     def _exchange(self,raw:bytes)->bytes:
         if os.name=="nt": return self._exchange_windows(raw)
         path=self.unix_socket_path
