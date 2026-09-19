@@ -160,7 +160,7 @@ class ProtectedPaidStartTests(unittest.TestCase):
         env["FORGEBOSS_STATE_ROOT"]=str(external)
         cp=subprocess.run(
             [sys.executable,"-c",
-             "from forgeboss.security.executor_guard import STATE; print(STATE)"],
+             "from forgeboss.security.executor_guard import _state_dir; print(_state_dir())"],
             capture_output=True,text=True,env=env,check=True,
         )
         state=Path(cp.stdout.strip()).resolve()
