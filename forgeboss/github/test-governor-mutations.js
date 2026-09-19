@@ -3,10 +3,11 @@
 const assert=require('assert'),fs=require('fs'),os=require('os'),path=require('path'),{spawnSync}=require('child_process');
 
 const SRC=__dirname;
+const readNormalized=n=>fs.readFileSync(path.join(SRC,n),'utf8').replace(/\r\n/g,'\n');
 const originals={
- 'request-governor.js':fs.readFileSync(path.join(SRC,'request-governor.js'),'utf8'),
- 'audit-governor-bypasses.js':fs.readFileSync(path.join(SRC,'audit-governor-bypasses.js'),'utf8'),
- 'test-request-governor.js':fs.readFileSync(path.join(SRC,'test-request-governor.js'),'utf8')
+ 'request-governor.js':readNormalized('request-governor.js'),
+ 'audit-governor-bypasses.js':readNormalized('audit-governor-bypasses.js'),
+ 'test-request-governor.js':readNormalized('test-request-governor.js')
 };
 let pass=0;
 
