@@ -203,6 +203,13 @@ def project_profiles_snapshot():
     except Exception:
         return []
 
+def active_project_snapshot():
+    try:
+        from forgeboss.control.project_runtime import load_active_project
+        return load_active_project()
+    except Exception:
+        return None
+
 def forgebossd_health():
     try:
         from forgeboss.control.client import Client
@@ -215,10 +222,29 @@ def forgebossd_health():
         return {"ready":False,"status":"OFFLINE","detail":str(e)[:160]}
 
 class Api:
-    def __init__(self):
+    def __init__(self, webview_module=None):
         self._probe_lock=threading.Lock()
         self._engine_cache={}
         self._last_probe=0.0
+        self._webview=webview_module
+        self._window=None
+
+    def attach_window(self, window):
+        self._window=window
+
+    def choose_project(self):
+        if self._window is None or self._webview is None:
+            return {"ok":False,"message":"ForgeBoss window is not ready."}
+        try:
+            selected=self._window.create_file_dialog(self._webview.FOLDER_DIALOG,allow_multiple=False)
+            if not selected:
+                return {"ok":False,"cancelled":True,"message":"Project selection cancelled."}
+            path=selected[0] if isinstance(selected,(list,tuple)) else selected
+            from forgeboss.control.project_runtime import register_project
+            project=register_project(path)
+            return {"ok":True,"project":project}
+        except Exception as e:
+            return {"ok":False,"message":str(e)}
 
     def _probe(self):
         if time.time()-self._last_probe < 25:return
@@ -259,6 +285,7 @@ class Api:
         s["owner_settings"]=load_settings();s["tasks"]=tasks();s["costs"]=costs()
         s["forgebossd"]=forgebossd_health()
         s["project_profiles"]=project_profiles_snapshot()
+        s["active_project"]=active_project_snapshot()
         return s
 
     def set_safety_toggle(self,name,value):
@@ -361,14 +388,14 @@ def main():
     if page.stat().st_size<5000:
         raise RuntimeError("ForgeBoss UI file appears incomplete. Extract the full ZIP before launching.")
 
-    api=Api()
+    api=Api(webview)
 
     # Load the dashboard as a LOCAL FILE. Do not inject a giant HTML string.
     # Also let pywebview choose the best installed Windows renderer instead of
     # forcing EdgeChromium; this avoids a black window on machines where the
     # WebView2 runtime/backend is incomplete.
-    webview.create_window(
-        "ForgeBoss - Building SiteBoss",
+    window=webview.create_window(
+        "ForgeBoss",
         url=page.as_uri(),
         js_api=api,
         width=1380,
@@ -377,6 +404,7 @@ def main():
         resizable=True,
         background_color="#07120f",
     )
+    api.attach_window(window)
     webview.start(debug=False)
 
 if __name__=="__main__":
