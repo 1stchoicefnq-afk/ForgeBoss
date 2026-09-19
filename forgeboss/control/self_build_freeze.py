@@ -281,7 +281,7 @@ def freeze_candidate(*,item:dict,public:dict,result:dict,process_evidence:dict,
     if sorted(x.casefold() for x in diff_names)!=sorted(x.casefold() for x in changed):
         raise SelfBuildFreezeError("FROZEN_DIFF_MISMATCH","frozen candidate differs from proven change set")
 
-    candidate_tree=_git(git,root,"rev-parse",f"{candidate}^{tree}").lower()
+    candidate_tree=_git(git,root,"rev-parse",f"{candidate}^{{tree}}").lower()
     if not _SHA_RE.fullmatch(candidate_tree):
         raise SelfBuildFreezeError("CANDIDATE_TREE_INVALID","candidate tree SHA invalid")
     scope_diff_sha256=hashlib.sha256(_git_bytes(git,root,"diff","--binary",base,candidate,"--")).hexdigest()
