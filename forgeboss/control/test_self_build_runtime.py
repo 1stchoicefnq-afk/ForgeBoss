@@ -36,45 +36,52 @@ class Coordinator:
 
 
 class RuntimeTests(unittest.TestCase):
-    def test_complete_worker_releases_exact_authority_and_is_idempotent(self):
+    @unittest.skipUnless(__import__("shutil").which("git"),"git required")
+    def test_record_handoff_uses_live_store_identity_and_does_not_release_writer(self):
+        import hashlib,shutil,subprocess
+        from forgeboss.control.receipts import receipt_digest
+        git=Path(shutil.which("git")).resolve()
+        work=self.runtime.workspace_root/"fl1-handoff-worker-a";work.mkdir()
+        def g(*args,binary=False):
+            p=subprocess.run([str(git),"-C",str(work),*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                             text=not binary,check=False)
+            self.assertEqual(p.returncode,0,msg=(p.stderr if not binary else p.stderr.decode("utf-8","replace")))
+            return p.stdout
+        g("init","-q");g("config","user.email","test@example.invalid");g("config","user.name","Test")
+        (work/"base.txt").write_text("base\n",encoding="utf-8");g("add",".");g("commit","-qm","base")
+        base=str(g("rev-parse","HEAD")).strip()
+        (work/"candidate.txt").write_text("candidate\n",encoding="utf-8");g("add","candidate.txt");g("commit","-qm","candidate")
+        candidate=str(g("rev-parse","HEAD")).strip();tree=str(g("rev-parse",f"{candidate}^{{tree}}")).strip()
+        patch=bytes(g("diff","--binary",base,candidate,"--",binary=True));scope=hashlib.sha256(patch).hexdigest()
+        test_core={"command":"python -m unittest x -v","exit_code":0,"output_sha256":"2"*64}
+        test_row={**test_core,"receipt_digest":receipt_digest(test_core)}
+        ident={"taskId":"task-a","runId":"worker-a","attempt":1,"ownerEpoch":1,"builderPrincipal":"builder-a",
+               "assignmentGeneration":1,"assignmentPolicySha256":"3"*64,"repository":"1stchoicefnq-afk/ForgeBoss",
+               "baseSha":base,"branch":"forgeboss/fl1-selfbuild-a","worktreePath":str(work.resolve()),
+               "workspaceGeneration":1,"workspaceContentIdentity":base,"budgetRunId":"fl1-run"}
+        packet={"identity":ident,"assignmentIdentitySha256":hashlib.sha256(json.dumps(ident,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()}
         class Store:
-            def __init__(self):self.calls=[]
-            def release(self,*args,**kw):self.calls.append((args,kw))
-        self.runtime.store=Store()
-        path=self.runtime._run_path("fl1-c")
-        item={
-            "task_id":"task-a","owner_epoch":3,
-            "authority":{"run_id":"worker-a","budget_usd":"1.00"},
-        }
-        path.write_text(json.dumps({
-            "schema":1,"phase":"PREPARED",
-            "prepared":{"run_id":"fl1-c","base_sha":self.base,"builders":[item]},
-            "replacement":None,
-        }),encoding="utf-8")
-        payload={"runId":"fl1-c","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":3,
-                 "resultHead":"b"*40,"measuredCostUsd":"0.25","resultDigest":"c"*64}
-        out=self.runtime.complete_worker(payload)
-        self.assertTrue(out["completed"])
-        self.assertEqual(len(self.runtime.store.calls),1)
-        args,kw=self.runtime.store.calls[0]
-        self.assertEqual(args[:3],("task-a","worker-a",3))
-        self.assertEqual(kw["result_head"],"b"*40)
-        self.assertEqual(kw["expected_head"],self.base)
-        again=self.runtime.complete_worker(payload)
+            def __init__(self):self.released=False
+            def assignment_identity(self,task_id,run_id,owner_epoch):
+                self.last=(task_id,run_id,owner_epoch);return packet
+            def release(self,*a,**k):self.released=True
+        store=Store();self.runtime.store=store;self.runtime.git_resolver=lambda:git
+        item={"task_id":"task-a","builder_id":"builder-a","worktree":str(work),"owner_epoch":1,
+              "packet":{"allowed_files":["candidate.txt"]},
+              "authority":{"run_id":"worker-a","budget_usd":"1.00"}}
+        run=self.runtime._run_path("fl1-handoff")
+        run.write_text(json.dumps({"schema":1,"phase":"PREPARED","prepared":{"base_sha":base,"builders":[item]},"replacement":None}),encoding="utf-8")
+        evidence={"schema":1,"task_id":"task-a","builder_id":"builder-a","base_sha":base,"candidate_sha":candidate,
+                  "candidate_tree_sha":tree,"changed_files":["candidate.txt"],"additions":1,"deletions":0,"changed_lines":1,
+                  "focused_tests":[test_row],"measured_cost_usd":"0.25","reserved_cost_usd":"1.00",
+                  "postflight_changed_paths":["candidate.txt"],"runner_result_digest":"4"*64,
+                  "process_evidence_digest":"5"*64,"known_uncertainty":[],"scope_diff_sha256":scope,"evidence_digest":"6"*64}
+        out=self.runtime.record_handoff({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,"evidence":evidence})
+        self.assertEqual(out["handoff"]["candidateSha"],candidate)
+        self.assertEqual(out["status"],"FROZEN_AWAITING_INDEPENDENT_REVIEW")
+        self.assertFalse(store.released)
+        again=self.runtime.record_handoff({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,"evidence":evidence})
         self.assertEqual(again,out)
-        self.assertEqual(len(self.runtime.store.calls),1)
-
-    def test_complete_worker_rejects_cost_over_cap_before_release(self):
-        class Store:
-            def release(self,*args,**kw):raise AssertionError("release must not run")
-        self.runtime.store=Store()
-        path=self.runtime._run_path("fl1-over")
-        item={"task_id":"task-a","owner_epoch":1,"authority":{"run_id":"worker-a","budget_usd":"0.50"}}
-        path.write_text(json.dumps({"schema":1,"phase":"PREPARED","prepared":{"base_sha":self.base,"builders":[item]},"replacement":None}),encoding="utf-8")
-        with self.assertRaises(SelfBuildRuntimeError) as cm:
-            self.runtime.complete_worker({"runId":"fl1-over","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
-                                          "resultHead":"b"*40,"measuredCostUsd":"0.500001","resultDigest":"c"*64})
-        self.assertEqual(cm.exception.code,"MEASURED_COST_EXCEEDS_AUTHORITY")
 
     def setUp(self):
         self.td=tempfile.TemporaryDirectory()

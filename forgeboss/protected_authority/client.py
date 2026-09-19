@@ -157,12 +157,10 @@ class ProtectedAuthorityClient:
             "ownerEpoch":int(owner_epoch),"reason":reason,
         })
 
-    def complete_self_build_worker(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,
-                                   result_head:str,measured_cost_usd:str,result_digest:str)->dict:
-        return self.call("complete_self_build_worker",{
+    def record_self_build_handoff(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,evidence:Mapping[str,Any])->dict:
+        return self.call("record_self_build_handoff",{
             "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
-            "ownerEpoch":int(owner_epoch),"resultHead":result_head,
-            "measuredCostUsd":str(measured_cost_usd),"resultDigest":result_digest,
+            "ownerEpoch":int(owner_epoch),"evidence":dict(evidence),
         })
 
     def _exchange(self,raw:bytes)->bytes:

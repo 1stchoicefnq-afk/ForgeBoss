@@ -97,6 +97,23 @@ def _git(git:Path,root:Path,*args,timeout=120)->str:
     return (p.stdout or "").strip()
 
 
+def _git_bytes(git:Path,root:Path,*args,timeout=120)->bytes:
+    env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update({
+        "GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":os.devnull,
+        "GIT_TERMINAL_PROMPT":"0","GIT_ASKPASS":"",
+        "GIT_ALLOW_PROTOCOL":"file","GIT_PROTOCOL_FROM_USER":"0",
+    })
+    try:
+        p=subprocess.run([str(git),*map(str,args)],cwd=str(root),env=env,stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,check=False)
+    except (OSError,subprocess.TimeoutExpired) as ex:
+        raise SelfBuildFreezeError("GIT_COMMAND_FAILED",str(ex)) from ex
+    if p.returncode:
+        raise SelfBuildFreezeError("GIT_COMMAND_FAILED",(p.stderr or p.stdout or b"git failed")[-2000:].decode("utf-8","replace"))
+    return bytes(p.stdout)
+
+
 def _rel(value)->str:
     raw=str(value or "").replace("\\","/")
     p=PurePosixPath(raw)
@@ -220,7 +237,9 @@ def freeze_candidate(*,item:dict,public:dict,result:dict,process_evidence:dict,
         if not m:raise SelfBuildFreezeError("TEST_COMMAND_DENIED","unsupported focused test command")
         p=_run([python,"-m","unittest",m.group(1),"-v"],cwd=root,env=_clean_test_env(),timeout=180)
         output=(p.stdout or "")+"\n"+(p.stderr or "")
-        tests.append({"command":str(command),"exit_code":int(p.returncode),"output_sha256":hashlib.sha256(output.encode("utf-8")).hexdigest()})
+        test_record={"command":str(command),"exit_code":int(p.returncode),"output_sha256":hashlib.sha256(output.encode("utf-8")).hexdigest()}
+        test_record["receipt_digest"]=_canonical_digest(test_record)
+        tests.append(test_record)
         if p.returncode:
             raise SelfBuildFreezeError("FOCUSED_TEST_FAILED",output[-4000:])
 
@@ -230,14 +249,15 @@ def freeze_candidate(*,item:dict,public:dict,result:dict,process_evidence:dict,
     if any(p.casefold() not in allowed for p in after):
         raise SelfBuildFreezeError("SCOPE_VIOLATION","out-of-scope change remained before freeze")
     numstat=_git(git,root,"diff","--cached","--numstat","--")
-    line_total=0
+    additions=0;deletions=0
     for line in numstat.splitlines():
         if not line.strip():continue
         parts=line.split("\t",2)
         if len(parts)!=3:raise SelfBuildFreezeError("CHURN_INVALID","malformed numstat")
         added,deleted,_=parts
         if added=="-" or deleted=="-":raise SelfBuildFreezeError("BINARY_CHANGE_DENIED","binary changes denied in FL1 canary")
-        line_total+=int(added)+int(deleted)
+        additions+=int(added);deletions+=int(deleted)
+    line_total=additions+deletions
     if line_total>int(packet.get("max_changed_lines") or 0):
         raise SelfBuildFreezeError("CHURN_LINES_EXCEEDED","changed-line ceiling exceeded")
 
@@ -261,16 +281,28 @@ def freeze_candidate(*,item:dict,public:dict,result:dict,process_evidence:dict,
     if sorted(x.casefold() for x in diff_names)!=sorted(x.casefold() for x in changed):
         raise SelfBuildFreezeError("FROZEN_DIFF_MISMATCH","frozen candidate differs from proven change set")
 
+    candidate_tree=_git(git,root,"rev-parse",f"{candidate}^{tree}").lower()
+    if not _SHA_RE.fullmatch(candidate_tree):
+        raise SelfBuildFreezeError("CANDIDATE_TREE_INVALID","candidate tree SHA invalid")
+    scope_diff_sha256=hashlib.sha256(_git_bytes(git,root,"diff","--binary",base,candidate,"--")).hexdigest()
+    process_evidence_digest=_canonical_digest(process_evidence)
     evidence={
         "schema":1,
         "task_id":item["task_id"],
         "builder_id":item["builder_id"],
         "base_sha":base,
         "candidate_sha":candidate,
+        "candidate_tree_sha":candidate_tree,
         "changed_files":diff_names,
+        "additions":additions,
+        "deletions":deletions,
         "changed_lines":line_total,
         "focused_tests":tests,
+        "reserved_cost_usd":str(item.get("authority",{}).get("budget_usd") or ""),
+        "process_evidence_digest":process_evidence_digest,
+        "known_uncertainty":[],
         **validated,
+        "scope_diff_sha256":scope_diff_sha256,
     }
     evidence["evidence_digest"]=_canonical_digest(evidence)
     return evidence

@@ -34,14 +34,14 @@ class E:
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[];self.completed=[]
+        self.attested=[];self.revoked=[];self.handoffs=[]
     def attest_launch_payload(self,signed):
         self.attested.append(dict(signed))
         return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
     def revoke_self_build_worker(self,**kw):
         self.revoked.append(dict(kw));return {"result":{"revoked":True}}
-    def complete_self_build_worker(self,**kw):
-        self.completed.append(dict(kw));return {"result":{"completed":True},"receipt":{"operation":"complete_self_build_worker"}}
+    def record_self_build_handoff(self,**kw):
+        self.handoffs.append(dict(kw));return {"result":{"status":"FROZEN_AWAITING_INDEPENDENT_REVIEW"},"receipt":{"operation":"record_self_build_handoff"}}
 
 
 
@@ -196,7 +196,7 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(result["stopped"])
         self.assertEqual(self.client.revoked[-1]["task_id"],"task-b")
 
-    def test_complete_worker_freezes_then_releases_protected_authority(self):
+    def test_complete_worker_freezes_then_records_protected_handoff(self):
         out=self.launcher(freeze_fn=lambda **kw:{
             "schema":1,"task_id":"task-a","builder_id":"builder-a",
             "base_sha":"a"*40,"candidate_sha":"c"*40,
@@ -221,8 +221,8 @@ class LauncherTests(unittest.TestCase):
         result=handoff.complete_worker(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
         self.assertEqual(result["candidate_sha"],"c"*40)
         self.assertEqual(result["review_status"],"FROZEN_AWAITING_INDEPENDENT_REVIEW")
-        self.assertEqual(self.client.completed[-1]["result_head"],"c"*40)
-        self.assertEqual(self.client.completed[-1]["measured_cost_usd"],"0.20")
+        self.assertEqual(self.client.handoffs[-1]["evidence"]["candidate_sha"],"c"*40)
+        self.assertEqual(self.client.handoffs[-1]["evidence"]["measured_cost_usd"],"0.20")
         self.assertTrue(Path(first["result_file"]).parent.joinpath("candidate-evidence.json").is_file())
 
     @unittest.skipUnless(__import__("shutil").which("git"),"git required")

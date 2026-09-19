@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 import re
+import subprocess
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from forgeboss.control.self_build_coordinator import SelfBuildCoordinator,SelfBu
 from forgeboss.control.store import ControlStore
 from forgeboss.control.workspace_state import ProtectedWorkspaceState
 from forgeboss.security.executor_guard import _resolve_git_executable
+from forgeboss.control.receipts import CandidateHandoff,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
 
 
 class SelfBuildRuntimeError(RuntimeError):
@@ -193,63 +196,141 @@ class SelfBuildRuntime:
         _atomic_json(path,record)
         return {"revoked":True,"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,"status":out.get("status")}
 
-    def complete_worker(self,payload:dict)->dict:
-        run_id=str(payload.get("runId") or "")
-        path=self._run_path(run_id)
-        if not path.is_file():
-            raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
-        self._assert_path(path)
-        try:record=json.loads(path.read_text(encoding="utf-8"))
-        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+    def _git(self,root:Path,*args,binary=False):
+        git=Path(self.git_resolver()).resolve(strict=True)
+        env={k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")}
+        env.update({"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":os.devnull,"GIT_TERMINAL_PROMPT":"0","GIT_ASKPASS":"","GIT_ALLOW_PROTOCOL":"file","GIT_PROTOCOL_FROM_USER":"0"})
+        try:
+            p=subprocess.run([str(git),"-C",str(root),*map(str,args)],env=env,stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=not binary,
+                             encoding=None if binary else "utf-8",errors=None if binary else "strict",
+                             timeout=60,check=False)
+        except Exception as ex:raise SelfBuildRuntimeError("HANDOFF_GIT_FAILED","candidate Git verification failed") from ex
+        if p.returncode:
+            detail=p.stderr if not binary else p.stderr.decode("utf-8","replace")
+            raise SelfBuildRuntimeError("HANDOFF_GIT_FAILED",str(detail)[-1200:])
+        return p.stdout
+
+    def _handoff_item(self,record:dict,payload:dict):
         prepared=record.get("prepared") if isinstance(record,dict) else None
-        if not isinstance(prepared,dict):
-            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run preparation missing")
+        if not isinstance(prepared,dict):raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run preparation missing")
         candidates=list(prepared.get("builders") or [])
         if isinstance(record.get("replacement"),dict):candidates.append(record["replacement"])
-        task_id=str(payload.get("taskId") or "")
+        task_id=str(payload.get("taskId") or "");worker_run_id=str(payload.get("workerRunId") or "")
+        try:owner_epoch=int(payload.get("ownerEpoch"))
+        except Exception as ex:raise SelfBuildRuntimeError("OWNER_EPOCH_INVALID","owner epoch invalid") from ex
         item=next((x for x in candidates if x.get("task_id")==task_id),None)
         if item is None:raise SelfBuildRuntimeError("WORKER_NOT_IN_RUN","worker task is not part of protected run")
         authority=item.get("authority") or {}
-        worker_run_id=str(payload.get("workerRunId") or "")
-        try:owner_epoch=int(payload.get("ownerEpoch"))
-        except Exception as ex:raise SelfBuildRuntimeError("OWNER_EPOCH_INVALID","owner epoch invalid") from ex
         if authority.get("run_id")!=worker_run_id or int(item.get("owner_epoch") or 0)!=owner_epoch:
             raise SelfBuildRuntimeError("WORKER_AUTHORITY_STALE","worker run/epoch does not match protected run")
-        result_head=str(payload.get("resultHead") or "").lower()
-        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",result_head):
-            raise SelfBuildRuntimeError("RESULT_HEAD_INVALID","worker result head invalid")
-        result_digest=str(payload.get("resultDigest") or "").lower()
-        if not re.fullmatch(r"[0-9a-f]{64}",result_digest):
-            raise SelfBuildRuntimeError("RESULT_DIGEST_INVALID","worker result digest invalid")
-        try:
-            measured=Decimal(str(payload.get("measuredCostUsd")))
-            cap=Decimal(str(authority.get("budget_usd")))
-        except (InvalidOperation,ValueError,TypeError) as ex:
-            raise SelfBuildRuntimeError("MEASURED_COST_INVALID","worker measured cost invalid") from ex
-        if not measured.is_finite() or measured<0 or not cap.is_finite() or cap<=0 or measured>cap:
-            raise SelfBuildRuntimeError("MEASURED_COST_EXCEEDS_AUTHORITY","worker measured cost exceeds protected cap")
-        completion={
-            "taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
-            "resultHead":result_head,"measuredCostUsd":format(measured,"f"),"resultDigest":result_digest,
-        }
-        completions=record.setdefault("completions",[])
-        existing=next((x for x in completions if x.get("taskId")==task_id),None)
-        if existing is not None:
-            if existing!=completion:raise SelfBuildRuntimeError("WORKER_COMPLETION_CONFLICT","worker completion already recorded differently")
-            return {"completed":True,**completion}
-        try:
-            self.store.release(
-                task_id,worker_run_id,owner_epoch,
-                result_head=result_head,outcome="released",
-                expected_head=str(prepared.get("base_sha") or ""),
-            )
-        except Exception as ex:
-            code=getattr(ex,"code","WORKER_RELEASE_FAILED")
-            raise SelfBuildRuntimeError(code,str(ex)) from ex
-        completions.append(completion)
-        _atomic_json(path,record)
+        return prepared,item,task_id,worker_run_id,owner_epoch
+
+    def record_handoff(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
         self._assert_path(path)
-        return {"completed":True,**completion}
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        prepared,item,task_id,worker_run_id,owner_epoch=self._handoff_item(record,payload)
+        evidence=payload.get("evidence")
+        if not isinstance(evidence,dict) or evidence.get("schema")!=1:
+            raise SelfBuildRuntimeError("HANDOFF_EVIDENCE_INVALID","candidate evidence invalid")
+        source_digest=receipt_digest(evidence)
+        existing=next((x for x in (record.get("handoffs") or []) if x.get("taskId")==task_id),None)
+        if existing is not None:
+            if existing.get("sourceEvidenceDigest")!=source_digest:
+                raise SelfBuildRuntimeError("HANDOFF_CONFLICT","candidate handoff already recorded differently")
+            return existing
+
+        assignment=self.store.assignment_identity(task_id,worker_run_id,owner_epoch)
+        work=Path(item.get("worktree") or "").resolve(strict=True)
+        workspace_root=self.workspace_root.resolve(strict=True)
+        try:
+            if Path(os.path.commonpath([str(workspace_root),str(work)]))!=workspace_root or work==workspace_root:
+                raise SelfBuildRuntimeError("HANDOFF_WORKSPACE_INVALID","candidate workspace escapes protected root")
+        except ValueError as ex:raise SelfBuildRuntimeError("HANDOFF_WORKSPACE_INVALID","candidate workspace escapes protected root") from ex
+        self._assert_path(work)
+
+        base=str(prepared.get("base_sha") or "").lower();candidate=str(evidence.get("candidate_sha") or "").lower()
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",base) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",candidate) or len(base)!=len(candidate):
+            raise SelfBuildRuntimeError("HANDOFF_SHA_INVALID","candidate/base Git identity invalid")
+        head=str(self._git(work,"rev-parse","HEAD")).strip().lower()
+        if head!=candidate:raise SelfBuildRuntimeError("HANDOFF_HEAD_MISMATCH","workspace HEAD is not frozen candidate")
+        if str(self._git(work,"status","--porcelain=v1","--untracked-files=all")).strip():
+            raise SelfBuildRuntimeError("HANDOFF_WORKSPACE_DIRTY","frozen candidate workspace is not pristine")
+        if str(self._git(work,"remote")).strip():
+            raise SelfBuildRuntimeError("HANDOFF_REMOTE_PRESENT","frozen candidate workspace has a remote")
+        tree=str(self._git(work,"rev-parse",f"{candidate}^{{tree}}")).strip().lower()
+        changed=[x for x in str(self._git(work,"diff","--name-only",base,candidate,"--")).splitlines() if x.strip()]
+        allowed={str(x).replace("\\","/").casefold() for x in ((item.get("packet") or {}).get("allowed_files") or [])}
+        if not changed or any(x.replace("\\","/").casefold() not in allowed for x in changed):
+            raise SelfBuildRuntimeError("HANDOFF_SCOPE_INVALID","frozen candidate changed scope is invalid")
+        claimed=[str(x).replace("\\","/") for x in (evidence.get("changed_files") or [])]
+        if sorted(x.casefold() for x in changed)!=sorted(x.casefold() for x in claimed):
+            raise SelfBuildRuntimeError("HANDOFF_SCOPE_MISMATCH","candidate evidence changed files mismatch")
+
+        patch=bytes(self._git(work,"diff","--binary",base,candidate,"--",binary=True))
+        scope_digest=hashlib.sha256(patch).hexdigest()
+        additions=0;deletions=0
+        for line in str(self._git(work,"diff","--numstat",base,candidate,"--")).splitlines():
+            if not line.strip():continue
+            parts=line.split("\t",2)
+            if len(parts)!=3 or parts[0]=="-" or parts[1]=="-":
+                raise SelfBuildRuntimeError("HANDOFF_CHURN_INVALID","binary/malformed candidate diff denied")
+            additions+=int(parts[0]);deletions+=int(parts[1])
+        if tree!=str(evidence.get("candidate_tree_sha") or "").lower() or scope_digest!=str(evidence.get("scope_diff_sha256") or "").lower():
+            raise SelfBuildRuntimeError("HANDOFF_IDENTITY_MISMATCH","candidate tree/diff digest mismatch")
+        if additions!=evidence.get("additions") or deletions!=evidence.get("deletions"):
+            raise SelfBuildRuntimeError("HANDOFF_CHURN_MISMATCH","candidate churn evidence mismatch")
+
+        tests=evidence.get("focused_tests") or []
+        if not isinstance(tests,list) or not tests:raise SelfBuildRuntimeError("HANDOFF_TEST_EVIDENCE_MISSING","focused test receipts missing")
+        test_receipts=[]
+        for row in tests:
+            if not isinstance(row,dict) or row.get("exit_code")!=0:
+                raise SelfBuildRuntimeError("HANDOFF_TEST_EVIDENCE_INVALID","focused test did not pass")
+            supplied=str(row.get("receipt_digest") or "").lower()
+            core={k:v for k,v in row.items() if k!="receipt_digest"}
+            if supplied!=receipt_digest(core):
+                raise SelfBuildRuntimeError("HANDOFF_TEST_EVIDENCE_INVALID","focused test receipt digest mismatch")
+            test_receipts.append(supplied)
+
+        try:
+            measured=Decimal(str(evidence.get("measured_cost_usd")));reserved=Decimal(str((item.get("authority") or {}).get("budget_usd")))
+        except (InvalidOperation,ValueError,TypeError) as ex:
+            raise SelfBuildRuntimeError("HANDOFF_COST_INVALID","candidate cost evidence invalid") from ex
+        if not measured.is_finite() or measured<0 or not reserved.is_finite() or reserved<=0 or measured>reserved:
+            raise SelfBuildRuntimeError("HANDOFF_COST_INVALID","candidate cost exceeds protected reservation")
+        if str(evidence.get("reserved_cost_usd") or "")!=str((item.get("authority") or {}).get("budget_usd") or ""):
+            raise SelfBuildRuntimeError("HANDOFF_COST_BINDING_MISMATCH","candidate reserved cost binding mismatch")
+        process_digest=str(evidence.get("process_evidence_digest") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}",process_digest):
+            raise SelfBuildRuntimeError("HANDOFF_PROCESS_EVIDENCE_INVALID","process completion digest missing")
+
+        raw={
+            "assignment":assignment,
+            "candidateSha":candidate,
+            "candidateTreeSha":tree,
+            "changedPaths":[{"gitPath":x,"policyPathKey":policy_path_key(x),"policyVersion":POLICY_PATH_KEY_VERSION} for x in changed],
+            "requiredTestReceipts":test_receipts,
+            "scopeDiffSha256":scope_digest,
+            "additions":additions,
+            "deletions":deletions,
+            "measuredCostUsd":format(measured,"f"),
+            "reservedCostUsd":str((item.get("authority") or {}).get("budget_usd") or ""),
+            "contributors":[str(item.get("builder_id") or "")],
+            "knownUncertainty":[str(x) for x in (evidence.get("known_uncertainty") or [])],
+        }
+        try:handoff=CandidateHandoff.from_dict(raw,store=self.store)
+        except Exception as ex:raise SelfBuildRuntimeError("HANDOFF_RECEIPT_INVALID",str(ex)) from ex
+        entry={"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
+               "handoff":handoff.to_dict(),"handoffDigest":handoff.digest,
+               "sourceEvidenceDigest":source_digest,"processEvidenceDigest":process_digest,
+               "status":"FROZEN_AWAITING_INDEPENDENT_REVIEW"}
+        record.setdefault("handoffs",[]).append(entry)
+        _atomic_json(path,record);self._assert_path(path)
+        return entry
 
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")

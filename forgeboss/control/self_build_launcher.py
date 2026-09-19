@@ -286,14 +286,12 @@ class SelfBuildLauncher:
                 raise SelfBuildLaunchError(ex.code,str(ex)) from ex
             _atomic_json(paths["candidate"],candidate)
 
-        response=self.client.complete_self_build_worker(
+        response=self.client.record_self_build_handoff(
             run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
             task_id=item["task_id"],
             worker_run_id=item["authority"]["run_id"],
             owner_epoch=item["owner_epoch"],
-            result_head=candidate["candidate_sha"],
-            measured_cost_usd=candidate["measured_cost_usd"],
-            result_digest=candidate["evidence_digest"],
+            evidence=candidate,
         )
         handoff={
             "schema":1,
@@ -304,7 +302,7 @@ class SelfBuildLauncher:
             "candidate_sha":candidate["candidate_sha"],
             "candidate_evidence":candidate,
             "process_evidence":process_evidence,
-            "authority_receipt":response,
+            "protected_handoff_receipt":response,
             "review_status":"FROZEN_AWAITING_INDEPENDENT_REVIEW",
         }
         _atomic_json(paths["handoff"],handoff)
