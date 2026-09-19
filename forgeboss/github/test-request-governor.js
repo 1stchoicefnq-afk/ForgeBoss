@@ -204,6 +204,15 @@ async function t(n,f){
   assert.equal(blocked,true);assert.equal(n,1);
  });
 
+ await t('whole governor state-root deletion after history fails closed',async()=>{
+  const r=useHome('state-root-delete');let n=0;const f=async()=>{n++;return resp(200,'{}')};
+  await githubRequest('https://api.github.com/x/root-state',{}, {config:c,fetchImpl:f});
+  const authority=path.join(path.dirname(r),'github-governor-authority.json');
+  assert(fs.existsSync(authority));fs.rmSync(r,{recursive:true,force:true});assert(fs.existsSync(authority));
+  let blocked=false;try{await githubRequest('https://api.github.com/x/root-state2',{}, {config:c,fetchImpl:f})}catch(e){blocked=e.name==='GitHubStateTamperError'}
+  assert.equal(blocked,true);assert.equal(n,1);
+ });
+
  await t('forward clock jump remains fail-closed for local budget',async()=>{
   const r=useHome('future-clock');fs.mkdirSync(r,{recursive:true});const future=Date.now()+3600000;
   fs.writeFileSync(path.join(r,'state.json'),JSON.stringify({schema:1,lastRequestAt:future,lastMutationAt:future,requests:[future],mutations:[future],dedupe:{},notFound:{},circuitUntil:0,circuitReason:'',secondaryLimitStrikes:0,updatedAt:future}));
@@ -234,7 +243,7 @@ async function t(n,f){
 
  await t('status has no credentials',async()=>{useHome('status');const s=governorStatus();assert.equal(typeof s.lastRequestAt,'number');assert(!JSON.stringify(s).includes('Authorization'))});
 
- const expected=FILTER?selected:36;
+ const expected=FILTER?selected:37;
  console.log('\n'+pass+'/'+expected+' governor tests passed'+(FILTER?' (filtered)':''));
  if(pass!==expected)process.exitCode=1;
 })().catch(e=>{console.error(e.stack||e);process.exit(2)});
