@@ -156,6 +156,41 @@ class SelfBuildRuntime:
         _atomic_json(path,record)
         return replacement
 
+    def revoke_worker(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "")
+        path=self._run_path(run_id)
+        if not path.is_file():
+            raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        prepared=record.get("prepared") if isinstance(record,dict) else None
+        if not isinstance(prepared,dict):
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run preparation missing")
+        candidates=list(prepared.get("builders") or [])
+        if isinstance(record.get("replacement"),dict):candidates.append(record["replacement"])
+        task_id=str(payload.get("taskId") or "")
+        worker_run_id=str(payload.get("workerRunId") or "")
+        try:owner_epoch=int(payload.get("ownerEpoch"))
+        except Exception as ex:raise SelfBuildRuntimeError("OWNER_EPOCH_INVALID","owner epoch invalid") from ex
+        item=next((x for x in candidates if x.get("task_id")==task_id),None)
+        if item is None:
+            raise SelfBuildRuntimeError("WORKER_NOT_IN_RUN","worker task is not part of protected run")
+        authority=item.get("authority") or {}
+        if authority.get("run_id")!=worker_run_id or int(item.get("owner_epoch") or 0)!=owner_epoch:
+            raise SelfBuildRuntimeError("WORKER_AUTHORITY_STALE","worker run/epoch does not match protected run")
+        reason=str(payload.get("reason") or "").strip()
+        if not reason:raise SelfBuildRuntimeError("REVOKE_REASON_REQUIRED","revoke reason required")
+        try:
+            out=self.store.revoke_writer(task_id,worker_run_id,owner_epoch,reason)
+        except Exception as ex:
+            code=getattr(ex,"code","WORKER_REVOKE_FAILED")
+            raise SelfBuildRuntimeError(code,str(ex)) from ex
+        revocations=record.setdefault("revocations",[])
+        revocations.append({"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,"reason":reason})
+        _atomic_json(path,record)
+        return {"revoked":True,"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,"status":out.get("status")}
+
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")
         path=self._run_path(run_id)
