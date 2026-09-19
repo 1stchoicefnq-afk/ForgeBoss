@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, sys, threading, time, subprocess, traceback, ctypes
+import json, os, sys, threading, time, subprocess, traceback, ctypes, zipfile
 from pathlib import Path
 
 
@@ -214,6 +214,68 @@ def forgebossd_health():
     except Exception as e:
         return {"ready":False,"status":"OFFLINE","detail":str(e)[:160]}
 
+SELECTED_PROJECT_PATH=ROOT/"state"/"dashboard"/"selected-project.json"
+FORGEBOSS_MARKERS=(
+    "forgeboss/control/activation.py",
+    "forgeboss/control/known_good.py",
+    "dashboard/pro_shell.py",
+    "START-FORGEBOSS.vbs",
+)
+
+def _folder_is_forgeboss(root:Path):
+    return all((root/rel).is_file() for rel in FORGEBOSS_MARKERS)
+
+def _find_forgeboss_root(path:Path):
+    candidates=[path] if path.is_dir() else [path.parent]
+    candidates.extend(path.parents)
+    seen=set()
+    for candidate in candidates:
+        try: candidate=candidate.resolve(strict=True)
+        except Exception: continue
+        key=str(candidate).casefold()
+        if key in seen: continue
+        seen.add(key)
+        if candidate.is_dir() and _folder_is_forgeboss(candidate):
+            return candidate
+    return None
+
+def detect_project_source(raw_path):
+    raw=str(raw_path or "").strip()
+    if not raw: raise ValueError("Drop a ForgeBoss folder or ForgeBoss ZIP.")
+    p=Path(raw).expanduser()
+    if not p.is_absolute():
+        raise ValueError("ForgeBoss needs the full dropped file/folder path.")
+    p=p.resolve(strict=True)
+    root=_find_forgeboss_root(p)
+    if root:
+        return {"project_id":"forgeboss","name":"ForgeBoss","source_path":str(root),"source_kind":"folder","self_build":True}
+    if p.is_file() and p.suffix.lower()==".zip":
+        with zipfile.ZipFile(p,"r") as z:
+            names={n.replace("\\","/").lstrip("./") for n in z.namelist() if not n.endswith("/")}
+        prefixes={""}
+        for name in names:
+            if "/" in name: prefixes.add(name.split("/",1)[0]+"/")
+        for prefix in prefixes:
+            if all(prefix+rel in names for rel in FORGEBOSS_MARKERS):
+                return {"project_id":"forgeboss","name":"ForgeBoss","source_path":str(p),"source_kind":"zip","zip_prefix":prefix,"self_build":True}
+        raise ValueError("ZIP is not a complete ForgeBoss package.")
+    raise ValueError("That drop is not recognised as ForgeBoss.")
+
+def load_selected_project():
+    try:
+        data=json.loads(SELECTED_PROJECT_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data,dict): return None
+        source=Path(str(data.get("source_path") or ""))
+        if not source.exists(): return None
+        return data
+    except Exception:
+        return None
+
+def save_selected_project(data):
+    SELECTED_PROJECT_PATH.parent.mkdir(parents=True,exist_ok=True)
+    SELECTED_PROJECT_PATH.write_text(json.dumps(data,indent=2),encoding="utf-8")
+    return data
+
 class Api:
     def __init__(self):
         self._probe_lock=threading.Lock()
@@ -259,6 +321,7 @@ class Api:
         s["owner_settings"]=load_settings();s["tasks"]=tasks();s["costs"]=costs()
         s["forgebossd"]=forgebossd_health()
         s["project_profiles"]=project_profiles_snapshot()
+        s["selected_project"]=load_selected_project()
         return s
 
     def set_safety_toggle(self,name,value):
@@ -330,8 +393,30 @@ class Api:
             return {"ok":False,"cancelled":True,"message":"Owner cancelled GitHub publication."}
         return fb.publish_run_report_to_github(meta,owner_confirmed=True,automated=False)
 
+    def attach_project(self,source_path):
+        try:
+            selected=detect_project_source(source_path)
+            selected["selected_at"]=time.time()
+            save_selected_project(selected)
+            fb.log("OWNER selected self-build project: "+selected["source_path"])
+            return {"ok":True,"project":selected}
+        except Exception as e:
+            return {"ok":False,"message":str(e)}
+
+    def clear_project(self):
+        try: SELECTED_PROJECT_PATH.unlink(missing_ok=True)
+        except Exception: pass
+        return {"ok":True}
+
     def start_build(self,settings):
         try:
+            selected=load_selected_project()
+            if selected and selected.get("project_id")=="forgeboss":
+                return {
+                    "ok":False,
+                    "blocked":True,
+                    "message":"ForgeBoss self-build target is selected, but the self-build execution bridge is not wired yet. START refused safely instead of running the old SiteBoss controller."
+                }
             budget=float(settings.get("budget_usd",3.0))
             duration_mode=str(settings.get("duration_mode","timed"))
             duration=int(settings.get("duration_minutes",120)) if duration_mode!="until-stopped" else 120
@@ -368,7 +453,7 @@ def main():
     # forcing EdgeChromium; this avoids a black window on machines where the
     # WebView2 runtime/backend is incomplete.
     webview.create_window(
-        "ForgeBoss - Building SiteBoss",
+        "ForgeBoss - Self Build",
         url=page.as_uri(),
         js_api=api,
         width=1380,
