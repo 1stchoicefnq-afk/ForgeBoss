@@ -229,7 +229,9 @@ class SelfBuildLauncher:
 
     def stop_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str,reason:str)->dict:
         public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
-        item=next((x for x in prepared_run.get("builders") or [] if x.get("builder_id")==builder_id),None)
+        prepared_items=list(prepared_run.get("builders") or [])
+        if isinstance(prepared_run.get("replacement"),dict):prepared_items.append(prepared_run["replacement"])
+        item=next((x for x in prepared_items if x.get("builder_id")==builder_id),None)
         if public is None or item is None:
             raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
         evidence=self.supervisor.stop(builder_id,int(public["generation"]),timeout=10.0)
