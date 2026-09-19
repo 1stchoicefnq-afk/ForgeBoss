@@ -100,16 +100,11 @@ def create_successor_workspace(
     if not re.fullmatch(r"[A-Za-z0-9._-]{8,80}", wid):
         raise SelfBuildWorkspaceError("workspace_id contains unsafe characters or length")
 
-    wt_root = Path(worktree_root or DEFAULT_WORKTREE_ROOT).expanduser()
-    st_root = Path(state_root or DEFAULT_STATE_ROOT).expanduser()
-    workspace = wt_root / wid
-    receipt_path = st_root / f"{wid}.json"
+    wt_root = _safe_external_path(Path(worktree_root or DEFAULT_WORKTREE_ROOT).expanduser(), live)
+    st_root = _safe_external_path(Path(state_root or DEFAULT_STATE_ROOT).expanduser(), live)
+    workspace = _safe_external_path(wt_root / wid, live)
+    receipt_path = _safe_external_path(st_root / f"{wid}.json", live)
     branch = f"forgeboss/selfbuild/{wid}"
-
-    _safe_external_path(wt_root, live)
-    _safe_external_path(st_root, live)
-    _safe_external_path(workspace, live)
-    _safe_external_path(receipt_path, live)
 
     if workspace.exists():
         raise SelfBuildWorkspaceError(f"successor workspace already exists: {workspace}")
