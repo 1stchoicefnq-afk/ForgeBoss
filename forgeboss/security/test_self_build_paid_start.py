@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -150,6 +153,19 @@ class ProtectedPaidStartTests(unittest.TestCase):
             _protected_control_authority(
                 self._bundle(),self.lease,packet,self.work,"mini-swe","1.00"
             )
+
+    def test_executor_security_state_can_live_outside_frozen_source_tree(self):
+        external=self.root/"runtime-state"
+        env=dict(os.environ)
+        env["FORGEBOSS_STATE_ROOT"]=str(external)
+        cp=subprocess.run(
+            [sys.executable,"-c",
+             "from forgeboss.security.executor_guard import STATE; print(STATE)"],
+            capture_output=True,text=True,env=env,check=True,
+        )
+        state=Path(cp.stdout.strip()).resolve()
+        self.assertEqual(state,(external/"executor-security").resolve())
+        self.assertTrue(state.is_dir())
 
 
 if __name__=="__main__":
