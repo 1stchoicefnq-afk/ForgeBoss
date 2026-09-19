@@ -36,6 +36,46 @@ class Coordinator:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_complete_worker_releases_exact_authority_and_is_idempotent(self):
+        class Store:
+            def __init__(self):self.calls=[]
+            def release(self,*args,**kw):self.calls.append((args,kw))
+        self.runtime.store=Store()
+        path=self.runtime._run_path("fl1-c")
+        item={
+            "task_id":"task-a","owner_epoch":3,
+            "authority":{"run_id":"worker-a","budget_usd":"1.00"},
+        }
+        path.write_text(json.dumps({
+            "schema":1,"phase":"PREPARED",
+            "prepared":{"run_id":"fl1-c","base_sha":self.base,"builders":[item]},
+            "replacement":None,
+        }),encoding="utf-8")
+        payload={"runId":"fl1-c","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":3,
+                 "resultHead":"b"*40,"measuredCostUsd":"0.25","resultDigest":"c"*64}
+        out=self.runtime.complete_worker(payload)
+        self.assertTrue(out["completed"])
+        self.assertEqual(len(self.runtime.store.calls),1)
+        args,kw=self.runtime.store.calls[0]
+        self.assertEqual(args[:3],("task-a","worker-a",3))
+        self.assertEqual(kw["result_head"],"b"*40)
+        self.assertEqual(kw["expected_head"],self.base)
+        again=self.runtime.complete_worker(payload)
+        self.assertEqual(again,out)
+        self.assertEqual(len(self.runtime.store.calls),1)
+
+    def test_complete_worker_rejects_cost_over_cap_before_release(self):
+        class Store:
+            def release(self,*args,**kw):raise AssertionError("release must not run")
+        self.runtime.store=Store()
+        path=self.runtime._run_path("fl1-over")
+        item={"task_id":"task-a","owner_epoch":1,"authority":{"run_id":"worker-a","budget_usd":"0.50"}}
+        path.write_text(json.dumps({"schema":1,"phase":"PREPARED","prepared":{"base_sha":self.base,"builders":[item]},"replacement":None}),encoding="utf-8")
+        with self.assertRaises(SelfBuildRuntimeError) as cm:
+            self.runtime.complete_worker({"runId":"fl1-over","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
+                                          "resultHead":"b"*40,"measuredCostUsd":"0.500001","resultDigest":"c"*64})
+        self.assertEqual(cm.exception.code,"MEASURED_COST_EXCEEDS_AUTHORITY")
+
     def setUp(self):
         self.td=tempfile.TemporaryDirectory()
         self.root=Path(self.td.name)/"protected";self.root.mkdir()

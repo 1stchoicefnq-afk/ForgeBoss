@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from forgeboss.control.self_build_coordinator import SelfBuildCoordinator,SelfBuildCoordinatorError
@@ -190,6 +192,64 @@ class SelfBuildRuntime:
         revocations.append({"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,"reason":reason})
         _atomic_json(path,record)
         return {"revoked":True,"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,"status":out.get("status")}
+
+    def complete_worker(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "")
+        path=self._run_path(run_id)
+        if not path.is_file():
+            raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        prepared=record.get("prepared") if isinstance(record,dict) else None
+        if not isinstance(prepared,dict):
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run preparation missing")
+        candidates=list(prepared.get("builders") or [])
+        if isinstance(record.get("replacement"),dict):candidates.append(record["replacement"])
+        task_id=str(payload.get("taskId") or "")
+        item=next((x for x in candidates if x.get("task_id")==task_id),None)
+        if item is None:raise SelfBuildRuntimeError("WORKER_NOT_IN_RUN","worker task is not part of protected run")
+        authority=item.get("authority") or {}
+        worker_run_id=str(payload.get("workerRunId") or "")
+        try:owner_epoch=int(payload.get("ownerEpoch"))
+        except Exception as ex:raise SelfBuildRuntimeError("OWNER_EPOCH_INVALID","owner epoch invalid") from ex
+        if authority.get("run_id")!=worker_run_id or int(item.get("owner_epoch") or 0)!=owner_epoch:
+            raise SelfBuildRuntimeError("WORKER_AUTHORITY_STALE","worker run/epoch does not match protected run")
+        result_head=str(payload.get("resultHead") or "").lower()
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",result_head):
+            raise SelfBuildRuntimeError("RESULT_HEAD_INVALID","worker result head invalid")
+        result_digest=str(payload.get("resultDigest") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}",result_digest):
+            raise SelfBuildRuntimeError("RESULT_DIGEST_INVALID","worker result digest invalid")
+        try:
+            measured=Decimal(str(payload.get("measuredCostUsd")))
+            cap=Decimal(str(authority.get("budget_usd")))
+        except (InvalidOperation,ValueError,TypeError) as ex:
+            raise SelfBuildRuntimeError("MEASURED_COST_INVALID","worker measured cost invalid") from ex
+        if not measured.is_finite() or measured<0 or not cap.is_finite() or cap<=0 or measured>cap:
+            raise SelfBuildRuntimeError("MEASURED_COST_EXCEEDS_AUTHORITY","worker measured cost exceeds protected cap")
+        completion={
+            "taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
+            "resultHead":result_head,"measuredCostUsd":format(measured,"f"),"resultDigest":result_digest,
+        }
+        completions=record.setdefault("completions",[])
+        existing=next((x for x in completions if x.get("taskId")==task_id),None)
+        if existing is not None:
+            if existing!=completion:raise SelfBuildRuntimeError("WORKER_COMPLETION_CONFLICT","worker completion already recorded differently")
+            return {"completed":True,**completion}
+        try:
+            self.store.release(
+                task_id,worker_run_id,owner_epoch,
+                result_head=result_head,outcome="released",
+                expected_head=str(prepared.get("base_sha") or ""),
+            )
+        except Exception as ex:
+            code=getattr(ex,"code","WORKER_RELEASE_FAILED")
+            raise SelfBuildRuntimeError(code,str(ex)) from ex
+        completions.append(completion)
+        _atomic_json(path,record)
+        self._assert_path(path)
+        return {"completed":True,**completion}
 
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")

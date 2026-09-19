@@ -157,6 +157,14 @@ class ProtectedAuthorityClient:
             "ownerEpoch":int(owner_epoch),"reason":reason,
         })
 
+    def complete_self_build_worker(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,
+                                   result_head:str,measured_cost_usd:str,result_digest:str)->dict:
+        return self.call("complete_self_build_worker",{
+            "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
+            "ownerEpoch":int(owner_epoch),"resultHead":result_head,
+            "measuredCostUsd":str(measured_cost_usd),"resultDigest":result_digest,
+        })
+
     def _exchange(self,raw:bytes)->bytes:
         if os.name=="nt": return self._exchange_windows(raw)
         path=self.unix_socket_path
