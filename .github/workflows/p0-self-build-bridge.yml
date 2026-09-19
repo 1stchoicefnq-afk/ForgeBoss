@@ -1,0 +1,101 @@
+name: P0 self-build bridge acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'forgeboss/protected_authority/**'
+      - 'forgeboss/security/executor_guard.py'
+      - 'forgeboss/security/test_self_build_paid_start.py'
+      - 'forgeboss/executors/mini_swe_runner.py'
+      - 'forgeboss/control/**'
+      - 'dashboard/**'
+      - 'projects/forgeboss/**'
+      - 'START-FORGEBOSS.vbs'
+      - '.github/workflows/p0-self-build-bridge.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p0-self-build-bridge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: ${{ matrix.os }} protected self-build bridge
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      FORGEBOSS_ALLOW_PAID_EXECUTOR: 'NO'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install test-only crypto dependency
+        run: python -m pip install --disable-pip-version-check "cryptography>=45,<48"
+
+      - name: Compile bridge and launch boundary
+        run: |
+          python -m py_compile forgeboss/protected_authority/client.py
+          python -m py_compile forgeboss/security/executor_guard.py
+          python -m py_compile forgeboss/security/test_self_build_paid_start.py
+          python -m py_compile forgeboss/executors/mini_swe_runner.py
+          python -m py_compile dashboard/pro_shell.py
+
+      - name: Protected authority client regressions
+        run: python -m unittest forgeboss.protected_authority.test_client -v
+
+      - name: Hostile protected paid-start regressions
+        run: python -m unittest forgeboss.security.test_self_build_paid_start -v
+
+      - name: Protected authority inherited suite
+        run: python -m unittest discover -s forgeboss/protected_authority -t . -p "test_*.py"
+
+      - name: Store and evidence authority regressions
+        run: |
+          python -m unittest forgeboss.control.test_store_authority_v3 -v
+          python -m unittest forgeboss.control.test_receipts_r4_composition -v
+          python -m unittest forgeboss.control.test_run_budget -v
+
+      - name: Workspace and process containment regressions
+        run: |
+          python -m unittest forgeboss.control.test_workspace_v7 -v
+          python -m unittest forgeboss.control.test_process_supervisor -v
+
+      - name: Activation and known-good regressions
+        run: python -m unittest forgeboss.control.test_activation forgeboss.control.test_known_good -v
+
+      - name: P0 shell and intake regressions
+        run: |
+          python -m unittest forgeboss.control.test_project_intake -v
+          node controller/selftest-launchers.js
+          python dashboard/pro_shell.py --smoke
+
+      - name: Prove CI never enables paid executor
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          test "$FORGEBOSS_ALLOW_PAID_EXECUTOR" = "NO"
+          ! env | grep -E '^(OPENAI_API_KEY|LLM_API_KEY|GH_TOKEN|GITHUB_TOKEN|GITHUB_PAT)='
+
+      - name: Prove CI never enables paid executor on Windows
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          if ($env:FORGEBOSS_ALLOW_PAID_EXECUTOR -ne 'NO') { throw 'paid executor unexpectedly enabled' }
+          foreach ($n in @('OPENAI_API_KEY','LLM_API_KEY','GH_TOKEN','GITHUB_TOKEN','GITHUB_PAT')) {
+            if (Test-Path "Env:$n") { throw "$n unexpectedly present in bridge test job" }
+          }
