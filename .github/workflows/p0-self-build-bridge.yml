@@ -69,6 +69,12 @@ jobs:
           python -m py_compile forgeboss/control/self_build.py
           python -m unittest forgeboss.control.test_self_build -v
 
+      - name: Self-build plan, preflight and coordinator regressions
+        run: |
+          python -m unittest forgeboss.control.test_self_build -v
+          python -m unittest forgeboss.control.test_self_build_preflight -v
+          python -m unittest forgeboss.control.test_self_build_coordinator -v
+
       - name: Store and evidence authority regressions
         run: |
           python -m unittest forgeboss.control.test_store_authority_v3 -v
