@@ -9,6 +9,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent $PSScriptRoot) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Config=@{
   AppId='4608230'
   InstallationId='154040429'
@@ -37,26 +40,15 @@ function New-GitHubInstallationToken{
   $jwt="$u.$(B64Url $sig)"
   $hdr=@{Authorization="Bearer $jwt";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -ContentType 'application/json' -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -Body $body -CacheTtlMs 0
 }
 function GHHeaders($t){@{Authorization="Bearer $t";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}}
 function GHRequest([string]$method,[string]$path,[string]$token,[object]$body=$null){
-  $params=@{
-    Method=$method
-    Uri="https://api.github.com$path"
-    Headers=(GHHeaders $token)
-    SkipHttpErrorCheck=$true
-  }
-  if($null-ne$body){
-    $params.ContentType='application/json'
-    $params.Body=($body|ConvertTo-Json -Depth 50)
-  }
-  $resp=Invoke-WebRequest @params
-  if([int]$resp.StatusCode-lt200-or[int]$resp.StatusCode-ge300){
-    throw "GitHub $method $path failed: HTTP $([int]$resp.StatusCode): $($resp.Content)"
-  }
-  if([string]::IsNullOrWhiteSpace("$($resp.Content)")){return $null}
-  $resp.Content|ConvertFrom-Json
+  $m=$method.ToUpperInvariant()
+  $resp=Invoke-GovernedGitHubRaw -Method $m -Url "https://api.github.com$path" -Headers (GHHeaders $token) -Body $body -CacheTtlMs 0 -AllowHttpError
+  if([int]$resp.status-lt200-or[int]$resp.status-ge300){throw "GitHub $m $path failed: HTTP $([int]$resp.status): $($resp.body)"}
+  if([string]::IsNullOrWhiteSpace("$($resp.body)")){return $null}
+  "$($resp.body)"|ConvertFrom-Json
 }
 function GHGet($p,$t){GHRequest 'GET' $p $t}
 function GHPatch($p,$t,$b){GHRequest 'PATCH' $p $t $b}

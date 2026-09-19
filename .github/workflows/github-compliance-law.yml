@@ -1,0 +1,30 @@
+name: GitHub compliance LAW
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-compliance-law-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Hard GitHub compliance law
+        run: node forgeboss/github/check-github-compliance-law.js
+      - name: Known runtime bypass audit
+        run: node forgeboss/github/audit-governor-bypasses.js

@@ -6,6 +6,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path $PSScriptRoot 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutDir=Join-Path $Root 'state\diagnostics'
 New-Item -ItemType Directory -Force -Path $OutDir|Out-Null
@@ -151,52 +154,27 @@ function New-GitHubReadToken {
   }
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
   $script:Counters.github_reads++
-  return Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $headers -ContentType 'application/json' -Body $body
+  return Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $headers -Body $body -CacheTtlMs 0
 }
 
 function GitHub-Get([string]$Path,[string]$Token){
-  $headers=@{
-    Authorization="Bearer $Token"
-    Accept='application/vnd.github+json'
-    'X-GitHub-Api-Version'='2022-11-28'
-  }
+  $headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
   $script:Counters.github_reads++
-  $resp=Invoke-WebRequest -Method Get -Uri "https://api.github.com$Path" -Headers $headers -SkipHttpErrorCheck
-  if([int]$resp.StatusCode-lt200-or[int]$resp.StatusCode-ge300){
-    throw "GitHub GET $Path failed: HTTP $([int]$resp.StatusCode): $($resp.Content)"
-  }
-  if([string]::IsNullOrWhiteSpace("$($resp.Content)")){return $null}
-  return $resp.Content|ConvertFrom-Json
+  $resp=Invoke-GovernedGitHubRaw -Method GET -Url "https://api.github.com$Path" -Headers $headers -CacheTtlMs 0 -AllowHttpError
+  if([int]$resp.status-lt200-or[int]$resp.status-ge300){throw "GitHub GET $Path failed: HTTP $([int]$resp.status): $($resp.body)"}
+  if([string]::IsNullOrWhiteSpace("$($resp.body)")){return $null}
+  return "$($resp.body)"|ConvertFrom-Json
 }
 
 
 function GitHub-DownloadJobLog {
-  param(
-    [Parameter(Mandatory=$true)][long]$JobId,
-    [Parameter(Mandatory=$true)][string]$Token
-  )
-
+  param([Parameter(Mandatory=$true)][long]$JobId,[Parameter(Mandatory=$true)][string]$Token)
   $script:Counters.github_reads++
-  $handler=[Net.Http.HttpClientHandler]::new()
-  $handler.AllowAutoRedirect=$true
-  $client=[Net.Http.HttpClient]::new($handler)
-  try{
-    [void]$client.DefaultRequestHeaders.UserAgent.ParseAdd('SiteBoss-Autopilot-Diagnostics/1.0')
-    $client.DefaultRequestHeaders.Authorization=[Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer',$Token)
-    [void]$client.DefaultRequestHeaders.Accept.ParseAdd('application/vnd.github+json')
-    [void]$client.DefaultRequestHeaders.Add('X-GitHub-Api-Version','2022-11-28')
-
-    $uri="https://api.github.com/repos/$($Config.Owner)/$($Config.Repo)/actions/jobs/$JobId/logs"
-    $response=$client.GetAsync($uri).GetAwaiter().GetResult()
-    $content=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    if(-not$response.IsSuccessStatusCode){
-      throw "Job log read failed for job $($JobId): HTTP $([int]$response.StatusCode): $content"
-    }
-    return $content
-  }finally{
-    $client.Dispose()
-    $handler.Dispose()
-  }
+  $headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28';'User-Agent'='SiteBoss-Autopilot-Diagnostics/1.0'}
+  $uri="https://api.github.com/repos/$($Config.Owner)/$($Config.Repo)/actions/jobs/$JobId/logs"
+  $response=Invoke-GovernedGitHubRaw -Method GET -Url $uri -Headers $headers -CacheTtlMs 0 -AllowHttpError
+  if([int]$response.status-lt200-or[int]$response.status-ge300){throw ("Job log read failed for job {0}: HTTP {1}: {2}" -f $JobId,[int]$response.status,$response.body)}
+  return "$($response.body)"
 }
 
 function Get-FailureExcerpt {
@@ -529,11 +507,13 @@ Run-Check 'repo.clone_exact_repair_head' {
   $repo=Join-Path $diagRoot 'repo'
   New-Item -ItemType Directory -Force -Path $diagRoot|Out-Null
   $script:DiagRepo=$repo
-  [void](Invoke-External 'git.exe' @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo))
+  $net=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repo)
+  if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
   $script:Counters.clones++
   [void](Invoke-External 'git.exe' @('config','--local','core.autocrlf','false') $repo)
   [void](Invoke-External 'git.exe' @('config','--local','core.safecrlf','false') $repo)
-  [void](Invoke-External 'git.exe' @('fetch','--no-tags','origin',$head.sha) $repo)
+  $net=Invoke-GovernedGitNetwork -WorkingDirectory $repo -CommandArgs @('fetch','--no-tags','origin',$head.sha)
+  if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
   [void](Invoke-External 'git.exe' @('checkout','--detach',$head.sha) $repo)
   @{repo=$repo;head=$head.sha}
 } @('git.executable','filesystem.case_sensitive_root','github.repair_pr_shape')

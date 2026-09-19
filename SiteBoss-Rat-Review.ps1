@@ -13,6 +13,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path $PSScriptRoot 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Root=$PSScriptRoot
 $State=Join-Path $Root 'state\rat-review'
 $Cache=Join-Path $State 'review-cache'
@@ -107,26 +110,15 @@ function New-GitHubToken {
   $jwt="$unsigned.$(B64Url $sig)"
   $headers=@{Authorization="Bearer $jwt";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $headers -ContentType 'application/json' -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $headers -Body $body -CacheTtlMs 0
 }
 function GHRequest([string]$Method,[string]$Path,[string]$Token,[object]$Body=$null){
-  $params=@{
-    Method=$Method
-    Uri="https://api.github.com$Path"
-    Headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
-    SkipHttpErrorCheck=$true
-  }
-  if($null-ne$Body){
-    $params.ContentType='application/json'
-    $params.Body=($Body|ConvertTo-Json -Depth 30)
-  }
-  $resp=Invoke-WebRequest @params
-  if([int]$resp.StatusCode-lt200-or[int]$resp.StatusCode-ge300){
-    throw "GitHub $Method $Path failed: HTTP $([int]$resp.StatusCode): $($resp.Content)"
-  }
-  if($Method-ne'GET'){$script:GitHubWrites++}
-  if([string]::IsNullOrWhiteSpace("$($resp.Content)")){return $null}
-  $resp.Content|ConvertFrom-Json
+  $m=$Method.ToUpperInvariant();$headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+  $resp=Invoke-GovernedGitHubRaw -Method $m -Url "https://api.github.com$Path" -Headers $headers -Body $Body -CacheTtlMs 0 -AllowHttpError
+  if([int]$resp.status-lt200-or[int]$resp.status-ge300){throw "GitHub $m $Path failed: HTTP $([int]$resp.status): $($resp.body)"}
+  if($m-ne'GET'){$script:GitHubWrites++}
+  if([string]::IsNullOrWhiteSpace("$($resp.body)")){return $null}
+  "$($resp.body)"|ConvertFrom-Json
 }
 function GHGet([string]$Path,[string]$Token){GHRequest 'GET' $Path $Token}
 function GHPost([string]$Path,[string]$Token,[object]$Body){GHRequest 'POST' $Path $Token $Body}
@@ -432,13 +424,9 @@ Return PASS only when this exact patch is suitable to publish as a DRAFT child r
 
 function Push-ReviewedCommit([string]$SourceRepo,[string]$Commit,[string]$Branch,[string]$Token){
   $basic=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$Token"))
-  $env=@{
-    GIT_CONFIG_COUNT='1'
-    GIT_CONFIG_KEY_0='http.extraHeader'
-    GIT_CONFIG_VALUE_0="Authorization: Basic $basic"
-  }
-  $r=Run 'git.exe' @('push',$Config.RepoUrl,"$Commit`:refs/heads/$Branch") $SourceRepo $env
-  if($r.exit_code-ne0){throw "Reviewed commit push failed: $($r.stderr)"}
+  $env:GIT_CONFIG_COUNT='1';$env:GIT_CONFIG_KEY_0='http.extraHeader';$env:GIT_CONFIG_VALUE_0="Authorization: Basic $basic"
+  try{Invoke-GovernedGitPush -WorkingDirectory $SourceRepo -Remote $Config.RepoUrl -RefSpec ($Commit + ':refs/heads/' + $Branch) | Out-Null}
+  finally{Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue;Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue;Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue}
   $script:GitHubWrites++
 }
 
@@ -534,11 +522,11 @@ Assert-CaseSensitive $Config.WorkspaceRoot
 $clean=Join-Path $Config.WorkspaceRoot "$Stamp\repo"
 New-Item -ItemType Directory -Force -Path (Split-Path $clean -Parent)|Out-Null
 $script:CleanWorkspace=$clean
-$r=Run 'git.exe' @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$clean)
+$r=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$clean)
 if($r.exit_code-ne0){throw "Clean clone failed: $($r.stderr)"}
 [void](Run 'git.exe' @('config','--local','core.autocrlf','false') $clean)
 [void](Run 'git.exe' @('config','--local','core.safecrlf','false') $clean)
-$r=Run 'git.exe' @('fetch','--no-tags','origin',$exactHead) $clean
+$r=Invoke-GovernedGitNetwork -WorkingDirectory $clean -CommandArgs @('fetch','--no-tags','origin',$exactHead)
 if($r.exit_code-ne0){throw "Fetch parent head failed: $($r.stderr)"}
 # Fetch candidate commit from the local Repair Rat workspace, not GitHub.
 $r=Run 'git.exe' @('fetch','--no-tags',$sourceRepo,$localCommit) $clean

@@ -1,6 +1,9 @@
 ﻿$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$GitHubGovernorModule=Join-Path (Split-Path -Parent $PSScriptRoot) 'forgeboss\github\GitHub-Governor.psm1'
+Import-Module $GitHubGovernorModule -Force
+
 $Config = @{
   AppId="4608230"
   InstallationId="154040429"
@@ -28,12 +31,12 @@ function New-GitHubInstallationToken {
   $jwt="$u.$(B64Url $sig)"
   $hdr=@{Authorization="Bearer $jwt";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"}
   $body=@{repositories=@($Config.Repo)}|ConvertTo-Json
-  Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -ContentType "application/json" -Body $body
+  Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com/app/installations/$($Config.InstallationId)/access_tokens" -Headers $hdr -Body $body -CacheTtlMs 0
 }
 
 function GHHeaders($token){ @{Authorization="Bearer $token";Accept="application/vnd.github+json";"X-GitHub-Api-Version"="2022-11-28"} }
-function GHGet($path,$token){ Invoke-RestMethod -Uri "https://api.github.com$path" -Headers (GHHeaders $token) }
-function GHPost($path,$token,$body){ Invoke-RestMethod -Method Post -Uri "https://api.github.com$path" -Headers (GHHeaders $token) -ContentType "application/json" -Body ($body|ConvertTo-Json -Depth 40) }
+function GHGet($path,$token){ Invoke-GovernedGitHubJson -Method GET -Url "https://api.github.com$path" -Headers (GHHeaders $token) -CacheTtlMs 0 }
+function GHPost($path,$token,$body){ Invoke-GovernedGitHubJson -Method POST -Url "https://api.github.com$path" -Headers (GHHeaders $token) -Body $body -CacheTtlMs 0 }
 
 function Get-LatestPacket($token){
   # Keep v0.3 semantics: newest matching comment from the current first 100 comments returned by GitHub.
@@ -147,8 +150,10 @@ function New-IsolatedCheckout($p,$token){
   $env:GIT_TERMINAL_PROMPT='0'
   try {
     $repoDir=Join-Path $dir 'repo'
-    Invoke-Git @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repoDir)
-    Invoke-Git @('fetch','--no-tags','origin',$p.base_sha) $repoDir
+    $net=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',"https://github.com/$($Config.Owner)/$($Config.Repo).git",$repoDir)
+    if($net.exit_code-ne0){throw "Governed clone failed: $($net.stderr)"}
+    $net=Invoke-GovernedGitNetwork -WorkingDirectory $repoDir -CommandArgs @('fetch','--no-tags','origin',$p.base_sha)
+    if($net.exit_code-ne0){throw "Governed fetch failed: $($net.stderr)"}
     Invoke-Git @('checkout','--detach',$p.base_sha) $repoDir
     $actual=Invoke-Git @('rev-parse','HEAD') $repoDir -Capture
     if($actual -ne $p.base_sha){ throw "Checkout mismatch: $actual" }
@@ -352,7 +357,7 @@ function Publish-DraftPR($p,[string]$repoDir,$token,[string]$askPass,[string[]]$
   $env:SITEBOSS_GITHUB_TOKEN=$token
   $env:GIT_ASKPASS=$askPass
   $env:GIT_TERMINAL_PROMPT='0'
-  try { Invoke-Git @('push','--set-upstream','origin',"HEAD:refs/heads/$($p.branch)") $repoDir }
+  try { Invoke-GovernedGitPush -WorkingDirectory $repoDir -Remote 'origin' -RefSpec "HEAD:refs/heads/$($p.branch)" -ExtraArgs @('--set-upstream') | Out-Null }
   finally {
     Remove-Item Env:SITEBOSS_GITHUB_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:GIT_ASKPASS -ErrorAction SilentlyContinue

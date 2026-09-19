@@ -12,6 +12,7 @@
 
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'forgeboss\github\GitHub-Governor.psm1') -Force
 
 $Root=$PSScriptRoot
 $State=Join-Path $Root 'state\repair-rat'
@@ -1588,19 +1589,19 @@ $work=Join-Path $Config.WorkspaceRoot "$Stamp\repo"
 New-Item -ItemType Directory -Force -Path (Split-Path $work -Parent)|Out-Null
 $script:Workspace=$work
 
-$r=Run 'git.exe' @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$work)
+$r=Invoke-GovernedGitNetwork -CommandArgs @('clone','--no-checkout','--filter=blob:none',$Config.RepoUrl,$work)
 if($r.exit_code-ne0){throw "clone failed: $($r.stderr)"}
 [void](Run 'git.exe' @('config','--local','core.autocrlf','false') $work)
 [void](Run 'git.exe' @('config','--local','core.safecrlf','false') $work)
 if([string]::IsNullOrWhiteSpace($TargetSha)){
-  $r=Run 'git.exe' @('fetch','origin',"pull/$RepairPullRequest/head:refs/remotes/origin/repair-rat-target") $work
+  $r=Invoke-GovernedGitNetwork -WorkingDirectory $work -CommandArgs @('fetch','origin',"pull/$RepairPullRequest/head:refs/remotes/origin/repair-rat-target")
   if($r.exit_code-ne0){throw "fetch PR failed: $($r.stderr)"}
   $r=Run 'git.exe' @('rev-parse','refs/remotes/origin/repair-rat-target') $work
   if($r.exit_code-ne0){throw "resolve PR head failed: $($r.stderr)"}
   $head=$r.stdout.Trim()
   $branchName="repair-rat/pr$RepairPullRequest-$Stamp"
 }else{
-  $r=Run 'git.exe' @('fetch','--no-tags','origin',$TargetSha) $work
+  $r=Invoke-GovernedGitNetwork -WorkingDirectory $work -CommandArgs @('fetch','--no-tags','origin',$TargetSha)
   if($r.exit_code-ne0){throw "fetch controller target SHA failed: $($r.stderr)"}
   $r=Run 'git.exe' @('rev-parse','FETCH_HEAD') $work
   if($r.exit_code-ne0){throw "resolve controller target SHA failed: $($r.stderr)"}

@@ -1,0 +1,120 @@
+name: GitHub governor acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'forgeboss/github/**'
+      - 'controller/adapters/Read-GitHub-Control.ps1'
+      - 'controller/lib/mirror.js'
+      - 'components/Child-Cycle.ps1'
+      - 'components/Executor-v0.4.ps1'
+      - 'components/Repair-PR.ps1'
+      - 'components/Review-PR.ps1'
+      - 'components/Controller-v0.5.10.ps1'
+      - 'SiteBoss-Rat-Review.ps1'
+      - 'SiteBoss-Diagnostics.ps1'
+      - 'SiteBoss-Repair-Lab.ps1'
+      - 'SiteBoss-Repair-Rat.ps1'
+      - 'engines/Repo-Mirror.ps1'
+      - 'GITHUB-RECOVERY-SAFETY.md'
+      - '.github/workflows/github-governor-acceptance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-governor-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Portable governor tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Governor functional tests
+        run: node forgeboss/github/test-request-governor.js
+      - name: GitHub compliance LAW
+        run: node forgeboss/github/check-github-compliance-law.js
+      - name: Runtime bypass audit
+        run: node forgeboss/github/audit-governor-bypasses.js
+      - name: JavaScript syntax checks
+        shell: bash
+        run: |
+          node --check forgeboss/github/request-governor.js
+          node --check forgeboss/github/github-gate-cli.js
+          node --check forgeboss/github/write-gate.js
+          node --check controller/lib/mirror.js
+
+  windows-native:
+    name: Windows native PowerShell and Git
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Confirm native tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          node --version
+          git --version
+          $PSVersionTable.PSVersion
+      - name: Governor functional tests on Windows
+        shell: pwsh
+        run: node forgeboss/github/test-request-governor.js
+      - name: GitHub compliance LAW on Windows
+        shell: pwsh
+        run: node forgeboss/github/check-github-compliance-law.js
+      - name: Runtime bypass audit on Windows
+        shell: pwsh
+        run: node forgeboss/github/audit-governor-bypasses.js
+      - name: Parse changed PowerShell entrypoints
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $files=@(
+            'forgeboss/github/GitHub-Governor.psm1',
+            'controller/adapters/Read-GitHub-Control.ps1',
+            'components/Child-Cycle.ps1',
+            'components/Executor-v0.4.ps1',
+            'components/Repair-PR.ps1',
+            'components/Review-PR.ps1',
+            'components/Controller-v0.5.10.ps1',
+            'SiteBoss-Rat-Review.ps1',
+            'SiteBoss-Diagnostics.ps1',
+            'SiteBoss-Repair-Lab.ps1',
+            'SiteBoss-Repair-Rat.ps1',
+            'engines/Repo-Mirror.ps1'
+          )
+          foreach($file in $files){
+            $tokens=$null;$errors=$null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors)
+            if($errors.Count){$errors|ForEach-Object{Write-Error "${file}:$($_.Extent.StartLineNumber): $($_.Message)"};throw "PowerShell parse failed: $file"}
+          }
+          "Parsed $($files.Count) PowerShell files"
+      - name: Import governor module without network access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Import-Module .\forgeboss\github\GitHub-Governor.psm1 -Force
+          $expected=@('Get-GitHubMutationKey','Invoke-GovernedGitHubRaw','Invoke-GovernedGitHubJson','Invoke-GovernedGitNetwork','Invoke-GovernedGitPush')
+          foreach($name in $expected){if(-not(Get-Command $name -ErrorAction SilentlyContinue)){throw "Missing exported governor command: $name"}}
+          $a=Get-GitHubMutationKey -Method POST -Url 'https://api.github.com/repos/test/test/issues' -Body @{a=1}
+          $b=Get-GitHubMutationKey -Method POST -Url 'https://api.github.com/repos/test/test/issues' -Body @{a=1}
+          if(-not$a -or $a-ne$b){throw 'Mutation-key helper is not deterministic'}
+          'PowerShell governor module smoke PASS'
+      - name: JavaScript syntax checks on Windows
+        shell: pwsh
+        run: |
+          node --check forgeboss/github/request-governor.js
+          node --check forgeboss/github/github-gate-cli.js
+          node --check forgeboss/github/write-gate.js
+          node --check controller/lib/mirror.js
