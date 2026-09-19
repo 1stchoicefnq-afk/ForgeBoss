@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -173,8 +174,9 @@ class SelfBuildRunPlan:
 def finish_line_one_plan(known_good_sha:str,run_id:str|None=None)->SelfBuildRunPlan:
     kg=_sha(known_good_sha)
     rid=run_id or ("fl1-"+uuid.uuid4().hex[:12])
+    tag=hashlib.sha256(rid.encode("utf-8")).hexdigest()[:12]
     a=WorkerPlan(
-        task_id="fl1-a-learning",
+        task_id=f"fl1-a-{tag}",
         builder_id="builder-a",
         branch=f"forgeboss/fl1-selfbuild-a-{rid}",
         allowed_files=("forgeboss/learning/test_fl1_reuse_regression.py",),
@@ -187,7 +189,7 @@ def finish_line_one_plan(known_good_sha:str,run_id:str|None=None)->SelfBuildRunP
         budget_usd="1.00",max_changed_files=1,max_changed_lines=250,
     )
     b=WorkerPlan(
-        task_id="fl1-b-packet",
+        task_id=f"fl1-b-{tag}",
         builder_id="builder-b",
         branch=f"forgeboss/fl1-selfbuild-b-{rid}",
         allowed_files=("forgeboss/security/test_fl1_packet_validation.py",),
@@ -200,7 +202,7 @@ def finish_line_one_plan(known_good_sha:str,run_id:str|None=None)->SelfBuildRunP
         budget_usd="0.50",max_changed_files=1,max_changed_lines=250,
     )
     b2=WorkerPlan(
-        task_id="fl1-b2-packet",
+        task_id=f"fl1-b2-{tag}",
         builder_id="builder-b2",
         branch=f"forgeboss/fl1-selfbuild-b2-{rid}",
         allowed_files=b.allowed_files,
