@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
+from forgeboss.control.self_build_freeze import SelfBuildFreezeError,freeze_candidate
 from forgeboss.control.process_supervisor import ProcessSupervisor
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 
@@ -28,17 +29,20 @@ class A:
 class E:
     state:str="STOPPED"
     containment_empty:bool=True
-    def as_dict(self):return {"state":self.state,"containment_empty":self.containment_empty}
+    def as_dict(self):return {"operationId":"op","workerId":"w","generation":1,"state":self.state,"reason":"verified-complete","exitCode":0,"containmentEmpty":self.containment_empty,"startedAt":1.0,"finishedAt":2.0}
 
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[]
+        self.attested=[];self.revoked=[];self.completed=[]
     def attest_launch_payload(self,signed):
         self.attested.append(dict(signed))
         return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
     def revoke_self_build_worker(self,**kw):
         self.revoked.append(dict(kw));return {"result":{"revoked":True}}
+    def complete_self_build_worker(self,**kw):
+        self.completed.append(dict(kw));return {"result":{"completed":True},"receipt":{"operation":"complete_self_build_worker"}}
+
 
 
 class Supervisor(ProcessSupervisor):
@@ -53,6 +57,9 @@ class Supervisor(ProcessSupervisor):
     def get(self,worker_id,*,refresh=False):
         row=next(x["row"] for x in self.launched if x["row"].worker_id==worker_id)
         return row
+    def complete(self,worker_id,expected_generation,*,timeout=5.0):
+        return E()
+
 
 
 class LauncherTests(unittest.TestCase):
@@ -109,10 +116,10 @@ class LauncherTests(unittest.TestCase):
             ],
         }
 
-    def launcher(self,supervisor=None):
+    def launcher(self,supervisor=None,freeze_fn=freeze_candidate):
         return SelfBuildLauncher(
             client=self.client,supervisor=supervisor or self.supervisor,state_root=self.state,
-            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,clock=lambda:1000.0,
+            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,freeze_fn=freeze_fn,clock=lambda:1000.0,
         )
 
     def test_launch_initial_binds_two_workers_to_exact_packet_and_service_attestation(self):
@@ -188,6 +195,73 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertTrue(result["stopped"])
         self.assertEqual(self.client.revoked[-1]["task_id"],"task-b")
+
+    def test_complete_worker_freezes_then_releases_protected_authority(self):
+        out=self.launcher(freeze_fn=lambda **kw:{
+            "schema":1,"task_id":"task-a","builder_id":"builder-a",
+            "base_sha":"a"*40,"candidate_sha":"c"*40,
+            "changed_files":["forgeboss/tests/test_builder-a.py"],"changed_lines":5,
+            "focused_tests":[],"measured_cost_usd":"0.20",
+            "postflight_changed_paths":["forgeboss/tests/test_builder-a.py"],
+            "runner_result_digest":"d"*64,"evidence_digest":"e"*64,
+        }).launch_initial(self.prepared)
+        first=out["workers"][0]
+        Path(first["result_file"]).parent.mkdir(parents=True,exist_ok=True)
+        Path(first["result_file"]).write_text(json.dumps({"schema":1}),encoding="utf-8")
+        handoff=self.launcher(freeze_fn=lambda **kw:{
+            "schema":1,"task_id":"task-a","builder_id":"builder-a",
+            "base_sha":"a"*40,"candidate_sha":"c"*40,
+            "changed_files":["forgeboss/tests/test_builder-a.py"],"changed_lines":5,
+            "focused_tests":[],"measured_cost_usd":"0.20",
+            "postflight_changed_paths":["forgeboss/tests/test_builder-a.py"],
+            "runner_result_digest":"d"*64,"evidence_digest":"e"*64,
+        })
+        # Use the same supervisor/client and external state as the launched run.
+        handoff.supervisor=self.supervisor;handoff.client=self.client
+        result=handoff.complete_worker(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
+        self.assertEqual(result["candidate_sha"],"c"*40)
+        self.assertEqual(result["review_status"],"FROZEN_AWAITING_INDEPENDENT_REVIEW")
+        self.assertEqual(self.client.completed[-1]["result_head"],"c"*40)
+        self.assertEqual(self.client.completed[-1]["measured_cost_usd"],"0.20")
+        self.assertTrue(Path(first["result_file"]).parent.joinpath("candidate-evidence.json").is_file())
+
+    @unittest.skipUnless(__import__("shutil").which("git"),"git required")
+    def test_freeze_candidate_real_git_scope_test_and_exact_sha(self):
+        import subprocess,sys,shutil
+        repo=self.root/"freeze-repo";repo.mkdir()
+        git=Path(shutil.which("git")).resolve()
+        def g(*args):
+            p=subprocess.run([str(git),"-C",str(repo),*args],capture_output=True,text=True)
+            self.assertEqual(p.returncode,0,msg=p.stderr);return p.stdout.strip()
+        g("init","-q");g("config","user.email","test@example.invalid");g("config","user.name","Test")
+        (repo/"pkg").mkdir();(repo/"pkg"/"__init__.py").write_text("",encoding="utf-8")
+        g("add",".");g("commit","-qm","base");base=g("rev-parse","HEAD")
+        candidate=repo/"pkg"/"test_candidate.py"
+        candidate.write_text("import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): self.assertEqual(2+2,4)\n",encoding="utf-8")
+        item={
+            "task_id":"task-a","builder_id":"builder-a","worktree":str(repo),
+            "authority":{"budget_usd":"1.00"},
+            "packet":{
+                "run_id":"fl1-run","expected_head_revision":base,
+                "allowed_files":["pkg/test_candidate.py"],
+                "required_tests":["python -m unittest pkg.test_candidate -v"],
+                "max_changed_files":1,"max_changed_lines":20,
+            },
+        }
+        public={"packet_sha256":"f"*64}
+        result={
+            "schema":1,"executor":"mini-swe","model":"test","cost_usd":0.2,"calls":1,
+            "completed":True,"error":None,"task_id":"task-a","builder_id":"builder-a",
+            "run_id":"fl1-run","expected_head_revision":base,"workspace":str(repo.resolve()),
+            "packet_sha256":"f"*64,
+            "postflight":{"ok":True,"scope_ok":True,"paid_consumed":True,"changed_paths":["pkg/test_candidate.py"]},
+        }
+        process={"state":"STOPPED","containmentEmpty":True,"exitCode":0,"reason":"verified-complete"}
+        frozen=freeze_candidate(item=item,public=public,result=result,process_evidence=process,git_executable=git,python_executable=Path(sys.executable))
+        self.assertNotEqual(frozen["candidate_sha"],base)
+        self.assertEqual(frozen["changed_files"],["pkg/test_candidate.py"])
+        self.assertEqual(g("status","--porcelain=v1"),"")
+        self.assertEqual(g("diff","--name-only",base,frozen["candidate_sha"]),"pkg/test_candidate.py")
 
     def test_state_root_inside_forgeboss_source_is_rejected(self):
         source=Path(__file__).resolve().parents[2]

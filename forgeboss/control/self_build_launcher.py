@@ -11,6 +11,7 @@ from typing import Callable
 from forgeboss.control.process_supervisor import ProcessSupervisor,SupervisorError
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 from forgeboss.security.executor_guard import issue_lease
+from forgeboss.control.self_build_freeze import SelfBuildFreezeError,freeze_candidate,load_result_file
 
 
 class SelfBuildLaunchError(RuntimeError):
@@ -58,12 +59,12 @@ class SelfBuildLauncher:
     """
     def __init__(self,*,client:ProtectedAuthorityClient,supervisor:ProcessSupervisor,
                  state_root,python_executable=None,runner_path=None,
-                 issue_lease_fn:Callable=issue_lease,clock:Callable=time.time):
+                 issue_lease_fn:Callable=issue_lease,freeze_fn:Callable=freeze_candidate,clock:Callable=time.time):
         if not isinstance(client,ProtectedAuthorityClient):
             raise SelfBuildLaunchError("AUTHORITY_CLIENT_REQUIRED","protected authority client required")
         if not isinstance(supervisor,ProcessSupervisor):
             raise SelfBuildLaunchError("SUPERVISOR_REQUIRED","ProcessSupervisor required")
-        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.clock=clock
+        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.freeze_fn=freeze_fn;self.clock=clock
         self.state_root=Path(state_root).expanduser().resolve()
         source_root=Path(__file__).resolve().parents[2]
         if _inside(self.state_root,source_root):
@@ -79,6 +80,8 @@ class SelfBuildLauncher:
             "packet":base/"packet.json",
             "bundle":base/"launch-bundle.json",
             "result":base/"result.json",
+            "candidate":base/"candidate-evidence.json",
+            "handoff":base/"handoff.json",
         }
 
     def _launch_payload(self,item:dict,packet_sha256:str,expires_at:float)->dict:
@@ -226,6 +229,86 @@ class SelfBuildLauncher:
                 "result":result,
             })
         return {**launched_run,"workers":rows}
+
+    @staticmethod
+    def _prepared_item(prepared_run:dict,builder_id:str):
+        containers=[]
+        if isinstance(prepared_run,dict):
+            containers.append(prepared_run)
+            nested=prepared_run.get("prepared")
+            if isinstance(nested,dict):containers.append(nested)
+        for container in containers:
+            for item in list(container.get("builders") or []):
+                if item.get("builder_id")==builder_id:return item
+            replacement=container.get("replacement")
+            if isinstance(replacement,dict) and replacement.get("builder_id")==builder_id:return replacement
+        return None
+
+    def _load_candidate_evidence(self,path:Path,*,item:dict)->dict|None:
+        if not path.is_file():return None
+        try:value=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence unreadable") from ex
+        if not isinstance(value,dict) or value.get("schema")!=1:
+            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence schema invalid")
+        digest=value.get("evidence_digest")
+        unsigned={k:v for k,v in value.items() if k!="evidence_digest"}
+        expected=hashlib.sha256(json.dumps(unsigned,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
+        if digest!=expected:
+            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence digest mismatch")
+        if value.get("task_id")!=item.get("task_id") or value.get("builder_id")!=item.get("builder_id"):
+            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence identity mismatch")
+        return value
+
+    def complete_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str)->dict:
+        public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
+        item=self._prepared_item(prepared_run,builder_id)
+        if public is None or item is None:
+            raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
+        paths=self._paths(str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),builder_id)
+        if paths["handoff"].is_file():
+            try:return json.loads(paths["handoff"].read_text(encoding="utf-8"))
+            except Exception as ex:raise SelfBuildLaunchError("HANDOFF_EVIDENCE_INVALID","handoff evidence unreadable") from ex
+
+        try:
+            process=self.supervisor.complete(builder_id,int(public["generation"]),timeout=10.0)
+        except SupervisorError as ex:
+            raise SelfBuildLaunchError(ex.code,str(ex)) from ex
+        process_evidence=process.as_dict()
+        candidate=self._load_candidate_evidence(paths["candidate"],item=item)
+        if candidate is None:
+            try:
+                result=load_result_file(public["result_file"],state_root=self.state_root)
+                candidate=self.freeze_fn(
+                    item=item,public=public,result=result,process_evidence=process_evidence,
+                    python_executable=self.python,
+                )
+            except SelfBuildFreezeError as ex:
+                raise SelfBuildLaunchError(ex.code,str(ex)) from ex
+            _atomic_json(paths["candidate"],candidate)
+
+        response=self.client.complete_self_build_worker(
+            run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
+            task_id=item["task_id"],
+            worker_run_id=item["authority"]["run_id"],
+            owner_epoch=item["owner_epoch"],
+            result_head=candidate["candidate_sha"],
+            measured_cost_usd=candidate["measured_cost_usd"],
+            result_digest=candidate["evidence_digest"],
+        )
+        handoff={
+            "schema":1,
+            "run_id":str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
+            "builder_id":builder_id,
+            "task_id":item["task_id"],
+            "base_sha":candidate["base_sha"],
+            "candidate_sha":candidate["candidate_sha"],
+            "candidate_evidence":candidate,
+            "process_evidence":process_evidence,
+            "authority_receipt":response,
+            "review_status":"FROZEN_AWAITING_INDEPENDENT_REVIEW",
+        }
+        _atomic_json(paths["handoff"],handoff)
+        return handoff
 
     def stop_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str,reason:str)->dict:
         public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
