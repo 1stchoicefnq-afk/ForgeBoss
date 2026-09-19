@@ -73,12 +73,21 @@ class SelfBuildRuntime:
             try:self.store.db.close()
             except Exception:pass
 
+    def _assert_service(self)->None:
+        try:self.boundary.assert_service_principal(self.root)
+        except Exception as ex:raise SelfBuildRuntimeError("SERVICE_PRINCIPAL_DENIED","protected self-build service principal denied") from ex
+
+    def _assert_path(self,path:Path)->None:
+        self._assert_service()
+        try:self.boundary.assert_protected_path(path,protected_root=self.root)
+        except Exception as ex:raise SelfBuildRuntimeError("PROTECTED_STATE_DENIED","protected self-build state path denied") from ex
+
     def _pointer(self)->dict:
         path=self.activation_root/"known-good.json"
-        self.boundary.assert_service_principal(self.root)
+        self._assert_service()
         if not path.is_file():
             raise SelfBuildRuntimeError("KNOWN_GOOD_POINTER_MISSING","protected activation known-good pointer is missing")
-        self.boundary.assert_protected_path(path,protected_root=self.root)
+        self._assert_path(path)
         try:value=json.loads(path.read_text(encoding="utf-8"))
         except Exception as ex:raise SelfBuildRuntimeError("KNOWN_GOOD_POINTER_INVALID","protected known-good pointer is unreadable") from ex
         if not isinstance(value,dict):
@@ -115,7 +124,7 @@ class SelfBuildRuntime:
             raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
         record={"schema":1,"phase":"PREPARED","prepared":result,"replacement":None}
         _atomic_json(path,record)
-        self.boundary.assert_protected_path(path,protected_root=self.root)
+        self._assert_path(path)
         return result
 
     def prepare_replacement(self,payload:dict)->dict:
@@ -123,8 +132,7 @@ class SelfBuildRuntime:
         path=self._run_path(run_id)
         if not path.is_file():
             raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
-        self.boundary.assert_service_principal(self.root)
-        self.boundary.assert_protected_path(path,protected_root=self.root)
+        self._assert_path(path)
         try:record=json.loads(path.read_text(encoding="utf-8"))
         except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
         if not isinstance(record,dict) or record.get("schema")!=1 or record.get("phase")!="PREPARED" or not isinstance(record.get("prepared"),dict):
@@ -152,8 +160,7 @@ class SelfBuildRuntime:
         run_id=str(payload.get("runId") or "")
         path=self._run_path(run_id)
         if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
-        self.boundary.assert_service_principal(self.root)
-        self.boundary.assert_protected_path(path,protected_root=self.root)
+        self._assert_path(path)
         try:value=json.loads(path.read_text(encoding="utf-8"))
         except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
         if not isinstance(value,dict) or value.get("schema")!=1:
