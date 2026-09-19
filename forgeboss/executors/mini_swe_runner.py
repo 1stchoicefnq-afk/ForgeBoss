@@ -18,7 +18,15 @@ def main() -> int:
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
-    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+    if os.environ.get("FORGEBOSS_SELF_BUILD_MODE")=="YES":
+        launch_bundle=os.environ.get("FORGEBOSS_PROTECTED_LAUNCH_BUNDLE","")
+        if not launch_bundle:
+            print("FORGEBOSS SAFE STOP: protected self-build launch bundle missing.",file=sys.stderr);return 13
+        v=subprocess.run([sys.executable,str(guard),"protected-paid-start","--lease",lease,"--token",lease_token,
+                          "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+                          "--launch-bundle",launch_bundle,"--budget",str(budget)],capture_output=True,text=True)
+    else:
+        v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
     if v.returncode:
         print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
     env_obj=None
@@ -63,7 +71,8 @@ You are in {{ cwd }}. Work only inside the bounded repository and obey the task 
             step_limit=30,
             wall_time_limit_seconds=900,
         )
-        task=f"""You are a bounded coding worker inside ForgeBoss. Product: SiteBoss.
+        product=str(packet.get("product") or "ForgeBoss")
+        task=f"""You are a bounded coding worker inside ForgeBoss. Product: {product}.
 Objective: {packet.get('objective','')}
 
 IMMUTABLE RULES:
