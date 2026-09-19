@@ -49,7 +49,14 @@ jobs:
 
       - name: Compile bridge and launch boundary
         run: |
+          python -m py_compile forgeboss/protected_authority/protocol.py
+          python -m py_compile forgeboss/protected_authority/service.py
           python -m py_compile forgeboss/protected_authority/client.py
+          python -m py_compile forgeboss/control/self_build.py
+          python -m py_compile forgeboss/control/self_build_preflight.py
+          python -m py_compile forgeboss/control/self_build_coordinator.py
+          python -m py_compile forgeboss/control/self_build_runtime.py
+          python -m py_compile forgeboss/control/self_build_launcher.py
           python -m py_compile forgeboss/security/executor_guard.py
           python -m py_compile forgeboss/security/test_self_build_paid_start.py
           python -m py_compile forgeboss/executors/mini_swe_runner.py
