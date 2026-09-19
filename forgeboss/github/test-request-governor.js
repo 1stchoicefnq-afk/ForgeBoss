@@ -190,7 +190,7 @@ async function t(n,f){
 
  await t('state deletion after protection history fails closed',async()=>{
   const r=useHome('state-delete');let n=0;const f=async()=>{n++;return resp(200,'{}')};
-  await githubRequest('https://api.github.com/x/state',{}, {config:c,fetchImpl:f});assert(fs.existsSync(path.join(r,'state-authority.json')));
+  await githubRequest('https://api.github.com/x/state',{}, {config:c,fetchImpl:f});assert(fs.existsSync(path.join(path.dirname(r),'github-governor-authority.json')));
   fs.unlinkSync(path.join(r,'state.json'));
   let blocked=false;try{await githubRequest('https://api.github.com/x/state2',{}, {config:c,fetchImpl:f})}catch(e){blocked=e.name==='GitHubStateTamperError'}
   assert.equal(blocked,true);assert.equal(n,1);
