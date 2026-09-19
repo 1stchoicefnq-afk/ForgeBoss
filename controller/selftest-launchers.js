@@ -30,6 +30,6 @@ const intake=fs.readFileSync(path.join(root,'forgeboss','control','project_intak
 const html=fs.readFileSync(path.join(root,'dashboard','pro.html'),'utf8');
 ok('dashboard.self_project_detection',shell.includes('detect_project_source')&&intake.includes('FORGEBOSS_MARKERS'));
 ok('dashboard.self_build_fail_closed',shell.includes('self-build execution bridge is not wired yet'));
-ok('dashboard.drag_drop_present',html.includes('DROP FORGEBOSS HERE')&&html.includes('pywebviewFullPath'));
+ok('dashboard.drag_drop_present',html.includes('DROP FORGEBOSS HERE')&&shell.includes('pywebviewFullPath')&&shell.includes('DOMEventHandler'));
 
 process.exit(fail?2:0);
