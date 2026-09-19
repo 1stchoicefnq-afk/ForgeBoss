@@ -22,7 +22,19 @@ function runGitAsync(exe,args,opts={}){
 class GitHubCircuitOpenError extends Error{
  constructor(until,reason){super('GitHub governor circuit open until '+new Date(until).toISOString()+': '+(reason||'rate-limit protection'));this.name='GitHubCircuitOpenError';this.until=until;this.reason=reason||'rate-limit protection'}
 }
-function root(){return path.resolve(process.env.SITEBOSS_GITHUB_GOVERNOR_DIR||path.join(os.homedir(),'.siteboss','github-governor'))}
+function root(){
+ const info=os.userInfo();
+ if(!info||!info.homedir)throw new Error('Unable to resolve OS-account home for GitHub governor');
+ return path.resolve(info.homedir,'.siteboss','github-governor');
+}
+function stateRootFor(o={}){
+ if(o.root!==undefined){
+  const isExactTestRunner=process.env.NODE_ENV==='test'&&path.basename(process.argv[1]||'')==='test-request-governor.js';
+  if(!isExactTestRunner)throw new Error('GitHub governor state-root override is test-only');
+  return path.resolve(String(o.root));
+ }
+ return root();
+}
 function cfg(o={}){
  const num=(v,d)=>{const n=Number(v);return Number.isFinite(n)?n:d};
  const env=(k,d)=>num(process.env[k],d);
@@ -64,7 +76,7 @@ async function lock(p,c){
  throw new Error('GitHub governor lock timeout');
 }
 function unlock(p){try{fs.rmSync(p.lock,{recursive:true,force:true})}catch{}}
-async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(o.root||root());await lock(p,c);const hbMs=Math.max(100,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
+async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(stateRootFor(o));await lock(p,c);const hbMs=Math.max(100,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
 function prune(s,now){s.requests=s.requests.filter(t=>now-t<60000);s.mutations=s.mutations.filter(t=>now-t<3600000);for(const[k,t]of Object.entries(s.dedupe))if(now-t>3600000)delete s.dedupe[k];for(const[k,v]of Object.entries(s.notFound))if(!v||Number(v.until||0)<=now)delete s.notFound[k]}
 const mutation=m=>!['GET','HEAD','OPTIONS'].includes(String(m||'GET').toUpperCase());
 async function budget(s,c,isMutation,p){
@@ -133,5 +145,5 @@ async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
   save(p,s);metric(p,'git_push',{status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});return{exitCode:Number.isInteger(r.status)?r.status:-1,stdout:String(r.stdout||''),stderr};
  },g);
 }
-function status(o={}){const p=paths(o.root||root());ensure(p);const s=load(p);prune(s,Date.now());return{root:p.root,...s}}
+function status(o={}){const p=paths(stateRootFor(o));ensure(p);const s=load(p);prune(s,Date.now());return{root:p.root,...s}}
 module.exports={GitHubCircuitOpenError,githubRequest,governedGitNetwork,governedGitPush,governorStatus:status,getConfig:cfg,stateRoot:root,_internal:{pathsFor:paths,loadState:load,saveState:save,limitInfo}};
