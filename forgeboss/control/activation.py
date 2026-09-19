@@ -10,11 +10,50 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .known_good import IdentityError, verify_build_manifest
 
 CNW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+_ENTRY_COMPONENT = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ACTIVATION_BOOTSTRAP = (
+    "import importlib,pathlib,sys;"
+    "root=pathlib.Path(sys.argv[1]).resolve(strict=True);"
+    "entry=pathlib.Path(sys.argv[2]).resolve(strict=True);"
+    "name=sys.argv[3];extra=sys.argv[4:];"
+    "sys.path.insert(0,str(root));"
+    "module=importlib.import_module(name);"
+    "origin=pathlib.Path(module.__file__).resolve(strict=True);"
+    "assert origin==entry,'entrypoint origin mismatch';"
+    "pkg=sys.modules.get('forgeboss');"
+    "paths=list(getattr(pkg,'__path__',()));"
+    "expected=(root/'forgeboss').resolve(strict=True);"
+    "assert paths and all(pathlib.Path(p).resolve(strict=True)==expected for p in paths),'package origin mismatch';"
+    "sys.argv=[str(entry),*extra];"
+    "module.main()"
+)
+
+
+def _entrypoint_module(entrypoint: str) -> str:
+    rel=PurePosixPath(str(entrypoint).replace("\\","/"))
+    if rel.is_absolute() or ".." in rel.parts or len(rel.parts)<2 or rel.parts[0]!="forgeboss":
+        raise ActivationError("candidate entrypoint module path is invalid")
+    if rel.suffix!=".py" or rel.name=="__init__.py":
+        raise ActivationError("candidate entrypoint must be an importable Python module")
+    parts=list(rel.with_suffix("").parts)
+    if any(not _ENTRY_COMPONENT.fullmatch(part) for part in parts):
+        raise ActivationError("candidate entrypoint module path is invalid")
+    return ".".join(parts)
+
+
+def _candidate_launch_command(root: Path, entry: Path, entrypoint: str, extra_args=None) -> list[str]:
+    root=Path(root).resolve(strict=True);entry=Path(entry).resolve(strict=True)
+    module=_entrypoint_module(entrypoint)
+    expected=(root/Path(*PurePosixPath(entrypoint).parts)).resolve(strict=True)
+    if expected!=entry:
+        raise ActivationError("candidate entrypoint origin is not exact")
+    return [sys.executable,"-I","-S","-c",_ACTIVATION_BOOTSTRAP,str(root),str(entry),module,*list(extra_args or [])]
 
 
 class ActivationError(RuntimeError):
@@ -377,9 +416,14 @@ class ActivationManager:
             _atomic_json(self.state_path, state)
             env = os.environ.copy()
             env.update(extra_env or {})
+            for key in list(env):
+                upper=key.upper()
+                if upper in {"PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","PYTHONINSPECT","GH_TOKEN","GITHUB_TOKEN","GITHUB_PAT"} or upper.startswith("FORGEBOSS_AUTHORITY_"):
+                    env.pop(key,None)
             env.update({"FORGEBOSS_SELF_BUILD_MODE": "YES", "FORGEBOSS_BUILD_MANIFEST": candidate["manifestPath"], "FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA": candidate["revision"], "FORGEBOSS_EXPECTED_MANIFEST_SHA256": candidate["manifestSha256"], "FORGEBOSS_ACTIVATION_NONCE": nonce, "FORGEBOSS_ACTIVATION_GENERATION": str(state["generation"])})
+            argv=_candidate_launch_command(root,entry,candidate["entrypoint"],extra_args)
             try:
-                proc = subprocess.Popen([sys.executable, str(entry), *(extra_args or [])], cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CNW)
+                proc = subprocess.Popen(argv, cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CNW)
             except Exception as ex:
                 state.update({"phase": "QUARANTINED", "reason": "candidate start failed", "updatedAt": time.time()})
                 _atomic_json(self.state_path, state)

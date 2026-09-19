@@ -7,10 +7,42 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.control.activation import ActivationError, ActivationManager, _same_process, _terminate_posix_pidfd
+from forgeboss.control.activation import ActivationError, ActivationManager, _candidate_launch_command, _same_process, _terminate_posix_pidfd
 
 
 class ActivationTests(unittest.TestCase):
+    def test_isolated_module_bootstrap_supports_relative_imports_and_ignores_hostile_pythonpath(self):
+        import subprocess,sys
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);root=base/"candidate";good=root/"forgeboss"/"control";good.mkdir(parents=True)
+            (good/"helper.py").write_text("VALUE='GOOD'\n",encoding="utf-8")
+            entry=good/"daemon.py"
+            entry.write_text(
+                "from pathlib import Path\nfrom .helper import VALUE\nimport sys\n"
+                "def main(): Path(sys.argv[1]).write_text(VALUE,encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            hostile=base/"hostile"/"forgeboss"/"control";hostile.mkdir(parents=True)
+            (hostile/"daemon.py").write_text(
+                "from pathlib import Path\nimport sys\n"
+                "def main(): Path(sys.argv[1]).write_text('EVIL',encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            marker=base/"marker.txt"
+            argv=_candidate_launch_command(root,entry,"forgeboss/control/daemon.py",[str(marker)])
+            env=dict(os.environ);env["PYTHONPATH"]=str(base/"hostile")
+            p=subprocess.run(argv,cwd=root,env=env,capture_output=True,text=True,timeout=20)
+            self.assertEqual(p.returncode,0,msg=p.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"),"GOOD")
+
+    def test_candidate_module_path_rejects_escape_and_nonmodule(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);entry=root/"x.py";entry.write_text("pass\n",encoding="utf-8")
+            with self.assertRaises(ActivationError):
+                _candidate_launch_command(root,entry,"../x.py",[])
+            with self.assertRaises(ActivationError):
+                _candidate_launch_command(root,entry,"forgeboss/control/__init__.py",[])
+
     def _identity(self, root, revision="1" * 40, verified=True):
         return {"verified": verified, "revision": revision if verified else None, "codeRoot": str(root.resolve()), "entrypoint": "forgeboss/daemon.py", "manifestPath": str(root / "manifest.json"), "manifestSha256": "2" * 64 if verified else None, "identitySha256": "3" * 64 if verified else None, "treeSha256": "4" * 64 if verified else None, "files": {}}
 
