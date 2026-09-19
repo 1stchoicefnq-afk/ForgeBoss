@@ -51,6 +51,27 @@ class ProtectedAuthorityClient:
                    peer_private_key=key,receipt_public_key_b64=pin,unix_socket_path=unix_socket_path,
                    pipe_name=pipe_name,timeout=timeout)
 
+    @classmethod
+    def from_environment(cls,env:Mapping[str,str]|None=None,*,repository:str="1stchoicefnq-afk/ForgeBoss",timeout:float=5.0):
+        env=dict(os.environ if env is None else env)
+        peer_key=env.get("FORGEBOSS_AUTHORITY_PEER_KEY")
+        receipt_pin=env.get("FORGEBOSS_AUTHORITY_RECEIPT_PUBLIC_KEY")
+        if not peer_key or not receipt_pin:
+            raise AuthorityError("AUTHORITY_CLIENT_CONFIG_MISSING")
+        peer_id=env.get("FORGEBOSS_AUTHORITY_PEER_ID") or "controller-a"
+        try:revision=int(env.get("FORGEBOSS_CONTROL_REVISION") or "1")
+        except Exception as ex:raise AuthorityError("CONTROL_REVISION_INVALID") from ex
+        unix_socket=None
+        if os.name!="nt":
+            endpoint=env.get("FORGEBOSS_AUTHORITY_ENDPOINT_DIR")
+            if not endpoint:raise AuthorityError("IPC_ENDPOINT_MISSING")
+            unix_socket=str(Path(endpoint)/FIXED_SOCKET_NAME)
+        return cls.from_files(
+            peer_id=peer_id,repository=repository,control_revision=revision,
+            peer_private_key_file=peer_key,receipt_public_key_file=receipt_pin,
+            unix_socket_path=unix_socket,timeout=timeout,
+        )
+
     def _request(self,operation:str,payload:Mapping[str,Any])->tuple[dict,str]:
         request_id=str(uuid.uuid4())
         # Let the protocol perform its exact canonicalization first (including
