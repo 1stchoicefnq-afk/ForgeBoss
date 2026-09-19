@@ -106,6 +106,14 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
    <div class="insight"><label>Next best action</label><b id="nextActionTitle">Run focused repair</b><p id="nextActionDetail">No blind retries. New evidence first.</p></div>
   </div>
 
+ <section class="card" style="margin-bottom:18px">
+  <h3>Active Project</h3>
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:16px">
+   <div style="min-width:0"><b id="activeProjectName">NO PROJECT SELECTED</b><p id="activeProjectPath" class="muted" style="margin:6px 0 0;word-break:break-all">Choose the local project ForgeBoss should work on.</p></div>
+   <div style="display:flex;gap:9px;align-items:center"><span id="selfBuildBadge" class="badge" style="display:none"><strong>SELF BUILD</strong></span><button class="secondary" onclick="chooseProject()">CHOOSE PROJECT FOLDER</button></div>
+  </div>
+ </section>
+
  <div class="hero-strip">
    <div class="hero-metric"><small>Repair Rat</small><b id="heroRat">LOCAL-FIRST</b></div>
    <div class="hero-metric"><small>AI Lane</small><b id="heroLane">CHEAP-FIRST</b></div>
@@ -205,6 +213,10 @@ fullTimeline.innerHTML=(s.activity||[]).map(e=>{
 async function snapshot(){
  try{
   const s=await window.pywebview.api.get_snapshot();last=s;
+  const ap=s.active_project||null;
+  if(document.getElementById('activeProjectName'))activeProjectName.textContent=ap?.name||'NO PROJECT SELECTED';
+  if(document.getElementById('activeProjectPath'))activeProjectPath.textContent=ap?.root||(ap?'':'Choose the local project ForgeBoss should work on.');
+  if(document.getElementById('selfBuildBadge'))selfBuildBadge.style.display=ap?.is_self_build?'inline-flex':'none';
   statusBadge.textContent=s.running?'RUNNING':(s.stage||'IDLE');stage.textContent=s.stage||'IDLE';cycle.textContent=s.current_cycle||0;
   const spent=Number(s.spent_usd||0),cap=Number(s.budget_usd||0);spend.textContent=`$${spent.toFixed(2)} / $${cap.toFixed(2)}`;topSpend.textContent=`$${spent.toFixed(2)}`;
   heroSpend.textContent=`$${spent.toFixed(4)}`;heroSpendBar.style.width=`${Math.min(100,cap?spent/cap*100:0)}%`;
@@ -262,6 +274,13 @@ async function snapshot(){
    timeline.appendChild(d);
   }extended(s)
  }catch(e){}
+}
+async function chooseProject(){
+ try{
+  const r=await window.pywebview.api.choose_project();
+  if(r?.ok){await snapshot();return}
+  if(!r?.cancelled)alert(r?.message||'Project selection failed.');
+ }catch(e){alert('Project selection failed: '+e)}
 }
 async function startBuild(){
  let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw);
