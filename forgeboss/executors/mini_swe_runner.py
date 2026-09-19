@@ -2,6 +2,30 @@ from __future__ import annotations
 import json, os, sys, traceback, subprocess
 from pathlib import Path
 
+def _persist_result(result:dict)->None:
+    raw=os.environ.get("FORGEBOSS_RESULT_FILE")
+    if not raw:return
+    state_raw=os.environ.get("FORGEBOSS_STATE_ROOT")
+    if not state_raw:raise RuntimeError("FORGEBOSS_STATE_ROOT required for result evidence")
+    root=Path(state_raw).expanduser().resolve()
+    target=Path(raw).expanduser().resolve()
+    try:
+        if Path(os.path.commonpath([str(root),str(target)]))!=root:
+            raise RuntimeError("result evidence path escapes external state root")
+    except ValueError as ex:
+        raise RuntimeError("result evidence path escapes external state root") from ex
+    target.parent.mkdir(parents=True,exist_ok=True)
+    tmp=target.with_name(target.name+f".tmp-{os.getpid()}")
+    data=(json.dumps(result,sort_keys=True,indent=2)+"\n").encode("utf-8")
+    fd=os.open(str(tmp),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    try:
+        with os.fdopen(fd,"wb",closefd=False) as fh:
+            fh.write(data);fh.flush();os.fsync(fh.fileno())
+    finally:
+        try:os.close(fd)
+        except OSError:pass
+    os.replace(tmp,target)
+
 def main() -> int:
     if len(sys.argv)<4:
         print("usage: mini_swe_runner.py PACKET.json WORKSPACE BUDGET_USD",file=sys.stderr);return 2
@@ -109,6 +133,10 @@ Required acceptance intent:
         try:
             if env_obj is not None: env_obj.cleanup()
         except Exception: pass
+        try:
+            _persist_result(result)
+        except Exception as evidence_error:
+            print("FORGEBOSS RESULT EVIDENCE ERROR: "+str(evidence_error),file=sys.stderr)
         print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
 
 if __name__=="__main__":raise SystemExit(main())
