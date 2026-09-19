@@ -52,6 +52,7 @@ def ensure_webview():
         import webview
         return webview
 
+sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(HERE))
 import server as fb
 
