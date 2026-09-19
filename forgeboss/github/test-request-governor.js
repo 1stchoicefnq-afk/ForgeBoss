@@ -12,7 +12,7 @@ const gov=require('./request-governor');
 const {githubRequest,governedGitNetwork,governedGitPush,governorStatus,stateRoot,getConfig}=gov;
 const resp=(status,body='',headers={})=>({status,ok:status>=200&&status<300,headers:new Headers(headers),async text(){return body}});
 const c={minRequestGapMs:0,minMutationGapMs:0,maxRequestsPerMinute:1000,maxMutationsPerMinute:1000,maxMutationsPerHour:1000,cacheTtlMs:0,notFoundTtlMs:60000};
-let pass=0;
+let pass=0,selected=0;\nconst FILTER=process.env.FB_GOV_TEST_FILTER||'';
 
 function useHome(name){
  activeHome=path.join(base,name);
@@ -21,12 +21,15 @@ function useHome(name){
 }
 function auditFixture(files){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'fb-gh-audit-'));
+ files={'safe.js':"console.log('safe')\n",...files};
  for(const [rel,body] of Object.entries(files)){
   const p=path.join(root,rel);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,body);
  }
  return spawnSync(process.execPath,[path.join(__dirname,'audit-governor-bypasses.js'),root],{encoding:'utf8'});
 }
 async function t(n,f){
+ if(FILTER&&!n.includes(FILTER))return;
+ selected++;
  try{await f();console.log('PASS '+n);pass++}
  catch(e){console.error('FAIL '+n+'\n'+(e.stack||e));process.exitCode=1}
 }
@@ -215,7 +218,10 @@ async function t(n,f){
   ['audit catches workflow gh api',{'.github/workflows/bad.yml':"jobs:\n  x:\n    steps:\n      - run: gh api /user\n"}],
   ['audit catches workflow curl',{'.github/workflows/bad.yaml':"jobs:\n  x:\n    steps:\n      - run: curl https://api.github.com/user\n"}],
   ['audit catches PowerShell module HTTP',{'modules/direct.psm1':"Invoke-RestMethod -Uri 'https://api.github.com/user'\n"}],
-  ['governor awareness is call scoped',{'mixed.js':"const g=require('./request-governor');\nvoid g;\nfetch('https://api.github.com/user');\n"}]
+  ['governor awareness is call scoped',{'mixed.js':"const g=require('./request-governor');\nvoid g;\nfetch('https://api.github.com/user');\n"}],
+  ['audit does not exempt test directory',{'test/live-worker.js':"fetch('https://api.github.com/user');\n"}],
+  ['audit does not exempt fixtures directory',{'fixtures/runtime.js':"require('child_process').execSync('gh api /user');\n"}],
+  ['audit does not exempt examples directory',{'examples/runner.ps1':"Invoke-RestMethod -Uri 'https://api.github.com/user'\n"}]
  ]){
   await t(name,async()=>{const p=auditFixture(files),out=(p.stderr||'')+(p.stdout||'');assert.notEqual(p.status,0,out);assert(/FAIL/.test(out),out)});
  }
@@ -227,6 +233,7 @@ async function t(n,f){
 
  await t('status has no credentials',async()=>{useHome('status');const s=governorStatus();assert.equal(typeof s.lastRequestAt,'number');assert(!JSON.stringify(s).includes('Authorization'))});
 
- console.log('\n'+pass+'/33 governor tests passed');
- if(pass!==33)process.exitCode=1;
+ const expected=FILTER?selected:36;
+ console.log('\n'+pass+'/'+expected+' governor tests passed'+(FILTER?' (filtered)':''));
+ if(pass!==expected)process.exitCode=1;
 })().catch(e=>{console.error(e.stack||e);process.exit(2)});
