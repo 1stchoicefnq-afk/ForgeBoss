@@ -22,18 +22,17 @@ function runGitAsync(exe,args,opts={}){
 class GitHubCircuitOpenError extends Error{
  constructor(until,reason){super('GitHub governor circuit open until '+new Date(until).toISOString()+': '+(reason||'rate-limit protection'));this.name='GitHubCircuitOpenError';this.until=until;this.reason=reason||'rate-limit protection'}
 }
+class GitHubStateTamperError extends Error{
+ constructor(reason){super('GitHub governor state authority invalid: '+reason);this.name='GitHubStateTamperError';this.reason=reason}
+}
+const STALE_LOCK_MIN_MS=300000,STALE_LOCK_MAX_MS=3600000,CACHE_TTL_MIN_MS=5000,CACHE_TTL_MAX_MS=300000;
 function root(){
  const info=os.userInfo();
  if(!info||!info.homedir)throw new Error('Unable to resolve OS-account home for GitHub governor');
  return path.resolve(info.homedir,'.siteboss','github-governor');
 }
-function stateRootFor(o={}){
- if(o.root!==undefined){
-  const isExactTestRunner=process.env.NODE_ENV==='test'&&path.basename(process.argv[1]||'')==='test-request-governor.js';
-  if(!isExactTestRunner)throw new Error('GitHub governor state-root override is test-only');
-  return path.resolve(String(o.root));
- }
- return root();
+function rejectRootOverride(o={}){
+ if(o&&Object.prototype.hasOwnProperty.call(o,'root'))throw new Error('GitHub governor state-root override is not supported');
 }
 function cfg(o={}){
  const num=(v,d)=>{const n=Number(v);return Number.isFinite(n)?n:d};
@@ -51,32 +50,76 @@ function cfg(o={}){
   maxMutationsPerHour:Math.max(1,Math.min(60,requested.maxMutationsPerHour)),
   minRequestGapMs:Math.max(500,requested.minRequestGapMs),
   minMutationGapMs:Math.max(2500,requested.minMutationGapMs),
-  cacheTtlMs:num(o.cacheTtlMs===undefined?process.env.SITEBOSS_GITHUB_CACHE_TTL_MS:o.cacheTtlMs,15000),
+  cacheTtlMs:Math.max(CACHE_TTL_MIN_MS,Math.min(CACHE_TTL_MAX_MS,num(o.cacheTtlMs===undefined?process.env.SITEBOSS_GITHUB_CACHE_TTL_MS:o.cacheTtlMs,15000))),
   notFoundTtlMs:Math.max(60000,num(o.notFoundTtlMs===undefined?process.env.SITEBOSS_GITHUB_NOT_FOUND_TTL_MS:o.notFoundTtlMs,300000)),
   mutationDedupeMs:Math.max(60000,num(o.mutationDedupeMs===undefined?process.env.SITEBOSS_GITHUB_MUTATION_DEDUPE_MS:o.mutationDedupeMs,300000)),
-  staleLockMs:Math.max(5000,num(o.staleLockMs===undefined?process.env.SITEBOSS_GITHUB_STALE_LOCK_MS:o.staleLockMs,300000)),
+  staleLockMs:Math.max(STALE_LOCK_MIN_MS,Math.min(STALE_LOCK_MAX_MS,num(o.staleLockMs===undefined?process.env.SITEBOSS_GITHUB_STALE_LOCK_MS:o.staleLockMs,STALE_LOCK_MIN_MS))),
   lockTimeoutMs:Math.max(5000,num(o.lockTimeoutMs===undefined?process.env.SITEBOSS_GITHUB_LOCK_TIMEOUT_MS:o.lockTimeoutMs,180000)),
   maxCacheBodyBytes:Math.max(1024,num(o.maxCacheBodyBytes===undefined?process.env.SITEBOSS_GITHUB_MAX_CACHE_BODY_BYTES:o.maxCacheBodyBytes,1048576))
  };
 }
-function paths(r=root()){return{root:r,lock:path.join(r,'request.lock'),state:path.join(r,'state.json'),metrics:path.join(r,'metrics.jsonl'),cache:path.join(r,'cache')}}
+function paths(r=root()){return{root:r,lock:path.join(r,'request.lock'),state:path.join(r,'state.json'),anchor:path.join(path.dirname(r),'github-governor-authority.json'),metrics:path.join(r,'metrics.jsonl'),cache:path.join(r,'cache')}}
 function ensure(p){fs.mkdirSync(p.root,{recursive:true});fs.mkdirSync(p.cache,{recursive:true})}
 function readJson(f,d){try{return JSON.parse(fs.readFileSync(f,'utf8'))}catch{return d}}
+function readJsonStrict(f){try{return JSON.parse(fs.readFileSync(f,'utf8'))}catch(e){throw new GitHubStateTamperError('unreadable '+path.basename(f))}}
 function atomic(f,v){const t=f+'.'+process.pid+'.'+Date.now()+'.tmp';fs.writeFileSync(t,JSON.stringify(v));fs.renameSync(t,f)}
-function blank(){return{schema:1,lastRequestAt:0,lastMutationAt:0,requests:[],mutations:[],dedupe:{},notFound:{},circuitUntil:0,circuitReason:'',secondaryLimitStrikes:0,updatedAt:0}}
-function load(p){const s={...blank(),...readJson(p.state,{})};s.requests=Array.isArray(s.requests)?s.requests:[];s.mutations=Array.isArray(s.mutations)?s.mutations:[];s.dedupe=s.dedupe&&typeof s.dedupe==='object'?s.dedupe:{};s.notFound=s.notFound&&typeof s.notFound==='object'?s.notFound:{};return s}
-function save(p,s){s.updatedAt=Date.now();atomic(p.state,s)}
+function blank(){return{schema:2,sequence:0,lastRequestAt:0,lastMutationAt:0,requests:[],mutations:[],dedupe:{},notFound:{},circuitUntil:0,circuitReason:'',secondaryLimitStrikes:0,updatedAt:0}}
+function stateDigest(s){return sha(JSON.stringify(s))}
+function load(p){
+ const hasState=fs.existsSync(p.state),hasAnchor=fs.existsSync(p.anchor),hasMetrics=fs.existsSync(p.metrics);
+ if(!hasState){
+  if(hasAnchor||hasMetrics)throw new GitHubStateTamperError('state disappeared while authority evidence remains');
+  return blank();
+ }
+ const raw=readJsonStrict(p.state),s={...blank(),...raw};
+ s.requests=Array.isArray(s.requests)?s.requests:[];s.mutations=Array.isArray(s.mutations)?s.mutations:[];s.dedupe=s.dedupe&&typeof s.dedupe==='object'?s.dedupe:{};s.notFound=s.notFound&&typeof s.notFound==='object'?s.notFound:{};
+ if(hasAnchor){
+  const a=readJsonStrict(p.anchor);
+  if(Number(a.sequence)!==Number(s.sequence)||String(a.stateHash||'')!==stateDigest(s))throw new GitHubStateTamperError('state sequence/hash regressed or was replaced');
+ }else if(Number(s.schema||1)>=2||Number(s.sequence||0)>0){
+  throw new GitHubStateTamperError('state authority anchor disappeared');
+ }
+ return s;
+}
+function save(p,s){
+ s.schema=2;s.sequence=Math.max(0,Number(s.sequence||0))+1;s.updatedAt=Date.now();
+ atomic(p.state,s);atomic(p.anchor,{schema:1,sequence:s.sequence,stateHash:stateDigest(s),updatedAt:s.updatedAt,circuitUntil:Number(s.circuitUntil||0)});
+}
 function metric(p,event,x={}){try{ensure(p);fs.appendFileSync(p.metrics,JSON.stringify({ts:new Date().toISOString(),event,...x})+'\n')}catch{}}
+function processAlive(pid){
+ if(!Number.isInteger(Number(pid))||Number(pid)<=0)return null;
+ try{process.kill(Number(pid),0);return true}catch(e){if(e&&e.code==='ESRCH')return false;if(e&&e.code==='EPERM')return true;return null}
+}
+function readOwner(p){return readJson(path.join(p.lock,'owner.json'),null)}
+function leaseOwned(p,lease){const o=readOwner(p);return!!(o&&lease&&o.token===lease.token&&Number(o.pid)===Number(lease.pid)&&o.host===lease.host)}
 async function lock(p,c){
- ensure(p);const start=Date.now();
+ ensure(p);const start=Date.now(),host=os.hostname();
  while(Date.now()-start<=c.lockTimeoutMs){
-  try{fs.mkdirSync(p.lock);fs.writeFileSync(path.join(p.lock,'owner.json'),JSON.stringify({pid:process.pid,at:Date.now()}));return}
-  catch(e){if(e.code!=='EEXIST')throw e;try{const st=fs.statSync(p.lock);if(Date.now()-st.mtimeMs>c.staleLockMs){fs.rmSync(p.lock,{recursive:true,force:true});continue}}catch{}await sleep(150+Math.floor(Math.random()*250))}
+  const token=crypto.randomBytes(24).toString('hex'),lease={pid:process.pid,host,token,at:Date.now()};
+  try{fs.mkdirSync(p.lock);fs.writeFileSync(path.join(p.lock,'owner.json'),JSON.stringify(lease));return lease}
+  catch(e){
+   if(e.code!=='EEXIST')throw e;
+   try{
+    const st=fs.statSync(p.lock),age=Date.now()-st.mtimeMs;
+    if(age>c.staleLockMs){
+     const owner=readOwner(p);
+     const sameHost=owner&&owner.host===host,alive=sameHost?processAlive(owner.pid):null;
+     if(sameHost&&alive===false){fs.rmSync(p.lock,{recursive:true,force:true});continue}
+    }
+   }catch{}
+   await sleep(150+Math.floor(Math.random()*250));
+  }
  }
  throw new Error('GitHub governor lock timeout');
 }
-function unlock(p){try{fs.rmSync(p.lock,{recursive:true,force:true})}catch{}}
-async function guarded(fn,o={}){const c=cfg(o.config||{}),p=paths(stateRootFor(o));await lock(p,c);const hbMs=Math.max(100,Math.min(30000,Math.floor(c.staleLockMs/3)||1000));const hb=setInterval(()=>{try{const now=new Date();fs.utimesSync(p.lock,now,now)}catch{}},hbMs);try{return await fn({p,c})}finally{clearInterval(hb);unlock(p)}}
+function heartbeat(p,lease){try{if(!leaseOwned(p,lease))return false;const now=new Date();fs.utimesSync(p.lock,now,now);return true}catch{return false}}
+function unlock(p,lease){try{if(leaseOwned(p,lease))fs.rmSync(p.lock,{recursive:true,force:true})}catch{}}
+async function guarded(fn,o={}){
+ rejectRootOverride(o);const c=cfg(o.config||{}),p=paths(root()),lease=await lock(p,c);
+ const hbMs=Math.max(1000,Math.min(30000,Math.floor(c.staleLockMs/3)||30000));
+ const hb=setInterval(()=>{heartbeat(p,lease)},hbMs);
+ try{return await fn({p,c})}finally{clearInterval(hb);unlock(p,lease)}
+}
 function prune(s,now){s.requests=s.requests.filter(t=>now-t<60000);s.mutations=s.mutations.filter(t=>now-t<3600000);for(const[k,t]of Object.entries(s.dedupe))if(now-t>3600000)delete s.dedupe[k];for(const[k,v]of Object.entries(s.notFound))if(!v||Number(v.until||0)<=now)delete s.notFound[k]}
 const mutation=m=>!['GET','HEAD','OPTIONS'].includes(String(m||'GET').toUpperCase());
 async function budget(s,c,isMutation,p){
@@ -110,7 +153,7 @@ async function githubRequest(url,options={},g={}){
   const dk=g.dedupeKey||'';if(isMutation&&dk&&s.dedupe[dk]&&now-s.dedupe[dk]<c.mutationDedupeMs){metric(p,'mutation_deduplicated',{key_hash:sha(dk).slice(0,16)});return result(208,{},'',{deduplicated:true})}
   const accept=options.headers&&(options.headers.Accept||options.headers.accept)||'',key=ckey(method,url,accept),cached=!isMutation?cacheGet(p,key):null;
   if(!isMutation&&s.notFound[key]&&Number(s.notFound[key].until||0)>now){metric(p,'not_found_suppressed',{path:cleanUrl(url)});return result(404,{},s.notFound[key].body||'',{cached:true})}
-  const ttl=g.cacheTtlMs===undefined?c.cacheTtlMs:Number(g.cacheTtlMs);if(!isMutation&&cached&&ttl>0&&now-Number(cached.savedAt||0)<ttl&&cached.body!==undefined){metric(p,'cache_hit',{path:cleanUrl(url)});return result(cached.status||200,cached.headers||{},cached.body||'',{cached:true})}
+  const requestedTtl=g.cacheTtlMs===undefined?c.cacheTtlMs:Number(g.cacheTtlMs),ttl=Math.max(c.cacheTtlMs,Math.max(CACHE_TTL_MIN_MS,Math.min(CACHE_TTL_MAX_MS,Number.isFinite(requestedTtl)?requestedTtl:c.cacheTtlMs)));if(!isMutation&&cached&&now-Number(cached.savedAt||0)<ttl&&cached.body!==undefined){metric(p,'cache_hit',{path:cleanUrl(url)});return result(cached.status||200,cached.headers||{},cached.body||'',{cached:true})}
   await budget(s,c,isMutation,p);const headers={...(options.headers||{})};if(!isMutation&&cached&&cached.etag&&!headers['If-None-Match']&&!headers['if-none-match'])headers['If-None-Match']=cached.etag;if(!isMutation&&cached&&cached.lastModified&&!headers['If-Modified-Since']&&!headers['if-modified-since'])headers['If-Modified-Since']=cached.lastModified;
   const started=Date.now();let r;try{r=await fetchImpl(url,{...options,method,headers})}catch(e){metric(p,'network_error',{method,path:cleanUrl(url),duration_ms:Date.now()-started,error:e.name||'Error'});throw e}
   const hs=hobj(r.headers);let body='';if(Number(r.status)!==304)body=await r.text();const done=Date.now();s.lastRequestAt=done;s.requests.push(done);if(isMutation){s.lastMutationAt=done;s.mutations.push(done)}
@@ -145,5 +188,5 @@ async function governedGitPush({cwd,remote='origin',refspec,extraArgs=[]},g={}){
   save(p,s);metric(p,'git_push',{status:Number.isInteger(r.status)?r.status:-1,duration_ms:done-started});return{exitCode:Number.isInteger(r.status)?r.status:-1,stdout:String(r.stdout||''),stderr};
  },g);
 }
-function status(o={}){const p=paths(stateRootFor(o));ensure(p);const s=load(p);prune(s,Date.now());return{root:p.root,...s}}
-module.exports={GitHubCircuitOpenError,githubRequest,governedGitNetwork,governedGitPush,governorStatus:status,getConfig:cfg,stateRoot:root,_internal:{pathsFor:paths,loadState:load,saveState:save,limitInfo}};
+function status(o={}){rejectRootOverride(o);const p=paths(root());ensure(p);const s=load(p);prune(s,Date.now());return{root:p.root,...s}}
+module.exports={GitHubCircuitOpenError,GitHubStateTamperError,githubRequest,governedGitNetwork,governedGitPush,governorStatus:status,getConfig:cfg,stateRoot:root,_internal:{pathsFor:paths,loadState:load,saveState:save,limitInfo,processAlive,STALE_LOCK_MIN_MS,STALE_LOCK_MAX_MS,CACHE_TTL_MIN_MS,CACHE_TTL_MAX_MS}};
