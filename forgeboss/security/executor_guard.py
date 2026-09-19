@@ -3,8 +3,15 @@ import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
-RUNTIME_STATE_ROOT=Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
-STATE=RUNTIME_STATE_ROOT/"executor-security";STATE.mkdir(parents=True,exist_ok=True)
+
+def _runtime_state_root()->Path:
+    return Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
+
+def _state_dir()->Path:
+    path=_runtime_state_root()/"executor-security"
+    path.mkdir(parents=True,exist_ok=True)
+    return path
+
 CNW=getattr(subprocess,"CREATE_NO_WINDOW",0)
 class SecurityError(RuntimeError):pass
 
@@ -461,7 +468,7 @@ def _atomic_write_json(path,obj):
         except OSError:pass
     os.replace(tmp,path)
 class _WorkspaceFence:
-    def __init__(self,workspace):self.path=STATE/("paid-start-"+hashlib.sha256(str(Path(workspace).resolve()).encode()).hexdigest()+".lock");self.f=None
+    def __init__(self,workspace):self.path=_state_dir()/("paid-start-"+hashlib.sha256(str(Path(workspace).resolve()).encode()).hexdigest()+".lock");self.f=None
     def __enter__(self):
         self.f=self.path.open("a+b");self.f.seek(0,2)
         if self.f.tell()==0:self.f.write(b"\0");self.f.flush()
@@ -586,7 +593,7 @@ def issue(packet_path,workspace,executor,ttl=1200):
     with _WorkspaceFence(work):
         assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
         lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
-        lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
+        lp=_state_dir()/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
     print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
 def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
