@@ -151,6 +151,12 @@ class ProtectedAuthorityClient:
     def self_build_status(self,*,run_id:str)->dict:
         return self.call("self_build_status",{"runId":run_id})
 
+    def revoke_self_build_worker(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,reason:str)->dict:
+        return self.call("revoke_self_build_worker",{
+            "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
+            "ownerEpoch":int(owner_epoch),"reason":reason,
+        })
+
     def _exchange(self,raw:bytes)->bytes:
         if os.name=="nt": return self._exchange_windows(raw)
         path=self.unix_socket_path
