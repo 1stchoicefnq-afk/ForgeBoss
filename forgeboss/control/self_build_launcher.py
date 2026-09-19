@@ -155,6 +155,8 @@ class SelfBuildLauncher:
             "generation":assignment.generation,
             "pid":assignment.pid,
             "state":assignment.state,
+            "started_at":assignment.started_at,
+            "containment_id":assignment.containment_id,
             "worktree":item["worktree"],
             "packet_sha256":packet_sha,
             "packet_file":str(paths["packet"]),
@@ -172,9 +174,14 @@ class SelfBuildLauncher:
         try:
             for item in builders:
                 launched.append(self.launch_worker(prepared_run,item))
+            live=[self.supervisor.get(x["builder_id"],refresh=True) for x in launched]
+            if any(x.state!="RUNNING" for x in live):
+                raise SelfBuildLaunchError("CONCURRENCY_NOT_PROVEN","both initial builders were not simultaneously RUNNING")
+            proof_at=self.clock()
             return {
                 "schema":1,"run_id":prepared_run["run_id"],"base_sha":prepared_run["base_sha"],
                 "global_budget_cap_usd":prepared_run["global_budget_cap_usd"],
+                "concurrent_proof":{"at":proof_at,"builders":[x["builder_id"] for x in launched],"states":[x.state for x in live]},
                 "workers":launched,
             }
         except BaseException:
@@ -188,6 +195,18 @@ class SelfBuildLauncher:
                 )
                 except Exception:pass
             raise
+
+    def launch_replacement(self,prepared_run:dict,replacement:dict,launched_run:dict)->dict:
+        public=self.launch_worker(prepared_run,replacement)
+        out={**launched_run,"workers":[*(launched_run.get("workers") or []),public]}
+        out["replacement_proof"]={
+            "at":self.clock(),
+            "replacement_for":replacement.get("replacement_for"),
+            "builder_id":replacement.get("builder_id"),
+            "task_id":replacement.get("task_id"),
+            "worktree":replacement.get("worktree"),
+        }
+        return out
 
     def status(self,launched_run:dict)->dict:
         rows=[]
