@@ -189,41 +189,70 @@ class SelfBuildCoordinator:
         replacement=plan.replacement_workers[0]
         original=plan.initial_workers[1]
         old=next((x for x in prepared_run.get("builders",[]) if x.get("task_id")==original.task_id),None)
-        if old is None:raise SelfBuildCoordinatorError("REPLACEMENT_SOURCE_MISSING","Builder B preparation record missing")
-        self.store.revoke_writer(original.task_id,old["authority"]["run_id"],old["owner_epoch"],"mandatory FL1 stop/reassign proof")
-        retry=self.store.retry_task(original.task_id,"mandatory FL1 fresh reassignment")
-        # Replacement is a fresh durable assignment of the SAME task authority, but a new
-        # builder/branch/workspace. Store retry invalidates the old generation/token first.
-        assignment=self.store.assign_builder(original.task_id,replacement.builder_id,plan.run_id,expected_task_revision=retry["revision"])
-        root=Path(workspace_root).resolve(strict=True);source=Path(source_root).resolve(strict=True)
+        if old is None:
+            raise SelfBuildCoordinatorError("REPLACEMENT_SOURCE_MISSING","Builder B preparation record missing")
+
+        # Fence the old writer first. revoke_writer rotates/clears its durable assignment
+        # authority so stale builder/token/generation cannot become valid again.
+        self.store.revoke_writer(
+            original.task_id,old["authority"]["run_id"],old["owner_epoch"],
+            "mandatory FL1 stop/reassign proof",
+        )
+
+        # Store task branch authority is intentionally immutable. Therefore the fresh
+        # B2 attempt is a NEW replacement task record, linked by the plan's
+        # replacement_for field, with a new builder, branch and workspace.
+        task=self._task(plan,replacement)
+        assignment=self.store.assign_builder(
+            replacement.task_id,replacement.builder_id,plan.run_id,
+            expected_task_revision=task["revision"],
+        )
+
+        root=Path(workspace_root).resolve(strict=True)
+        source=Path(source_root).resolve(strict=True)
         worktree=root/f"{plan.run_id}-{replacement.builder_id}"
         identity=self.provision_workspace_fn(
-            source,worktree,root,plan.known_good_sha,replacement.branch,git_executable,protected_state=protected_state,
+            source,worktree,root,plan.known_good_sha,replacement.branch,git_executable,
+            protected_state=protected_state,
         )
         budget=self.store.get_budget_run(plan.run_id)
         lease=self.store.claim_workspace(
-            original.task_id,f"{plan.run_id}-run-b2",str(worktree),replacement.branch,plan.known_good_sha,
+            replacement.task_id,f"{plan.run_id}-run-b2",str(worktree),replacement.branch,plan.known_good_sha,
             ttl_seconds=1200,runtime_id="mini-swe",worktree_root=root,budget_reserved=replacement.budget_usd,
             builder_id=replacement.builder_id,assignment_token=assignment["assignmentToken"],
-            assignment_generation=assignment["assignmentGeneration"],assignment_sha256=assignment["assignmentSha256"],
+            assignment_generation=assignment["assignmentGeneration"],
+            assignment_sha256=assignment["assignmentSha256"],
             budget_run_revision=budget["revision"],
         )
-        durable=self.store.assignment_identity(original.task_id,lease["owner_run_id"],lease["owner_epoch"])
+        durable=self.store.assignment_identity(replacement.task_id,lease["owner_run_id"],lease["owner_epoch"])
         authority={
-            "repository":plan.repository,"control_revision":1,"task_id":original.task_id,
-            "run_id":lease["owner_run_id"],"owner_epoch":int(lease["owner_epoch"]),
-            "builder_id":replacement.builder_id,"assignment_generation":int(durable["identity"]["assignmentGeneration"]),
-            "assignment_sha256":durable["identity"]["assignmentPolicySha256"],"branch":replacement.branch,
-            "budget_usd":replacement.budget_usd,"global_budget_run_id":plan.run_id,
+            "repository":plan.repository,
+            "control_revision":1,
+            "task_id":replacement.task_id,
+            "run_id":lease["owner_run_id"],
+            "owner_epoch":int(lease["owner_epoch"]),
+            "builder_id":replacement.builder_id,
+            "assignment_generation":int(durable["identity"]["assignmentGeneration"]),
+            "assignment_sha256":durable["identity"]["assignmentPolicySha256"],
+            "branch":replacement.branch,
+            "budget_usd":replacement.budget_usd,
+            "global_budget_run_id":plan.run_id,
             "global_budget_reservation_id":replacement.task_id,
             "receipt_public_key_b64":self.receipt_public_key_b64,
         }
         packet=replacement.packet(known_good_sha=plan.known_good_sha,run_id=plan.run_id)
-        packet["task_id"]=original.task_id
         packet["self_build_authority"]=dict(authority)
+        budget_after=self.store.get_budget_run(plan.run_id)
+        if str(budget_after.get("remaining_exact")) not in {"0","0.0","0.00"}:
+            raise SelfBuildCoordinatorError("GLOBAL_BUDGET_REASSIGNMENT_INVALID","B2 must consume the final $0.50 global headroom")
         return _public_worker_record({
-            "task_id":original.task_id,"builder_id":replacement.builder_id,"worktree":str(worktree.resolve()),
-            "owner_epoch":int(lease["owner_epoch"]),"assignment_identity_sha256":durable["assignmentIdentitySha256"],
+            "task_id":replacement.task_id,
+            "replacement_for":original.task_id,
+            "builder_id":replacement.builder_id,
+            "worktree":str(worktree.resolve()),
+            "owner_epoch":int(lease["owner_epoch"]),
+            "assignment_identity_sha256":durable["assignmentIdentitySha256"],
             "workspace_identity":identity.as_dict() if hasattr(identity,"as_dict") else dict(identity),
-            "packet":packet,"authority":authority,
+            "packet":packet,
+            "authority":authority,
         })
