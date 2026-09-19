@@ -106,6 +106,21 @@ class ProtectedAuthorityClient:
             raise AuthorityError("LAUNCH_AUTHORITY_NOT_VERIFIED")
         return response
 
+    def attest_launch_payload(self,signed_payload:Mapping[str,Any])->dict:
+        """Sign an exact launch payload, have the protected service verify it,
+        and return the service-attested bundle consumed by executor_guard."""
+        signed=dict(signed_payload)
+        digest=canonical_digest(signed)
+        try:
+            signature=base64.b64encode(
+                self.peer_private_key.sign(bytes.fromhex(digest))
+            ).decode("ascii")
+        except Exception as ex:
+            raise AuthorityError("LAUNCH_SIGNING_FAILED") from ex
+        envelope={"signed":signed,"signature":signature}
+        response=self.verify_launch_authority(envelope=envelope,envelope_digest=digest)
+        return {"schema":1,"envelope":envelope,"authorityResponse":response}
+
     def _exchange(self,raw:bytes)->bytes:
         if os.name=="nt": return self._exchange_windows(raw)
         path=self.unix_socket_path
