@@ -34,11 +34,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Governor functional tests
         run: node forgeboss/github/test-request-governor.js
+      - name: Governor hostile mutation replay
+        run: node forgeboss/github/test-governor-mutations.js
       - name: GitHub compliance LAW
         run: node forgeboss/github/check-github-compliance-law.js
       - name: Runtime bypass audit
@@ -57,6 +61,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -70,6 +76,9 @@ jobs:
       - name: Governor functional tests on Windows
         shell: pwsh
         run: node forgeboss/github/test-request-governor.js
+      - name: Governor hostile mutation replay on Windows
+        shell: pwsh
+        run: node forgeboss/github/test-governor-mutations.js
       - name: GitHub compliance LAW on Windows
         shell: pwsh
         run: node forgeboss/github/check-github-compliance-law.js
