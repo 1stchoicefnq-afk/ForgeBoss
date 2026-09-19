@@ -3,7 +3,7 @@ Dim shell, fso, root, pyw, scriptPath, commandLine, rc
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-scriptPath = root & "\\dashboard\\pro_shell.py"
+scriptPath = root & "\dashboard\pro_shell.py"
 pyw = shell.ExpandEnvironmentStrings("%USERPROFILE%") & "\\.forgeboss\\runtime\\venv\\Scripts\\pythonw.exe"
 If Not fso.FileExists(scriptPath) Then
   MsgBox "ForgeBoss files are incomplete." & vbCrLf & vbCrLf & "Extract the entire ZIP to a normal folder before launching.", vbCritical, "ForgeBoss"
