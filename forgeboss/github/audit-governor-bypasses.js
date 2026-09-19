@@ -36,8 +36,11 @@ function scanFile(root,rel,abs){
   const directHttp=/(Invoke-RestMethod|Invoke-WebRequest|HttpClient|axios\.|\bfetch\s*\()/i.test(line);
   if(directHttp&&isGithubSignal(win)&&!expectedGovernorPrimitive(rel,line))addFinding(findings,rel,lineNo,'unmanaged GitHub HTTP client');
 
-  const directPush=/@\(\s*['"]push['"]|(?:^|[\s'"\`])git(?:\.exe)?\s+push\b|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"]push['"]/i.test(line);
-  if(directPush&&!/Invoke-GovernedGitPush|governedGitPush/.test(win))addFinding(findings,rel,lineNo,'unmanaged git push');
+  const directPush=/^\s*git(?:\.exe)?\s+push\b/i.test(line)
+   ||/&\s*git(?:\.exe)?\s+push\b/i.test(line)
+   ||/(?:Run|Invoke-Git|Invoke-GitProcess|Invoke-External)[^\r\n]{0,160}@\(\s*['"]push['"]/i.test(line)
+   ||/spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,160}['"]push['"]/i.test(line);
+  if(directPush&&!expectedGovernorPrimitive(rel,line)&&!/Invoke-GovernedGitPush|governedGitPush/.test(win))addFinding(findings,rel,lineNo,'unmanaged git push');
 
   const directNetwork=/(?:Run|Invoke-Git|Invoke-GitProcess|Invoke-External)[^\r\n]{0,120}@\(\s*['"](?:clone|fetch|ls-remote)['"]|spawn(?:Sync)?\([^\r\n]{0,80}['"]git(?:\.exe)?['"][^\r\n]{0,120}['"](?:clone|fetch|ls-remote)['"]|(?:^|[\s'"\`])git(?:\.exe)?\s+(?:clone|fetch|ls-remote)\b/i.test(line);
   if(directNetwork&&/(github\.com|\borigin\b|RepoUrl|github)/i.test(win)&&!/Invoke-GovernedGitNetwork|governedGitNetwork/.test(win))addFinding(findings,rel,lineNo,'unmanaged GitHub clone/fetch/ls-remote');
