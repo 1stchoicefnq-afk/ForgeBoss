@@ -5,7 +5,7 @@ from typing import Any,Mapping
 
 MAX_REQUEST_BYTES=128*1024;MAX_TEXT=64*1024;SCHEMA=2
 OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','verify_launch_authority','prepare_self_build','prepare_self_build_replacement','self_build_status'}
-_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}
+_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 class AuthorityError(RuntimeError):
     def __init__(self,code:str,message:str='protected authority request denied'):super().__init__(message);self.code=code
 
