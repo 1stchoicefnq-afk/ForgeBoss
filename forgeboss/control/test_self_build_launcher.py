@@ -20,6 +20,8 @@ class A:
     state:str
     pid:int
     exit_code:int|None=None
+    started_at:float=1.0
+    containment_id:str="fake-containment"
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,22 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(__import__("hashlib").sha256(packet.read_bytes()).hexdigest(),public["packet_sha256"])
             self.assertEqual(attested["packetSha256"],public["packet_sha256"])
             self.assertEqual(attested["worktreePath"],str(Path(public["worktree"]).resolve()))
+
+    def test_launch_initial_records_simultaneous_running_proof(self):
+        out=self.launcher().launch_initial(self.prepared)
+        self.assertEqual(out["concurrent_proof"]["states"],["RUNNING","RUNNING"])
+        self.assertEqual(out["concurrent_proof"]["builders"],["builder-a","builder-b"])
+
+    def test_fresh_replacement_is_appended_without_erasing_initial_evidence(self):
+        out=self.launcher().launch_initial(self.prepared)
+        replacement=self._item("builder-b2","task-b2",self.root/"wb2","0.50")
+        Path(replacement["worktree"]).mkdir()
+        replacement["replacement_for"]="task-b"
+        out2=self.launcher().launch_replacement(self.prepared,replacement,out)
+        self.assertEqual(len(out2["workers"]),3)
+        self.assertEqual(out2["replacement_proof"]["replacement_for"],"task-b")
+        self.assertEqual(out2["workers"][-1]["builder_id"],"builder-b2")
+        self.assertIn("concurrent_proof",out2)
 
     def test_second_launch_failure_stops_and_revokes_first(self):
         sup=Supervisor(fail_on="builder-b")
