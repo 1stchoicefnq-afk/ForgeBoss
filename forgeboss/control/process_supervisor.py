@@ -541,6 +541,49 @@ class ProcessSupervisor:
                 self._slots[worker_id] = updated
             return self._slots[worker_id]
 
+    def complete(self, worker_id: str, expected_generation: int, *, timeout: float = 5.0) -> Evidence:
+        """Prove a naturally exited worker is fully contained before handoff."""
+        timeout = _timeout(timeout, "completion timeout")
+        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation <= 0:
+            raise SupervisorError("GENERATION_INVALID", "expected_generation must be a positive integer")
+        with self._lock:
+            current = self._require(worker_id)
+            if current.generation != expected_generation:
+                raise SupervisorError("GENERATION_STALE", "completion targets a stale generation")
+            if current.state == STATE_STOPPED and current.last_evidence is not None and current.last_evidence.reason == "verified-complete":
+                return current.last_evidence
+            containment = self._containments.get(worker_id)
+        if containment is None:
+            raise SupervisorError("IDENTITY_LOST", "worker containment identity is missing")
+        started = time.time()
+        try:
+            rc = containment.poll()
+        except Exception as ex:
+            raise SupervisorError("CONTAINMENT_QUERY_FAILED", "worker exit status is unavailable") from ex
+        if rc is None:
+            raise SupervisorError("WORKER_STILL_RUNNING", "worker has not exited yet")
+        try:
+            empty = containment.empty(timeout)
+        except SupervisorError:
+            raise
+        except Exception as ex:
+            raise SupervisorError("CONTAINMENT_QUERY_FAILED", "worker containment could not be proven empty") from ex
+        if not empty:
+            state, reason = STATE_QUARANTINED, "containment-not-empty"
+        elif int(rc) != 0:
+            state, reason = STATE_FAILED, "worker-exit-nonzero"
+        else:
+            state, reason = STATE_STOPPED, "verified-complete"
+        evidence = Evidence(uuid.uuid4().hex, worker_id, expected_generation, state, reason, int(rc), bool(empty), started, time.time())
+        with self._lock:
+            latest = self._require(worker_id)
+            if latest.generation != expected_generation:
+                raise SupervisorError("GENERATION_RACE", "worker generation changed during completion proof")
+            self._slots[worker_id] = replace(latest, state=state, exit_code=int(rc), last_evidence=evidence)
+        if state != STATE_STOPPED:
+            raise SupervisorError("WORKER_COMPLETION_UNPROVEN", reason)
+        return evidence
+
     def stop(self, worker_id: str, expected_generation: int, *, timeout: float = 10.0) -> Evidence:
         timeout = _timeout(timeout, "stop timeout")
         if not isinstance(expected_generation, int) or isinstance(expected_generation, bool) or expected_generation <= 0:

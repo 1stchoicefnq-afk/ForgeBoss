@@ -7,10 +7,29 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _persist_result
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
+    def test_initial_result_binds_packet_workspace_and_exact_base(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            packet=root/"packet.json";workspace=root/"work";workspace.mkdir()
+            packet.write_text(json.dumps({
+                "task_id":"task-a","builder_id":"builder-a","run_id":"fl1-r",
+                "expected_head_revision":"A"*40,
+            }),encoding="utf-8")
+            result=_initial_result(packet,str(workspace),"openai/test")
+            self.assertEqual(result["schema"],1)
+            self.assertEqual(result["task_id"],"task-a")
+            self.assertEqual(result["builder_id"],"builder-a")
+            self.assertEqual(result["run_id"],"fl1-r")
+            self.assertEqual(result["expected_head_revision"],"a"*40)
+            self.assertEqual(result["workspace"],str(workspace.resolve()))
+            self.assertEqual(len(result["packet_sha256"]),64)
+            self.assertFalse(result["completed"])
+            self.assertIsNone(result["postflight"])
+
     def test_result_is_written_atomically_under_external_state_root(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)/"state"
