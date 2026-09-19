@@ -274,24 +274,18 @@ async function snapshot(){
   }extended(s)
  }catch(e){}
 }
-async function attachDroppedProject(path){
- try{
-  const r=await window.pywebview.api.attach_project(path);
-  if(!r.ok){alert(r.message||'ForgeBoss could not recognise that project.');return false}
-  await snapshot();return true;
- }catch(e){alert('Project selection failed: '+e);return false}
+function forgeBossDropResult(r){
+ const z=document.getElementById('projectDrop');if(z)z.classList.remove('drag');
+ if(!r?.ok){alert(r?.message||'ForgeBoss could not recognise that project.');return}
+ snapshot();
 }
+window.forgeBossDropResult=forgeBossDropResult;
 function installProjectDrop(){
  const z=document.getElementById('projectDrop');if(!z)return;
+ z.addEventListener('dragenter',e=>{e.preventDefault();z.classList.add('drag')});
  z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('drag')});
  z.addEventListener('dragleave',()=>z.classList.remove('drag'));
- z.addEventListener('drop',async e=>{
-  e.preventDefault();z.classList.remove('drag');
-  const files=[...(e.dataTransfer?.files||[])];
-  if(!files.length){alert('Drop the ForgeBoss folder or ZIP.');return}
-  const f=files[0],full=f.pywebviewFullPath||f.path||f.name;
-  await attachDroppedProject(full);
- });
+ z.addEventListener('drop',e=>{e.preventDefault();projectDropTitle.textContent='READING FORGEBOSS…'});
 }
 async function startBuild(){
  let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw);
