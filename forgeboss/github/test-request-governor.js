@@ -227,6 +227,6 @@ async function t(n,f){
 
  await t('status has no credentials',async()=>{useHome('status');const s=governorStatus();assert.equal(typeof s.lastRequestAt,'number');assert(!JSON.stringify(s).includes('Authorization'))});
 
- console.log('\n'+pass+'/30 governor tests passed');
- if(pass!==30)process.exitCode=1;
+ console.log('\n'+pass+'/33 governor tests passed');
+ if(pass!==33)process.exitCode=1;
 })().catch(e=>{console.error(e.stack||e);process.exit(2)});
