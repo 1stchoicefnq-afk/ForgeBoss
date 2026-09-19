@@ -385,13 +385,24 @@ class Api:
         threading.Thread(target=fb.run_category_league,args=(1.0,),daemon=True).start()
         return {"ok":True}
 
-def main():
-    webview=ensure_webview()
+def shell_preflight():
     page=HERE/"pro.html"
     if not page.exists():
         raise RuntimeError("ForgeBoss UI file is missing: "+str(page))
     if page.stat().st_size<5000:
         raise RuntimeError("ForgeBoss UI file appears incomplete. Extract the full ZIP before launching.")
+    profile=ROOT/"projects"/"forgeboss"/"project.json"
+    if not profile.exists():
+        raise RuntimeError("ForgeBoss self-build project profile is missing: "+str(profile))
+    return {"ok":True,"page":str(page),"project_profile":str(profile)}
+
+def main():
+    preflight=shell_preflight()
+    if "--smoke" in sys.argv:
+        print(json.dumps(preflight,sort_keys=True))
+        return
+    webview=ensure_webview()
+    page=Path(preflight["page"])
 
     api=Api()
 
