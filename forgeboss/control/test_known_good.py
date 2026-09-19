@@ -24,7 +24,7 @@ def _tree(files):
 class KnownGoodIdentityTests(unittest.TestCase):
     def _fixture(self):
         td=tempfile.TemporaryDirectory();root=Path(td.name)/"root";pkg=root/"forgeboss";pkg.mkdir(parents=True)
-        (pkg/"daemon.py").write_text("print('ok')\n",encoding="utf-8");(pkg/"helper.py").write_text("VALUE=1\n",encoding="utf-8")
+        (pkg/"daemon.py").write_bytes(b"print('ok')\n");(pkg/"helper.py").write_bytes(b"VALUE=1\n")
         subprocess.run(["git","init",str(root)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         subprocess.run(["git","-C",str(root),"config","user.email","test@example.invalid"],check=True)
         subprocess.run(["git","-C",str(root),"config","user.name","ForgeBoss Test"],check=True)
@@ -68,7 +68,9 @@ class KnownGoodIdentityTests(unittest.TestCase):
         td,root,manifest,revision=self._fixture()
         try:
             env={"FORGEBOSS_SELF_BUILD_MODE":"YES","FORGEBOSS_BUILD_MANIFEST":str(manifest),"FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA":revision,"FORGEBOSS_EXPECTED_MANIFEST_SHA256":_sha(manifest)}
-            with patch.dict(os.environ,env,clear=True):self.assertEqual(runtime_identity_from_env(root)["revision"],revision)
+            # Keep the OS execution environment (especially PATH/SystemRoot) because
+            # known-good verification intentionally shells out to the installed Git.
+            with patch.dict(os.environ,env,clear=False):self.assertEqual(runtime_identity_from_env(root)["revision"],revision)
         finally:td.cleanup()
 
 
