@@ -61,6 +61,9 @@ jobs:
       - name: Hostile protected paid-start regressions
         run: python -m unittest forgeboss.security.test_self_build_paid_start -v
 
+      - name: Executor guard import-state regression
+        run: python -m unittest forgeboss.security.test_executor_guard_state -v
+
       - name: Protected authority inherited suite
         run: python -m unittest discover -s forgeboss/protected_authority -t . -p "test_*.py"
 
@@ -74,6 +77,7 @@ jobs:
           python -m unittest forgeboss.control.test_self_build -v
           python -m unittest forgeboss.control.test_self_build_preflight -v
           python -m unittest forgeboss.control.test_self_build_coordinator -v
+          python -m unittest forgeboss.control.test_self_build_runtime -v
 
       - name: Store and evidence authority regressions
         run: |
