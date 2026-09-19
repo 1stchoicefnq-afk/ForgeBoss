@@ -1,0 +1,90 @@
+name: P0 self-build shell acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'START-FORGEBOSS.vbs'
+      - 'dashboard/pro_shell.py'
+      - 'dashboard/pro.html'
+      - 'projects/forgeboss/**'
+      - 'forgeboss/control/project_intake.py'
+      - 'forgeboss/control/test_project_intake.py'
+      - 'controller/selftest-launchers.js'
+      - '.github/workflows/p0-self-build-shell.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p0-self-build-shell-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu:
+    name: Ubuntu shell and intake
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Launcher/profile static selftest
+        run: node controller/selftest-launchers.js
+      - name: Project intake regressions
+        run: python -m unittest forgeboss.control.test_project_intake
+      - name: Activation regressions
+        run: python -m unittest forgeboss.control.test_activation forgeboss.control.test_known_good
+      - name: Python syntax
+        run: |
+          python -m py_compile dashboard/pro_shell.py
+          python -m py_compile forgeboss/control/project_intake.py
+      - name: Desktop shell non-GUI preflight
+        run: python dashboard/pro_shell.py --smoke
+
+  windows:
+    name: Windows native launcher and shell
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify VBS resolves the real shell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $text=Get-Content -LiteralPath '.\START-FORGEBOSS.vbs' -Raw
+          if($text -notmatch '\\dashboard\\pro_shell\.py'){ throw 'START-FORGEBOSS.vbs does not target dashboard\pro_shell.py' }
+          if($text -match 'ForgeBoss-Internal'){ throw 'dead ForgeBoss-Internal path is still present' }
+          if(-not(Test-Path -LiteralPath '.\dashboard\pro_shell.py')){ throw 'dashboard\pro_shell.py missing' }
+          'Windows launcher target PASS'
+      - name: Launcher/profile static selftest
+        shell: pwsh
+        run: node controller/selftest-launchers.js
+      - name: Project intake regressions
+        shell: pwsh
+        run: python -m unittest forgeboss.control.test_project_intake
+      - name: Activation regressions
+        shell: pwsh
+        run: python -m unittest forgeboss.control.test_activation forgeboss.control.test_known_good
+      - name: Python syntax
+        shell: pwsh
+        run: |
+          python -m py_compile dashboard/pro_shell.py
+          python -m py_compile forgeboss/control/project_intake.py
+      - name: Desktop shell non-GUI preflight
+        shell: pwsh
+        run: python dashboard/pro_shell.py --smoke

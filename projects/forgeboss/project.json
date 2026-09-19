@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "forgeboss",
+  "name": "ForgeBoss",
+  "purpose": "ForgeBoss builds and hardens ForgeBoss itself under known-good self-build control",
+  "repository_env": "FORGEBOSS_PROJECT_REPO_URL",
+  "default_branch": "main",
+  "profile_type": "self-build",
+  "max_parallel_workers": 4,
+  "smart_parallel": true
+}

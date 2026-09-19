@@ -52,6 +52,7 @@ def ensure_webview():
         import webview
         return webview
 
+sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(HERE))
 import server as fb
 
@@ -214,6 +215,15 @@ def forgebossd_health():
     except Exception as e:
         return {"ready":False,"status":"OFFLINE","detail":str(e)[:160]}
 
+SELECTED_PROJECT_PATH=ROOT/"state"/"dashboard"/"selected-project.json"
+from forgeboss.control.project_intake import detect_project_source,load_selected_project as _load_selected_project,save_selected_project as _save_selected_project
+
+def load_selected_project():
+    return _load_selected_project(SELECTED_PROJECT_PATH)
+
+def save_selected_project(data):
+    return _save_selected_project(SELECTED_PROJECT_PATH,data)
+
 class Api:
     def __init__(self):
         self._probe_lock=threading.Lock()
@@ -259,6 +269,7 @@ class Api:
         s["owner_settings"]=load_settings();s["tasks"]=tasks();s["costs"]=costs()
         s["forgebossd"]=forgebossd_health()
         s["project_profiles"]=project_profiles_snapshot()
+        s["selected_project"]=load_selected_project()
         return s
 
     def set_safety_toggle(self,name,value):
@@ -330,8 +341,30 @@ class Api:
             return {"ok":False,"cancelled":True,"message":"Owner cancelled GitHub publication."}
         return fb.publish_run_report_to_github(meta,owner_confirmed=True,automated=False)
 
+    def attach_project(self,source_path):
+        try:
+            selected=detect_project_source(source_path)
+            selected["selected_at"]=time.time()
+            save_selected_project(selected)
+            fb.log("OWNER selected self-build project: "+selected["source_path"])
+            return {"ok":True,"project":selected}
+        except Exception as e:
+            return {"ok":False,"message":str(e)}
+
+    def clear_project(self):
+        try: SELECTED_PROJECT_PATH.unlink(missing_ok=True)
+        except Exception: pass
+        return {"ok":True}
+
     def start_build(self,settings):
         try:
+            selected=load_selected_project()
+            if selected and selected.get("project_id")=="forgeboss":
+                return {
+                    "ok":False,
+                    "blocked":True,
+                    "message":"ForgeBoss self-build target is selected, but the self-build execution bridge is not wired yet. START refused safely instead of running the old SiteBoss controller."
+                }
             budget=float(settings.get("budget_usd",3.0))
             duration_mode=str(settings.get("duration_mode","timed"))
             duration=int(settings.get("duration_minutes",120)) if duration_mode!="until-stopped" else 120
@@ -353,22 +386,33 @@ class Api:
         threading.Thread(target=fb.run_category_league,args=(1.0,),daemon=True).start()
         return {"ok":True}
 
-def main():
-    webview=ensure_webview()
+def shell_preflight():
     page=HERE/"pro.html"
     if not page.exists():
         raise RuntimeError("ForgeBoss UI file is missing: "+str(page))
     if page.stat().st_size<5000:
         raise RuntimeError("ForgeBoss UI file appears incomplete. Extract the full ZIP before launching.")
+    profile=ROOT/"projects"/"forgeboss"/"project.json"
+    if not profile.exists():
+        raise RuntimeError("ForgeBoss self-build project profile is missing: "+str(profile))
+    return {"ok":True,"page":str(page),"project_profile":str(profile)}
+
+def main():
+    preflight=shell_preflight()
+    if "--smoke" in sys.argv:
+        print(json.dumps(preflight,sort_keys=True))
+        return
+    webview=ensure_webview()
+    page=Path(preflight["page"])
 
     api=Api()
 
     # Load the dashboard as a LOCAL FILE. Do not inject a giant HTML string.
-    # Also let pywebview choose the best installed Windows renderer instead of
-    # forcing EdgeChromium; this avoids a black window on machines where the
-    # WebView2 runtime/backend is incomplete.
-    webview.create_window(
-        "ForgeBoss - Building SiteBoss",
+    # pywebview exposes absolute Explorer drop paths on the Python DOM event
+    # as dataTransfer.files[*].pywebviewFullPath. Browser File objects alone
+    # do not provide an authoritative local path.
+    window=webview.create_window(
+        "ForgeBoss - Self Build",
         url=page.as_uri(),
         js_api=api,
         width=1380,
@@ -377,7 +421,25 @@ def main():
         resizable=True,
         background_color="#07120f",
     )
-    webview.start(debug=False)
+
+    def bind_project_drop(win):
+        from webview.dom import DOMEventHandler
+        def on_drop(event):
+            result={"ok":False,"message":"Drop the ForgeBoss folder or ZIP."}
+            try:
+                files=((event or {}).get("dataTransfer") or {}).get("files") or []
+                full=files[0].get("pywebviewFullPath") if files else None
+                result=api.attach_project(full)
+            except Exception as e:
+                result={"ok":False,"message":str(e)}
+            try:
+                win.evaluate_js("window.forgeBossDropResult("+json.dumps(result)+")")
+            except Exception:
+                pass
+        win.dom.document.events.dragover += DOMEventHandler(lambda _e: None, prevent_default=True, stop_propagation=True, debounce=250)
+        win.dom.document.events.drop += DOMEventHandler(on_drop, prevent_default=True, stop_propagation=True)
+
+    webview.start(bind_project_drop, window, debug=False)
 
 if __name__=="__main__":
     try:
