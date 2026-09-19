@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "commands": [
+    {
+      "name": "activation_tests",
+      "command": ["python", "-m", "unittest", "forgeboss.control.test_activation", "forgeboss.control.test_known_good"],
+      "required": true
+    },
+    {
+      "name": "launcher_static_selftest",
+      "command": ["node", "controller/selftest-launchers.js"],
+      "required": true
+    }
+  ],
+  "retain_partial_wins": false,
+  "full_green_required_for_publish": true,
+  "independent_review_required": true,
+  "known_good_activation_required": true
+}
