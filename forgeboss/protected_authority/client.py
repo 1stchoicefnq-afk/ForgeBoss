@@ -53,14 +53,28 @@ class ProtectedAuthorityClient:
 
     def _request(self,operation:str,payload:Mapping[str,Any])->tuple[dict,str]:
         request_id=str(uuid.uuid4())
-        unsigned={"schema":2,"operation":operation,"requestId":request_id,"peerId":self.peer_id,
-                  "repository":self.repository,"controlRevision":self.control_revision,"payload":dict(payload)}
-        digest=canonical_digest(unsigned)
-        try: signature=base64.b64encode(self.peer_private_key.sign(bytes.fromhex(digest))).decode("ascii")
-        except Exception as ex: raise AuthorityError("PEER_SIGNING_FAILED") from ex
-        return build_request(operation=operation,request_id=request_id,peer_id=self.peer_id,
-                             repository=self.repository,control_revision=self.control_revision,
-                             payload=payload,signature=signature),digest
+        # Let the protocol perform its exact canonicalization first (including
+        # repository case normalization), then sign that exact request digest.
+        provisional=build_request(
+            operation=operation,request_id=request_id,peer_id=self.peer_id,
+            repository=self.repository,control_revision=self.control_revision,
+            payload=payload,signature="unsigned-placeholder",
+        )
+        digest=provisional["requestDigest"]
+        try:
+            signature=base64.b64encode(
+                self.peer_private_key.sign(bytes.fromhex(digest))
+            ).decode("ascii")
+        except Exception as ex:
+            raise AuthorityError("PEER_SIGNING_FAILED") from ex
+        request=build_request(
+            operation=operation,request_id=request_id,peer_id=self.peer_id,
+            repository=self.repository,control_revision=self.control_revision,
+            payload=payload,signature=signature,
+        )
+        if request["requestDigest"]!=digest:
+            raise AuthorityError("REQUEST_DIGEST_MISMATCH")
+        return request,digest
 
     def call(self,operation:str,payload:Mapping[str,Any])->dict:
         request,request_digest=self._request(operation,payload)
