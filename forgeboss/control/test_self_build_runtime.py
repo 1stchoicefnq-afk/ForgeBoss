@@ -56,7 +56,7 @@ class RuntimeTests(unittest.TestCase):
         test_core={"command":"python -m unittest x -v","exit_code":0,"output_sha256":"2"*64}
         test_row={**test_core,"receipt_digest":receipt_digest(test_core)}
         ident={"taskId":"task-a","runId":"worker-a","attempt":1,"ownerEpoch":1,"builderPrincipal":"builder-a",
-               "assignmentGeneration":1,"assignmentPolicySha256":"3"*64,"repository":"1stchoicefnq-afk/ForgeBoss",
+               "assignmentGeneration":1,"assignmentPolicySha256":"3"*64,"repository":"1stchoicefnq-afk/forgeboss",
                "baseSha":base,"branch":"forgeboss/fl1-selfbuild-a","worktreePath":str(work.resolve()),
                "workspaceGeneration":1,"workspaceContentIdentity":base,"budgetRunId":"fl1-run"}
         packet={"identity":ident,"assignmentIdentitySha256":hashlib.sha256(json.dumps(ident,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()}
