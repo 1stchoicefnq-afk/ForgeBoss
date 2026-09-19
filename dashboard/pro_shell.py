@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, sys, threading, time, subprocess, traceback, ctypes
+import json, os, sys, threading, time, subprocess, traceback, ctypes, uuid
 from pathlib import Path
 
 
@@ -55,6 +55,8 @@ def ensure_webview():
 sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(HERE))
 import server as fb
+from forgeboss.control.self_build_preflight import self_build_preflight,concise_blockers
+from forgeboss.protected_authority.client import ProtectedAuthorityClient
 
 def safe_json(path:Path):
     try:return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -171,7 +173,8 @@ def friendly_activity(text):
 
 import re
 
-SETTINGS_PATH=ROOT/"state"/"dashboard"/"owner-settings.json"
+DASH_STATE_ROOT=Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
+SETTINGS_PATH=DASH_STATE_ROOT/"dashboard"/"owner-settings.json"
 def load_settings():
  d={"merge_enabled":False,"deploy_enabled":False,"daily_budget_usd":10.0,"risk_mode":"conservative","require_review":True}
  try:
@@ -215,7 +218,7 @@ def forgebossd_health():
     except Exception as e:
         return {"ready":False,"status":"OFFLINE","detail":str(e)[:160]}
 
-SELECTED_PROJECT_PATH=ROOT/"state"/"dashboard"/"selected-project.json"
+SELECTED_PROJECT_PATH=DASH_STATE_ROOT/"dashboard"/"selected-project.json"
 from forgeboss.control.project_intake import detect_project_source,load_selected_project as _load_selected_project,save_selected_project as _save_selected_project
 
 def load_selected_project():
@@ -359,13 +362,36 @@ class Api:
     def start_build(self,settings):
         try:
             selected=load_selected_project()
-            if selected and selected.get("project_id")=="forgeboss":
-                return {
-                    "ok":False,
-                    "blocked":True,
-                    "message":"ForgeBoss self-build target is selected, but the self-build execution bridge is not wired yet. START refused safely instead of running the old SiteBoss controller."
-                }
             budget=float(settings.get("budget_usd",3.0))
+            if selected and selected.get("project_id")=="forgeboss":
+                preflight=self_build_preflight(
+                    selected.get("source_path"),
+                    running_root=ROOT,
+                    requested_budget_usd=budget,
+                    env=os.environ,
+                )
+                if not preflight.get("ready"):
+                    message="ForgeBoss self-build preflight blocked: "+concise_blockers(preflight)
+                    fb.log(message)
+                    return {"ok":False,"blocked":True,"phase":"PREFLIGHT_BLOCKED","message":message,"preflight":preflight}
+                client=ProtectedAuthorityClient.from_environment(os.environ)
+                run_id="fl1-"+uuid.uuid4().hex[:12]
+                response=client.prepare_self_build(
+                    source_root=selected.get("source_path"),
+                    base_sha=preflight["known_good_sha"],
+                    run_id=run_id,
+                )
+                prepared=response.get("result") or {}
+                fb.log(f"SELF-BUILD PREPARED run={run_id} base={preflight['known_good_sha']} builders={len(prepared.get('builders') or [])}")
+                return {
+                    "ok":True,
+                    "prepared":True,
+                    "phase":"PROTECTED_PREPARED",
+                    "run_id":run_id,
+                    "message":"Protected self-build run prepared. Paid workers have NOT started yet.",
+                    "preflight":preflight,
+                    "prepared_run":prepared,
+                }
             duration_mode=str(settings.get("duration_mode","timed"))
             duration=int(settings.get("duration_minutes",120)) if duration_mode!="until-stopped" else 120
             ok,msg=fb.start_session({"duration_minutes":duration,"duration_mode":duration_mode,"budget_usd":budget,"workers":1,"mode":settings.get("mode","cost-optimized")})
@@ -446,7 +472,7 @@ if __name__=="__main__":
         main()
     except Exception as e:
         try:
-            logdir=ROOT/"state"/"dashboard";logdir.mkdir(parents=True,exist_ok=True)
+            logdir=DASH_STATE_ROOT/"dashboard";logdir.mkdir(parents=True,exist_ok=True)
             (logdir/"desktop-startup-error.txt").write_text(traceback.format_exc(),encoding="utf-8")
         except Exception:
             pass
