@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forgeboss.control.self_build_preflight import concise_blockers, self_build_preflight, self_build_session_plan
+from forgeboss.control.self_build_session_evidence import evaluate_p0_session
 
 
 class SelfBuildPreflightTests(unittest.TestCase):
@@ -64,6 +65,41 @@ class SelfBuildPreflightTests(unittest.TestCase):
         capped=self_build_session_plan(99.0);self.assertEqual(capped["cycle_target"],3)
         with self.assertRaises(ValueError):self_build_session_plan(1.99)
         with self.assertRaises(ValueError):self_build_session_plan(float("nan"))
+
+    def _p0_evidence(self):
+        runs=[];base="a"*40
+        for i,succ in enumerate(("b"*40,"c"*40,"d"*40),1):
+            runs.append({
+                "cycle_index":i,"run_id":f"fl1-c{i}","base_revision":base,"successor_sha":succ,
+                "phase":"SUCCESSOR_ACTIVATED","error":None,
+                "activation":{"status":"ACTIVATED_KNOWN_GOOD","successor_sha":succ,"generation":i+1,
+                              "probe_evidence_sha256":str(i)*64,"health_evidence_sha256":str(i+3)*64},
+            });base=succ
+        proof={"status":"ROLLBACK_PROVEN","run_id":"fl1-c1","known_good_revision":"b"*40,
+               "pointer_revision":"b"*40,"final_phase":"ROLLED_BACK","candidate_process_dead":True,
+               "workspace_cleaned":True,"broken_candidate_sha":"e"*40,"evidence_digest":"f"*64}
+        return {"schema":1,"session_id":"fl1s-proof","proof_mode":True,"cycle_target":3,"completed_cycles":3,
+                "session_budget_usd":"6.00","reserved_cap_usd":"6.00","stop_requested":False,"error":None,
+                "runs":runs,"rollback_proof":proof,
+                "final_known_good":{"phase":"READY","generation":5,"revision":"d"*40,
+                                    "manifest_sha256":"a"*64,"identity_sha256":"b"*64}}
+
+    def test_p0_session_evaluator_requires_exact_three_cycle_lineage_and_rollback(self):
+        evidence=self._p0_evidence();out=evaluate_p0_session(evidence)
+        self.assertEqual(out["status"],"PASS");self.assertEqual(out["cycle_count"],3)
+        self.assertEqual(out["accepted_revisions"],["b"*40,"c"*40,"d"*40]);self.assertEqual(len(out["evidence_digest"]),64)
+
+    def test_p0_session_evaluator_fails_closed_on_lineage_stop_budget_or_rollback_gaps(self):
+        cases=[]
+        x=self._p0_evidence();x["runs"][1]["base_revision"]="9"*40;cases.append(("cycle-2-lineage",x))
+        x=self._p0_evidence();x["stop_requested"]=True;cases.append(("stop-gate",x))
+        x=self._p0_evidence();x["reserved_cap_usd"]="4.00";cases.append(("budget-reservation",x))
+        x=self._p0_evidence();x["rollback_proof"]["candidate_process_dead"]=False;cases.append(("rollback-process",x))
+        x=self._p0_evidence();x["final_known_good"]["revision"]="9"*40;cases.append(("final-revision",x))
+        for expected,evidence in cases:
+            with self.subTest(expected=expected):
+                out=evaluate_p0_session(evidence);self.assertEqual(out["status"],"FAIL")
+                self.assertIn(expected,{b["name"] for b in out["blockers"]})
 
     def test_runtime_state_inside_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:

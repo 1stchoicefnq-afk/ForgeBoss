@@ -56,6 +56,7 @@ sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(HERE))
 import server as fb
 from forgeboss.control.self_build_preflight import self_build_preflight,concise_blockers,self_build_session_plan
+from forgeboss.control.self_build_session_evidence import canonical_digest,evaluate_p0_session
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
 from forgeboss.control.process_supervisor import ProcessSupervisor
@@ -221,6 +222,7 @@ def forgebossd_health():
         return {"ready":False,"status":"OFFLINE","detail":str(e)[:160]}
 
 SELECTED_PROJECT_PATH=DASH_STATE_ROOT/"dashboard"/"selected-project.json"
+SELF_BUILD_EVIDENCE_ROOT=DASH_STATE_ROOT/"dashboard"/"self-build-sessions"
 from forgeboss.control.project_intake import detect_project_source,load_selected_project as _load_selected_project,save_selected_project as _save_selected_project
 
 def load_selected_project():
@@ -238,6 +240,73 @@ class Api:
         self._self_build_launcher=None
         self._self_build_runs={}
         self._self_build_sessions={}
+
+    def _session_public_record_locked(self,session_id):
+        session=self._self_build_sessions.get(session_id)
+        if not session:return None
+        rows=[]
+        for run_id in list(session.get("runs") or []):
+            state=self._self_build_runs.get(run_id) or {}
+            prepared=state.get("prepared") or {}
+            finish=state.get("finish") or {}
+            successor=finish.get("successor") or {}
+            activation_raw=state.get("activation") or {}
+            activation=activation_raw.get("result") if isinstance(activation_raw,dict) else {}
+            if not isinstance(activation,dict):activation={}
+            proof_raw=state.get("rollback_proof") or {}
+            proof=proof_raw.get("result") if isinstance(proof_raw,dict) else {}
+            if not isinstance(proof,dict):proof={}
+            rows.append({
+                "cycle_index":int(state.get("cycle_index") or 0),
+                "run_id":run_id,
+                "base_revision":str(prepared.get("base_sha") or "").lower(),
+                "source_root":str(prepared.get("source_root") or ""),
+                "successor_sha":str(successor.get("successor_sha") or "").lower(),
+                "successor_manifest_sha256":str(successor.get("manifest_sha256") or "").lower(),
+                "phase":state.get("phase"),"error":state.get("error"),
+                "activation":activation or None,
+                "rollback_proof":proof or None,
+            })
+        proof=None
+        proof_run=session.get("rollback_proof_run_id")
+        if proof_run:
+            for row in rows:
+                if row.get("run_id")==proof_run and isinstance(row.get("rollback_proof"),dict):
+                    proof=row["rollback_proof"];break
+        record={
+            "schema":1,"session_id":session_id,"proof_mode":bool(session.get("proof_mode")),
+            "phase":session.get("phase"),"cycle_target":int(session.get("cycle_target") or 0),
+            "current_cycle":int(session.get("current_cycle") or 0),
+            "completed_cycles":int(session.get("completed_cycles") or 0),
+            "session_budget_usd":f"{float(session.get('session_budget_usd') or 0):.2f}",
+            "reserved_cap_usd":f"{float(session.get('reserved_cap_usd') or 0):.2f}",
+            "stop_requested":bool(session.get("stop_requested")),"error":session.get("error"),
+            "runs":rows,"rollback_proof":proof,
+            "final_known_good":session.get("final_known_good"),
+        }
+        core=dict(record);record["session_record_digest"]=canonical_digest(core)
+        return record
+
+    def _persist_self_build_session(self,session_id,*,evaluate=False):
+        with self._self_build_lock:
+            record=self._session_public_record_locked(session_id)
+            if record is None:return None
+            if evaluate:
+                record["p0_evaluation"]=evaluate_p0_session(record)
+            root=SELF_BUILD_EVIDENCE_ROOT
+        root.mkdir(parents=True,exist_ok=True)
+        target=root/f"{session_id}.json";tmp=root/f".{session_id}.{uuid.uuid4().hex}.tmp"
+        raw=json.dumps(record,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n"
+        with tmp.open("w",encoding="utf-8",newline="\n") as fh:
+            fh.write(raw);fh.flush();os.fsync(fh.fileno())
+        os.replace(tmp,target)
+        if os.name!="nt":
+            try:
+                fd=os.open(str(root),os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
+                try:os.fsync(fd)
+                finally:os.close(fd)
+            except OSError:pass
+        return {"path":str(target.resolve()),"record":record}
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
@@ -298,6 +367,7 @@ class Api:
                     session["phase"]="PREFLIGHT_BLOCKED"
                     session["error"]=message
                     session["stop_requested"]=True
+            self._persist_self_build_session(session_id)
             raise RuntimeError(message)
         if self._session_stop_requested(session_id):
             return None
@@ -329,6 +399,7 @@ class Api:
             session["current_cycle"]=int(cycle_index)
             session["reserved_cap_usd"]=int(cycle_index)*float(plan["per_cycle_cap_usd"])
             session["phase"]="TWO_BUILDERS_RUNNING"
+        self._persist_self_build_session(session_id)
         fb.log(f"SELF-BUILD CYCLE {cycle_index}/{target} TWO BUILDERS RUNNING run={run_id} base={preflight['known_good_sha']} session={session_id}")
         threading.Thread(target=self._mandatory_b2,args=(run_id,),daemon=True).start()
         return {"run_id":run_id,"preflight":preflight,"launched":launched,"known_good":known_good}
@@ -416,6 +487,7 @@ class Api:
                         session["rollback_proven"]=True
                         session["rollback_proof_run_id"]=run_id
                         session["phase"]="ROLLBACK_PROVEN"
+                self._persist_self_build_session(session_id)
                 fb.log(f"SELF-BUILD P0 ROLLBACK PROVEN session={session_id} broken={proof.get('broken_candidate_sha')} restored={proof.get('pointer_revision')}")
             next_cycle=None
             with self._self_build_lock:
@@ -434,12 +506,36 @@ class Api:
                 else:
                     fb.log(f"SELF-BUILD NEXT CYCLE STARTED session={session_id} cycle={cycle_index+1}/{cycle_target} run={next_cycle['run_id']}")
             else:
+                final_known_good=None
                 with self._self_build_lock:
                     session=self._self_build_sessions.get(session_id) if session_id else None
-                    if session and not session.get("stop_requested"):
-                        session["phase"]="COMPLETE"
-                if session_id:
-                    fb.log(f"SELF-BUILD SESSION COMPLETE session={session_id} cycles={cycle_index}/{cycle_target}")
+                    complete=bool(session and not session.get("stop_requested"))
+                if complete:
+                    final_response=client.self_build_current_known_good()
+                    final_known_good=final_response.get("result") or {}
+                    with self._self_build_lock:
+                        session=self._self_build_sessions.get(session_id)
+                        if session:
+                            session["final_known_good"]=final_known_good
+                            session["phase"]="COMPLETE"
+                    saved=self._persist_self_build_session(session_id,evaluate=bool(session and session.get("proof_mode")))
+                    evaluation=((saved or {}).get("record") or {}).get("p0_evaluation") if saved else None
+                    if evaluation is not None:
+                        with self._self_build_lock:
+                            session=self._self_build_sessions.get(session_id)
+                            if session:
+                                session["p0_evaluation"]=evaluation
+                                session["evidence_path"]=(saved or {}).get("path")
+                                if evaluation.get("status")=="PASS":
+                                    session["phase"]="P0_PROOF_PASS"
+                                else:
+                                    session["phase"]="P0_PROOF_FAILED"
+                                    session["error"]="P0 proof evidence failed closed"
+                                    session["stop_requested"]=True
+                        self._persist_self_build_session(session_id,evaluate=True)
+                        fb.log(f"SELF-BUILD P0 PROOF {evaluation.get('status')} session={session_id} evidence={evaluation.get('evidence_digest')}")
+                    if session_id:
+                        fb.log(f"SELF-BUILD SESSION COMPLETE session={session_id} cycles={cycle_index}/{cycle_target} final={final_known_good.get('revision')}")
         except Exception as e:
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
@@ -452,6 +548,9 @@ class Api:
                         session["phase"]="FAILED"
                         session["error"]=str(e)
                         session["stop_requested"]=True
+            if state and state.get("session_id"):
+                try:self._persist_self_build_session(state.get("session_id"))
+                except Exception as persist_error:fb.log(f"SELF-BUILD EVIDENCE PERSIST FAILED run={run_id}: {persist_error}")
             fb.log(f"SELF-BUILD FAILED run={run_id}: {e}")
 
     def _probe(self):
@@ -501,7 +600,7 @@ class Api:
                 s["self_build_session"]={k:latest.get(k) for k in (
                     "session_id","phase","cycle_target","current_cycle","completed_cycles",
                     "session_budget_usd","reserved_cap_usd","current_run_id","stop_requested","error",
-                    "proof_mode","rollback_proven","rollback_proof_run_id"
+                    "proof_mode","rollback_proven","rollback_proof_run_id","evidence_path","p0_evaluation"
                 )}
         return s
 
@@ -614,7 +713,9 @@ class Api:
                         "session_budget_usd":float(plan["session_budget_usd"]),"reserved_cap_usd":0.0,
                         "current_run_id":None,"runs":[],"phase":"STARTING","stop_requested":False,"error":None,
                         "proof_mode":proof_mode,"rollback_proven":False,"rollback_proof_run_id":None,
+                        "final_known_good":None,"evidence_path":None,"p0_evaluation":None,
                     }
+                self._persist_self_build_session(session_id)
                 first=self._launch_self_build_cycle(session_id,1)
                 if first is None:
                     return {"ok":False,"cancelled":True,"phase":"SAFE_STOPPED","message":"Self-build stopped before paid launch."}
@@ -637,6 +738,8 @@ class Api:
                     session=self._self_build_sessions.get(session_id)
                     if session:
                         session["phase"]="FAILED";session["error"]=str(e);session["stop_requested"]=True
+                try:self._persist_self_build_session(session_id)
+                except Exception as persist_error:fb.log(f"SELF-BUILD EVIDENCE PERSIST FAILED session={session_id}: {persist_error}")
             return {"ok":False,"message":str(e)}
 
     def safe_stop(self):
@@ -666,6 +769,11 @@ class Api:
         with self._self_build_lock:
             for session in self._self_build_sessions.values():
                 if session.get("stop_requested"):session["phase"]="SAFE_STOPPED"
+        with self._self_build_lock:
+            stopped_sessions=[sid for sid,session in self._self_build_sessions.items() if session.get("stop_requested")]
+        for sid in stopped_sessions:
+            try:self._persist_self_build_session(sid)
+            except Exception as persist_error:fb.log(f"SELF-BUILD EVIDENCE PERSIST FAILED session={sid}: {persist_error}")
         fb.stop_requested.set()
         fb.save_status(stop_requested=True,message="Safe stop requested; no new work will start.")
         fb.log("OWNER requested safe stop.")
