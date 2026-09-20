@@ -32,7 +32,7 @@ class ActivationTests(unittest.TestCase):
             written=write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity,state_root=str(Path(td)/"runtime"))
             observed,digest=read_activation_ready(path,timeout=0.2)
             self.assertEqual(observed,written);self.assertEqual(len(digest),64)
-            with self.assertRaises(ActivationProbeError):write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity)
+            with self.assertRaises(ActivationProbeError):write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity,state_root=str(Path(td)/"runtime"))
 
     def test_isolated_module_bootstrap_supports_relative_imports_and_ignores_hostile_pythonpath(self):
         import subprocess,sys
