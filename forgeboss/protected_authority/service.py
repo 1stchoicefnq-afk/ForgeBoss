@@ -64,13 +64,14 @@ class ProtectedAuthorityService:
             op=r['operation']
             if op=='verify_launch_authority':
                 trust=self.secrets_provider.launch_trust_root();private.append(trust);result=self.backend.verify_launch_authority(repository=r['repository'],control_revision=r['controlRevision'],payload=r['payload'],trust_root=trust)
-            elif op in {'prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
+            elif op in {'prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
                 if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
                 try:
                     if op=='prepare_self_build':result=self.self_build_runtime.prepare(r['payload'])
                     elif op=='prepare_self_build_replacement':result=self.self_build_runtime.prepare_replacement(r['payload'])
                     elif op=='compose_self_build_successor':result=self.self_build_runtime.compose_successor(r['payload'])
                     elif op=='activate_self_build_successor':result=self.self_build_runtime.activate_successor(r['payload'])
+                    elif op=='prove_self_build_activation_rollback':result=self.self_build_runtime.prove_activation_rollback(r['payload'])
                     elif op=='self_build_current_known_good':result=self.self_build_runtime.current_known_good(r['payload'])
                     elif op=='revoke_self_build_worker':result=self.self_build_runtime.revoke_worker(r['payload'])
                     elif op=='record_self_build_handoff':result=self.self_build_runtime.record_handoff(r['payload'])

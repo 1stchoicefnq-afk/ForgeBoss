@@ -154,6 +154,9 @@ class ProtectedAuthorityClient:
     def activate_self_build_successor(self,*,run_id:str)->dict:
         return self.call("activate_self_build_successor",{"runId":run_id})
 
+    def prove_self_build_activation_rollback(self,*,run_id:str)->dict:
+        return self.call("prove_self_build_activation_rollback",{"runId":run_id})
+
     def self_build_current_known_good(self)->dict:
         return self.call("self_build_current_known_good",{})
 

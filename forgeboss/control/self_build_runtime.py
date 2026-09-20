@@ -16,6 +16,7 @@ from forgeboss.security.executor_guard import _resolve_git_executable
 from forgeboss.control.receipts import CandidateHandoff,ReviewerReceipt,ControllerAcceptanceReference,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
 from forgeboss.control.self_build_review import SelfBuildReviewError,review_frozen_candidate
 from forgeboss.control.self_build_compose import SelfBuildComposeError,compose_successor as compose_reviewed_successor,verify_composed_successor
+from forgeboss.control.self_build_rollback_proof import SelfBuildRollbackProofError,run_rollback_proof
 from forgeboss.control.activation import ActivationError,ActivationManager
 from forgeboss.control.known_good import IdentityError,verify_build_manifest
 
@@ -55,7 +56,8 @@ class SelfBuildRuntime:
     def __init__(self,*,protected_root:Path,boundary,receipt_public_key_b64:str,
                  git_resolver=_resolve_git_executable,compose_fn=compose_reviewed_successor,
                  verify_compose_fn=verify_composed_successor,review_fn=review_frozen_candidate,
-                 activation_manager_factory=ActivationManager,identity_verifier=verify_build_manifest):
+                 activation_manager_factory=ActivationManager,identity_verifier=verify_build_manifest,
+                 rollback_proof_fn=run_rollback_proof):
         root=Path(protected_root)
         if not root.is_absolute():
             raise SelfBuildRuntimeError("PROTECTED_ROOT_INVALID","protected root must be absolute")
@@ -68,6 +70,7 @@ class SelfBuildRuntime:
         self.review_fn=review_fn
         self.activation_manager_factory=activation_manager_factory
         self.identity_verifier=identity_verifier
+        self.rollback_proof_fn=rollback_proof_fn
 
         self.workspace_root=self.root/"self-build-workspaces"
         self.run_root=self.root/"self-build-runs"
@@ -710,6 +713,59 @@ class SelfBuildRuntime:
         except Exception as ex:
             raise SelfBuildRuntimeError("ACTIVATION_FAILED",str(ex)) from ex
 
+    def prove_activation_rollback(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        if not isinstance(record,dict) or record.get("schema")!=1 or record.get("phase")!="SUCCESSOR_ACTIVATED":
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","rollback proof requires an activated self-build run")
+        activation=record.get("activation")
+        if not isinstance(activation,dict) or activation.get("status")!="ACTIVATED_KNOWN_GOOD":
+            raise SelfBuildRuntimeError("ACTIVATION_RECORD_INVALID","rollback proof requires exact successful activation evidence")
+        existing=record.get("rollbackProof")
+        if existing is not None:
+            if not isinstance(existing,dict) or existing.get("status")!="ROLLBACK_PROVEN":
+                raise SelfBuildRuntimeError("ROLLBACK_PROOF_RECORD_INVALID","persisted rollback proof invalid")
+            supplied=str(existing.get("evidence_digest") or "").lower()
+            core={k:v for k,v in existing.items() if k!="evidence_digest"}
+            if supplied!=receipt_digest(core):
+                raise SelfBuildRuntimeError("ROLLBACK_PROOF_RECORD_INVALID","persisted rollback proof digest mismatch")
+            return existing
+        current=self._verified_running_identity()
+        if current.get("revision")!=activation.get("successor_sha") or current.get("manifestSha256")!=activation.get("manifest_sha256"):
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_BASE_MISMATCH","activated run is not the current protected known-good")
+        manifest=self.run_root/f"{run_id}-rollback-proof-manifest.json"
+        drill=self.workspace_root/f"{run_id}-rollback-drill"
+        if manifest.exists() or manifest.is_symlink() or drill.exists() or drill.is_symlink():
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_RECOVERY_REQUIRED","unrecorded rollback proof artifacts require explicit reconciliation")
+        try:
+            evidence=self.rollback_proof_fn(
+                run_id=run_id,current_identity=current,activation_root=self.activation_root,
+                workspace_root=self.workspace_root,protected_state=self.workspace_state,
+                git_executable=self.git_resolver(),manifest_path=manifest,
+                activation_manager_factory=self.activation_manager_factory,
+            )
+        except SelfBuildRollbackProofError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+        except Exception as ex:raise SelfBuildRuntimeError("ROLLBACK_PROOF_FAILED",str(ex)) from ex
+        if not isinstance(evidence,dict) or evidence.get("status")!="ROLLBACK_PROVEN":
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_EVIDENCE_INVALID","rollback proof did not return proven evidence")
+        supplied=str(evidence.get("evidence_digest") or "").lower()
+        core={k:v for k,v in evidence.items() if k!="evidence_digest"}
+        if supplied!=receipt_digest(core):
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_EVIDENCE_INVALID","rollback proof evidence digest mismatch")
+        if evidence.get("run_id")!=run_id or evidence.get("known_good_revision")!=current.get("revision") or evidence.get("pointer_revision")!=current.get("revision"):
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_EVIDENCE_INVALID","rollback proof identity binding mismatch")
+        if evidence.get("final_phase")!="ROLLED_BACK" or evidence.get("candidate_process_dead") is not True or evidence.get("workspace_cleaned") is not True:
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_EVIDENCE_INVALID","rollback proof safety evidence incomplete")
+        verified=self._verified_running_identity()
+        if verified.get("revision")!=current.get("revision") or verified.get("manifestSha256")!=current.get("manifestSha256"):
+            raise SelfBuildRuntimeError("ROLLBACK_PROOF_RESTORE_INVALID","known-good identity changed after rollback proof")
+        record["rollbackProof"]=evidence
+        _atomic_json(path,record);self._assert_path(path)
+        return evidence
+
     def current_known_good(self,payload:dict)->dict:
         if not isinstance(payload,dict) or payload:
             raise SelfBuildRuntimeError("SELF_BUILD_PAYLOAD_INVALID","current known-good payload must be empty")
@@ -723,12 +779,12 @@ class SelfBuildRuntime:
                 manager.recover()
                 state=manager.status()
             except ActivationError as ex:raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY",str(ex)) from ex
-            if state.get("phase")!="READY":
-                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","current known-good activation state is not READY")
+            if state.get("phase") not in {"READY","ROLLED_BACK"}:
+                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","current known-good activation state is not READY/ROLLED_BACK")
             running=state.get("running") or {}
             if running.get("revision")!=identity.get("revision") or running.get("manifestSha256")!=identity.get("manifestSha256"):
-                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","READY running identity differs from protected pointer")
-            phase="READY"
+                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","running identity differs from protected pointer")
+            phase="READY" if state.get("phase")=="READY" else "ROLLED_BACK_READY"
         return {
             "schema":1,"generation":generation,"phase":phase,
             "revision":identity.get("revision"),"code_root":identity.get("codeRoot"),

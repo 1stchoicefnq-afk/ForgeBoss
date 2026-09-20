@@ -241,7 +241,7 @@ class Api:
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
-            terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
+            terminal={"COMPLETE","FAILED","SAFE_STOPPED","PREFLIGHT_BLOCKED"}
             active=any(str(x.get("phase") or "") not in terminal for x in self._self_build_sessions.values())
             if self._self_build_launcher is None or not active:
                 self._self_build_launcher=SelfBuildLauncher(
@@ -399,6 +399,24 @@ class Api:
                     state["phase"]="SUCCESSOR_ACTIVATED"
                     state["error"]=None
             fb.log(f"SELF-BUILD SUCCESSOR ACTIVATED run={run_id} sha={activated.get('successor_sha')} status={activated.get('status')}")
+            with self._self_build_lock:
+                session=self._self_build_sessions.get(session_id) if session_id else None
+                proof_due=bool(session and session.get("proof_mode") and cycle_index==1 and not session.get("rollback_proven"))
+            if proof_due and not stop_requested():
+                fb.log(f"SELF-BUILD P0 ROLLBACK DRILL START session={session_id} run={run_id} new_ai_spend=$0")
+                proof_response=client.prove_self_build_activation_rollback(run_id=run_id)
+                proof=proof_response.get("result") or {}
+                if proof.get("status")!="ROLLBACK_PROVEN":
+                    raise RuntimeError("protected rollback drill did not return ROLLBACK_PROVEN")
+                with self._self_build_lock:
+                    state=self._self_build_runs.get(run_id)
+                    if state:state["rollback_proof"]=proof_response
+                    session=self._self_build_sessions.get(session_id) if session_id else None
+                    if session:
+                        session["rollback_proven"]=True
+                        session["rollback_proof_run_id"]=run_id
+                        session["phase"]="ROLLBACK_PROVEN"
+                fb.log(f"SELF-BUILD P0 ROLLBACK PROVEN session={session_id} broken={proof.get('broken_candidate_sha')} restored={proof.get('pointer_revision')}")
             next_cycle=None
             with self._self_build_lock:
                 session=self._self_build_sessions.get(session_id) if session_id else None
@@ -482,7 +500,8 @@ class Api:
                 latest=sessions[-1]
                 s["self_build_session"]={k:latest.get(k) for k in (
                     "session_id","phase","cycle_target","current_cycle","completed_cycles",
-                    "session_budget_usd","reserved_cap_usd","current_run_id","stop_requested","error"
+                    "session_budget_usd","reserved_cap_usd","current_run_id","stop_requested","error",
+                    "proof_mode","rollback_proven","rollback_proof_run_id"
                 )}
         return s
 
@@ -571,11 +590,15 @@ class Api:
         return {"ok":True}
 
     def start_build(self,settings):
+        session_id=None
         try:
             selected=load_selected_project()
             budget=float(settings.get("budget_usd",3.0))
             if selected and selected.get("project_id")=="forgeboss":
                 plan=self_build_session_plan(budget)
+                proof_mode=bool(settings.get("p0_three_cycle_proof",False))
+                if proof_mode and int(plan["cycle_target"])!=3:
+                    return {"ok":False,"blocked":True,"phase":"PROOF_BUDGET_BLOCKED","message":"P0 three-cycle proof mode requires at least $6.00 owner budget so all three $2.00 protected cycle caps are reserved."}
                 with self._self_build_lock:
                     terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
                     active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
@@ -590,6 +613,7 @@ class Api:
                         "cycle_target":int(plan["cycle_target"]),"current_cycle":0,"completed_cycles":0,
                         "session_budget_usd":float(plan["session_budget_usd"]),"reserved_cap_usd":0.0,
                         "current_run_id":None,"runs":[],"phase":"STARTING","stop_requested":False,"error":None,
+                        "proof_mode":proof_mode,"rollback_proven":False,"rollback_proof_run_id":None,
                     }
                 first=self._launch_self_build_cycle(session_id,1)
                 if first is None:
@@ -598,7 +622,7 @@ class Api:
                     "ok":True,"launched":True,"phase":"TWO_BUILDERS_RUNNING",
                     "run_id":first["run_id"],"session_id":session_id,
                     "cycle_target":int(plan["cycle_target"]),
-                    "message":f"ForgeBoss self-build session started. Up to {plan['cycle_target']} cycle(s) authorized by the owner budget; each cycle is capped at $2.00.",
+                    "message":f"ForgeBoss self-build session started. Up to {plan['cycle_target']} cycle(s) authorized by the owner budget; each cycle is capped at $2.00."+(" P0 proof mode will run one $0 deliberate activation rollback drill after cycle 1." if proof_mode else ""),
                     "preflight":first["preflight"],
                     "concurrent_proof":first["launched"].get("concurrent_proof"),
                     "session_plan":plan,
@@ -607,7 +631,13 @@ class Api:
             duration=int(settings.get("duration_minutes",120)) if duration_mode!="until-stopped" else 120
             ok,msg=fb.start_session({"duration_minutes":duration,"duration_mode":duration_mode,"budget_usd":budget,"workers":1,"mode":settings.get("mode","cost-optimized")})
             return {"ok":ok,"message":msg}
-        except Exception as e:return {"ok":False,"message":str(e)}
+        except Exception as e:
+            if session_id:
+                with self._self_build_lock:
+                    session=self._self_build_sessions.get(session_id)
+                    if session:
+                        session["phase"]="FAILED";session["error"]=str(e);session["stop_requested"]=True
+            return {"ok":False,"message":str(e)}
 
     def safe_stop(self):
         stopped=[]
@@ -633,6 +663,9 @@ class Api:
                     fb.log(f"SELF-BUILD SAFE STOP FAILED {worker.get('builder_id')}: {e}")
             with self._self_build_lock:
                 if run_id in self._self_build_runs:self._self_build_runs[run_id]["phase"]="SAFE_STOPPED"
+        with self._self_build_lock:
+            for session in self._self_build_sessions.values():
+                if session.get("stop_requested"):session["phase"]="SAFE_STOPPED"
         fb.stop_requested.set()
         fb.save_status(stop_requested=True,message="Safe stop requested; no new work will start.")
         fb.log("OWNER requested safe stop.")

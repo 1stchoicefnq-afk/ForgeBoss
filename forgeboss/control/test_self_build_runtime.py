@@ -325,6 +325,73 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(saved["activation"]["status"],"ACTIVATION_FAILED")
         self.assertEqual(saved["activation"]["activation_phase"],"ROLLED_BACK")
 
+    @unittest.skipUnless(__import__("shutil").which("git"),"git required")
+    def test_real_rollback_proof_builds_broken_candidate_and_cleans_workspace(self):
+        import shutil,subprocess
+        from forgeboss.control.activation import ActivationError
+        from forgeboss.control.self_build_compose import build_manifest
+        from forgeboss.control.self_build_rollback_proof import run_rollback_proof
+        git=Path(shutil.which("git")).resolve()
+        source=Path(self.td.name)/"rollback-source";source.mkdir()
+        def g(*args):
+            p=subprocess.run([str(git),"-C",str(source),*args],capture_output=True,text=True,check=False)
+            self.assertEqual(p.returncode,0,msg=p.stderr);return p.stdout.strip()
+        g("init","-q");g("config","user.email","test@example.invalid");g("config","user.name","Rollback Test")
+        for rel,body in {
+            "forgeboss/__init__.py":"",
+            "forgeboss/control/__init__.py":"",
+            "forgeboss/control/daemon.py":"from forgeboss.control.known_good import runtime_identity_from_env\nROOT=None\nRUNTIME_IDENTITY=runtime_identity_from_env(ROOT)\n",
+            "forgeboss/control/known_good.py":"def runtime_identity_from_env(root): return {}\n",
+        }.items():
+            p=source/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(body,encoding="utf-8")
+        g("add",".");g("commit","-qm","known-good");base=g("rev-parse","HEAD")
+        current_manifest=self.runtime.run_root/"rollback-current-manifest.json"
+        md,identity=build_manifest(git=git,root=source,revision=base,manifest_path=current_manifest)
+        current={**identity,"verified":True}
+        class Manager:
+            def __init__(self):self.state={"schema":2,"phase":"READY","generation":2,"running":current};self.pointer={"schema":2,"generation":2,"current":current}
+            def initialize_known_good(self):return self.pointer
+            def status(self):return dict(self.state)
+            def stage(self,root,manifest,revision,manifest_sha,expected_generation=None):
+                self.assertions=(root,manifest,revision,manifest_sha,expected_generation)
+                self.state={"schema":2,"phase":"STAGED","generation":3,"candidate":{"revision":revision,"manifestSha256":manifest_sha}}
+                return dict(self.state)
+            def start_candidate(self,expected_generation=None):self.state["phase"]="STARTING";self.state["processIdentity"]={"pid":123};return object()
+            def authoritative_probe(self,expected_generation=None,timeout=0):
+                self.state={"schema":2,"phase":"ROLLED_BACK","generation":3,"processIdentity":None,"running":current}
+                raise ActivationError("deliberate runtime identity mismatch")
+            def known_good_pointer(self):return self.pointer
+        manager=Manager()
+        proof_manifest=self.runtime.run_root/"fl1-proof-rollback-proof-manifest.json"
+        evidence=run_rollback_proof(
+            run_id="fl1-proof",current_identity=current,activation_root=self.runtime.activation_root,
+            workspace_root=self.runtime.workspace_root,protected_state=self.runtime.workspace_state,
+            git_executable=git,manifest_path=proof_manifest,activation_manager_factory=lambda *_:manager,
+        )
+        self.assertEqual(evidence["status"],"ROLLBACK_PROVEN");self.assertEqual(evidence["known_good_revision"],base)
+        self.assertNotEqual(evidence["broken_candidate_sha"],base);self.assertEqual(evidence["changed_files"],["forgeboss/control/daemon.py"])
+        self.assertEqual(evidence["final_phase"],"ROLLED_BACK");self.assertTrue(evidence["candidate_process_dead"]);self.assertTrue(evidence["workspace_cleaned"])
+        self.assertFalse((self.runtime.workspace_root/"fl1-proof-rollback-drill").exists())
+
+    def test_runtime_persists_rollback_proof_and_returns_it_idempotently(self):
+        from forgeboss.control.receipts import receipt_digest
+        run_id="fl1-proof-runtime"
+        current={"verified":True,"revision":"b"*40,"codeRoot":str(self.source.resolve()),"manifestPath":str((self.source/"manifest.json").resolve()),
+                 "manifestSha256":"c"*64,"identitySha256":"d"*64,"treeSha256":"e"*64}
+        (self.source/"manifest.json").write_text("{}",encoding="utf-8")
+        activation={"status":"ACTIVATED_KNOWN_GOOD","successor_sha":"b"*40,"manifest_sha256":"c"*64}
+        self.runtime._run_path(run_id).write_text(json.dumps({"schema":1,"phase":"SUCCESSOR_ACTIVATED","activation":activation}),encoding="utf-8")
+        self.runtime._verified_running_identity=lambda:dict(current)
+        core={"schema":1,"status":"ROLLBACK_PROVEN","run_id":run_id,"known_good_revision":"b"*40,"broken_candidate_sha":"f"*40,
+              "changed_files":["forgeboss/control/daemon.py"],"manifest_sha256":"1"*64,"activation_generation":3,
+              "final_phase":"ROLLED_BACK","pointer_revision":"b"*40,"expected_probe_failure":"expected",
+              "candidate_process_dead":True,"workspace_cleaned":True}
+        calls=[]
+        self.runtime.rollback_proof_fn=lambda **kw:(calls.append(kw) or {**core,"evidence_digest":receipt_digest(core)})
+        first=self.runtime.prove_activation_rollback({"runId":run_id});second=self.runtime.prove_activation_rollback({"runId":run_id})
+        self.assertEqual(first,second);self.assertEqual(len(calls),1)
+        saved=self.runtime.status({"runId":run_id});self.assertEqual(saved["rollbackProof"]["status"],"ROLLBACK_PROVEN")
+
     def test_current_known_good_requires_ready_activation_and_returns_verified_source(self):
         identity={"verified":True,"revision":"b"*40,"codeRoot":str(self.source.resolve()),
                   "manifestPath":str((self.source/"manifest.json").resolve()),"manifestSha256":"c"*64,
@@ -339,6 +406,11 @@ class RuntimeTests(unittest.TestCase):
         out=self.runtime.current_known_good({})
         self.assertEqual(out["phase"],"READY");self.assertEqual(out["generation"],2)
         self.assertEqual(out["revision"],"b"*40);self.assertEqual(out["code_root"],str(self.source.resolve()))
+        class RolledManager:
+            def recover(self):return {"schema":2}
+            def status(self):return {"schema":2,"phase":"ROLLED_BACK","generation":3,"running":{"revision":"b"*40,"manifestSha256":"c"*64}}
+        self.runtime.activation_manager_factory=lambda *_:RolledManager()
+        rolled=self.runtime.current_known_good({});self.assertEqual(rolled["phase"],"ROLLED_BACK_READY")
         with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.current_known_good({"extra":True})
         self.assertEqual(cm.exception.code,"SELF_BUILD_PAYLOAD_INVALID")
 
