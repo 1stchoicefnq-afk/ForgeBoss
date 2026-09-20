@@ -50,7 +50,7 @@ def _probe_env()->dict[str,str]:
     return out
 
 
-def write_activation_ready(path,*,pid:int,nonce:str,generation:int,host:str,port:int,identity:dict)->dict:
+def write_activation_ready(path,*,pid:int,nonce:str,generation:int,host:str,port:int,identity:dict,state_root:str)->dict:
     target=Path(path)
     if not target.is_absolute():
         raise ActivationProbeError("activation ready path must be absolute")
@@ -68,7 +68,10 @@ def write_activation_ready(path,*,pid:int,nonce:str,generation:int,host:str,port
         raise ActivationProbeError("activation ready endpoint invalid")
     if not isinstance(identity,dict):
         raise ActivationProbeError("activation ready identity invalid")
-    record={"schema":1,"pid":pid,"nonce":nonce,"generation":generation,"host":host,"port":port,"identity":dict(identity)}
+    state=Path(state_root)
+    if not state.is_absolute():raise ActivationProbeError("activation ready state root invalid")
+    state_text=str(state.resolve(strict=False))
+    record={"schema":1,"pid":pid,"nonce":nonce,"generation":generation,"host":host,"port":port,"identity":dict(identity),"stateRoot":state_text}
     raw=(json.dumps(record,sort_keys=True,separators=(",",":"),ensure_ascii=False)+"\n").encode("utf-8")
     flags=os.O_CREAT|os.O_EXCL|os.O_WRONLY|getattr(os,"O_NOFOLLOW",0)
     try:fd=os.open(str(target),flags,0o600)
@@ -93,7 +96,7 @@ def read_activation_ready(path,*,timeout:float=10.0)->tuple[dict,str]:
             if not raw or len(raw)>64*1024:
                 raise ActivationProbeError("activation ready file size invalid")
             value=json.loads(raw.decode("utf-8"))
-            if not isinstance(value,dict) or set(value)!={"schema","pid","nonce","generation","host","port","identity"}:
+            if not isinstance(value,dict) or set(value)!={"schema","pid","nonce","generation","host","port","identity","stateRoot"}:
                 raise ActivationProbeError("activation ready file shape invalid")
             if value.get("schema")!=1:
                 raise ActivationProbeError("activation ready file schema invalid")
@@ -109,6 +112,10 @@ def read_activation_ready(path,*,timeout:float=10.0)->tuple[dict,str]:
                 raise ActivationProbeError("activation ready port invalid")
             if not isinstance(value.get("identity"),dict):
                 raise ActivationProbeError("activation ready identity invalid")
+            state=Path(str(value.get("stateRoot") or ""))
+            if not state.is_absolute():
+                raise ActivationProbeError("activation ready state root invalid")
+            value["stateRoot"]=str(state.resolve(strict=False))
             return value,hashlib.sha256(raw).hexdigest()
         except FileNotFoundError as ex:
             last_error=ex
@@ -144,11 +151,19 @@ def _send(f,method:str,params:dict)->dict:
     return _recv_frame(f,rid)
 
 
-def probe_control_endpoint(root,host:str,port:int,candidate_identity:dict,*,timeout:float=5.0)->dict:
+def probe_control_endpoint(root,host:str,port:int,candidate_identity:dict,*,state_root,timeout:float=5.0)->dict:
     root=Path(root).resolve(strict=True)
     if host!="127.0.0.1" or isinstance(port,bool) or not isinstance(port,int) or not 1<=port<=65535:
         raise ActivationProbeError("candidate control endpoint invalid")
-    secret_path=root/"state"/"forgebossd"/"daemon-secret.bin"
+    state=Path(state_root)
+    if not state.is_absolute():raise ActivationProbeError("candidate daemon state root invalid")
+    state=state.resolve(strict=True)
+    try:
+        if os.path.normcase(os.path.commonpath([str(root),str(state)]))==os.path.normcase(str(root)):
+            raise ActivationProbeError("candidate daemon state root must remain outside code root")
+    except ValueError:
+        pass
+    secret_path=state/"daemon-secret.bin"
     if secret_path.is_symlink():
         raise ActivationProbeError("candidate daemon secret path is a link")
     try:secret=secret_path.read_bytes()
@@ -171,6 +186,10 @@ def probe_control_endpoint(root,host:str,port:int,candidate_identity:dict,*,time
         health=_send(f,"health",{})
         if health.get("status")!="HEALTHY":
             raise ActivationProbeError("candidate health is not HEALTHY")
+        try:db_parent=Path(str(health.get("db") or "")).resolve(strict=False).parent
+        except Exception as ex:raise ActivationProbeError("candidate health DB path invalid") from ex
+        if db_parent!=state:
+            raise ActivationProbeError("candidate health state root mismatch")
         identity=health.get("identity")
         if not isinstance(identity,dict):
             raise ActivationProbeError("candidate health identity missing")
@@ -187,7 +206,7 @@ def probe_control_endpoint(root,host:str,port:int,candidate_identity:dict,*,time
             "connected":True,"healthy":True,"control":True,"multiAgentCapability":True,
             "capabilities":sorted(str(x) for x in capabilities),
             "identity":identity,
-            "snapshotDigest":_canonical_digest(snapshot),
+            "snapshotDigest":_canonical_digest(snapshot),"stateRoot":str(state),
         }
     finally:
         try:f.close()

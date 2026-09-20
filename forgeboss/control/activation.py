@@ -399,7 +399,7 @@ class ActivationManager:
             prior = (pointer or {}).get("current") or self.running_identity
             if prior.get("revision") != self.running_identity.get("revision"):
                 raise ActivationError("running identity is not current known-good authority")
-            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "candidate": candidate, "probe": None, "probeEvidence": None, "activationHealth": None, "pid": None, "processIdentity": None, "activationNonce": None, "readyPath": None, "reason": None, "updatedAt": time.time()}
+            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "candidate": candidate, "probe": None, "probeEvidence": None, "activationHealth": None, "pid": None, "processIdentity": None, "activationNonce": None, "readyPath": None, "candidateStateRoot": None, "reason": None, "updatedAt": time.time()}
             _atomic_json(self.state_path, state)
             return state
 
@@ -421,13 +421,16 @@ class ActivationManager:
                 raise ActivationError("candidate entrypoint escapes candidate root") from ex
             nonce = secrets.token_hex(32)
             ready_path=(self.state_dir/f"activation-ready-{state['generation']}.json").resolve()
+            candidate_state_root=(self.state_dir/f"candidate-runtime-{state['generation']}").resolve()
             if ready_path.exists() or ready_path.is_symlink():
                 raise ActivationError("activation ready file already exists")
+            if candidate_state_root.exists() or candidate_state_root.is_symlink():
+                raise ActivationError("activation candidate state root already exists")
             extras=list(extra_args or [])
             denied={"--host","--port","--activation-ready-file"}
             if any(str(x) in denied for x in extras):
                 raise ActivationError("activation launch network/readiness arguments are controller-owned")
-            state.update({"phase": "STARTING", "activationNonce": nonce, "readyPath": str(ready_path), "updatedAt": time.time()})
+            state.update({"phase": "STARTING", "activationNonce": nonce, "readyPath": str(ready_path), "candidateStateRoot": str(candidate_state_root), "updatedAt": time.time()})
             _atomic_json(self.state_path, state)
             env = os.environ.copy()
             env.update(extra_env or {})
@@ -435,7 +438,7 @@ class ActivationManager:
                 upper=key.upper()
                 if upper in {"PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","PYTHONINSPECT","GH_TOKEN","GITHUB_TOKEN","GITHUB_PAT","OPENAI_API_KEY","LLM_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GEMINI_API_KEY"} or upper.startswith("FORGEBOSS_AUTHORITY_") or upper.startswith("GITHUB_") or upper.startswith("GH_") or upper.startswith("GIT_"):
                     env.pop(key,None)
-            env.update({"FORGEBOSS_SELF_BUILD_MODE": "YES", "FORGEBOSS_ALLOW_PAID_EXECUTOR":"NO", "FORGEBOSS_WORKTREE_ROOT":str(root/"state"/"forgebossd"/"worktrees"), "FORGEBOSS_BUILD_MANIFEST": candidate["manifestPath"], "FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA": candidate["revision"], "FORGEBOSS_EXPECTED_MANIFEST_SHA256": candidate["manifestSha256"], "FORGEBOSS_ACTIVATION_NONCE": nonce, "FORGEBOSS_ACTIVATION_GENERATION": str(state["generation"])})
+            env.update({"FORGEBOSS_SELF_BUILD_MODE": "YES", "FORGEBOSS_ALLOW_PAID_EXECUTOR":"NO", "FORGEBOSS_DAEMON_STATE_ROOT":str(candidate_state_root), "FORGEBOSS_WORKTREE_ROOT":str(candidate_state_root/"worktrees"), "FORGEBOSS_BUILD_MANIFEST": candidate["manifestPath"], "FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA": candidate["revision"], "FORGEBOSS_EXPECTED_MANIFEST_SHA256": candidate["manifestSha256"], "FORGEBOSS_ACTIVATION_NONCE": nonce, "FORGEBOSS_ACTIVATION_GENERATION": str(state["generation"])})
             argv=_candidate_launch_command(root,entry,candidate["entrypoint"],["--host","127.0.0.1","--port","0","--activation-ready-file",str(ready_path),*extras])
             try:
                 proc = subprocess.Popen(argv, cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CNW)
@@ -478,6 +481,8 @@ class ActivationManager:
             ready,ready_sha=read_activation_ready(ready_path,timeout=timeout)
             if ready.get("generation")!=generation or ready.get("nonce")!=state.get("activationNonce"):
                 raise ActivationError("activation ready authority binding mismatch")
+            if ready.get("stateRoot")!=state.get("candidateStateRoot"):
+                raise ActivationError("activation ready state-root binding mismatch")
             process=state.get("processIdentity") or {}
             if int(ready.get("pid") or 0)!=int(process.get("pid") or -1):
                 raise ActivationError("activation ready pid binding mismatch")
@@ -487,7 +492,7 @@ class ActivationManager:
             for key in ("revision","manifestSha256","treeSha256","identitySha256"):
                 if ready_identity.get(key)!=candidate.get(key):
                     raise ActivationError("activation ready identity mismatch: "+key)
-            control=probe_control_endpoint(root,ready["host"],ready["port"],candidate,timeout=min(float(timeout),5.0))
+            control=probe_control_endpoint(root,ready["host"],ready["port"],candidate,state_root=ready["stateRoot"],timeout=min(float(timeout),5.0))
             tests=run_activation_core_tests(root)
             if tests.get("selftests") is not True or tests.get("multiAgent") is not True:
                 raise ActivationError("candidate activation core tests failed")
@@ -661,7 +666,9 @@ class ActivationManager:
             ready,ready_sha=read_activation_ready(ready_path,timeout=timeout)
             if ready.get("generation")!=generation or ready.get("nonce")!=state.get("activationNonce") or int(ready.get("pid") or 0)!=int(process.get("pid") or -1):
                 raise ActivationError("promoted activation readiness binding mismatch")
-            control=probe_control_endpoint(Path(candidate["codeRoot"]),ready["host"],ready["port"],candidate,timeout=timeout)
+            if ready.get("stateRoot")!=state.get("candidateStateRoot"):
+                raise ActivationError("promoted activation state-root binding mismatch")
+            control=probe_control_endpoint(Path(candidate["codeRoot"]),ready["host"],ready["port"],candidate,state_root=ready["stateRoot"],timeout=timeout)
             verify_build_manifest(candidate["manifestPath"],candidate["codeRoot"],candidate["revision"],candidate["manifestSha256"])
             evidence={"schema":1,"generation":generation,"readySha256":ready_sha,"control":control,"identity":ready.get("identity"),"processIdentity":process}
             return self.activation_health(True,expected_generation=generation,_authority=self._health_authority,evidence=evidence)

@@ -3,7 +3,7 @@ import argparse, hashlib, json, os, socketserver, threading, time, uuid
 from pathlib import Path
 from .store import ControlStore,BudgetReservationError
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
-from .envelope import secret_file,sign_envelope,verify_envelope,canonical
+from .envelope import daemon_state_root,secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from .known_good import runtime_identity_from_env
@@ -11,7 +11,7 @@ from .activation_probe import ActivationProbeError,write_activation_ready
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 
 ROOT=Path(__file__).resolve().parents[2]
-STATE=ROOT/"state"/"forgebossd"
+STATE=daemon_state_root(ROOT)
 DB=STATE/"forgeboss.db"
 HOST="127.0.0.1"
 PORT=18765
@@ -173,6 +173,7 @@ def main():
                 write_activation_ready(
                     ns.activation_ready_file,pid=os.getpid(),nonce=nonce,generation=generation,
                     host=str(srv.server_address[0]),port=int(srv.server_address[1]),identity=RUNTIME_IDENTITY,
+                    state_root=str(STATE),
                 )
             except ActivationProbeError as ex:raise SystemExit(str(ex)) from ex
         print(json.dumps({"forgebossd":"ready","host":ns.host,"port":int(srv.server_address[1]),"db":str(DB)}),flush=True)

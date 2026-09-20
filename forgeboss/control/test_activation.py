@@ -10,13 +10,26 @@ from unittest.mock import patch
 
 from forgeboss.control.activation import ActivationError, ActivationManager, _candidate_launch_command, _same_process, _terminate_posix_pidfd
 from forgeboss.control.activation_probe import ActivationProbeError,read_activation_ready,write_activation_ready
+from forgeboss.control.envelope import daemon_state_root
 
 
 class ActivationTests(unittest.TestCase):
+    def test_external_daemon_state_requires_self_build_and_must_be_outside_code_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);code=base/"code";code.mkdir();external=base/"external"
+            with patch.dict(os.environ,{"FORGEBOSS_DAEMON_STATE_ROOT":str(external)},clear=False):
+                os.environ.pop("FORGEBOSS_SELF_BUILD_MODE",None)
+                with self.assertRaisesRegex(RuntimeError,"only in self-build mode"):daemon_state_root(code)
+            with patch.dict(os.environ,{"FORGEBOSS_SELF_BUILD_MODE":"YES","FORGEBOSS_DAEMON_STATE_ROOT":str(external)},clear=False):
+                self.assertEqual(daemon_state_root(code),external.resolve(strict=False))
+            inside=code/"state-external"
+            with patch.dict(os.environ,{"FORGEBOSS_SELF_BUILD_MODE":"YES","FORGEBOSS_DAEMON_STATE_ROOT":str(inside)},clear=False):
+                with self.assertRaisesRegex(RuntimeError,"outside code root"):daemon_state_root(code)
+
     def test_activation_ready_protocol_is_exact_exclusive_and_round_trips(self):
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/"ready.json";identity={"revision":"a"*40,"manifestSha256":"b"*64,"treeSha256":"c"*64,"identitySha256":"d"*64}
-            written=write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity)
+            written=write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity,state_root=str(Path(td)/"runtime"))
             observed,digest=read_activation_ready(path,timeout=0.2)
             self.assertEqual(observed,written);self.assertEqual(len(digest),64)
             with self.assertRaises(ActivationProbeError):write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity)
@@ -91,10 +104,10 @@ class ActivationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base)
             saved=manager.status();process={"pid":44,"startToken":"tok","exe":str(Path(__import__("sys").executable).resolve())}
-            saved.update({"phase":"STARTING","activationNonce":"n"*64,"readyPath":str(base/"ready.json"),"processIdentity":process,"pid":44})
+            saved.update({"phase":"STARTING","activationNonce":"n"*64,"readyPath":str(base/"ready.json"),"candidateStateRoot":str(base/"candidate-runtime"),"processIdentity":process,"pid":44})
             manager.state_path.write_text(json.dumps(saved),encoding="utf-8")
             candidate=saved["candidate"]
-            ready={"schema":1,"pid":44,"nonce":"n"*64,"generation":saved["generation"],"host":"127.0.0.1","port":32123,"identity":candidate}
+            ready={"schema":1,"pid":44,"nonce":"n"*64,"generation":saved["generation"],"host":"127.0.0.1","port":32123,"identity":candidate,"stateRoot":str(base/"candidate-runtime")}
             control={"connected":True,"healthy":True,"control":True,"multiAgentCapability":True,"capabilities":["smart-parallel"],"identity":candidate,"snapshotDigest":"a"*64}
             tests={"rows":[{"label":"selftests"},{"label":"multiAgent"}],"selftests":True,"multiAgent":True}
             with patch("forgeboss.control.activation.read_activation_ready",return_value=(ready,"b"*64)),patch("forgeboss.control.activation.probe_control_endpoint",return_value=control),patch("forgeboss.control.activation.run_activation_core_tests",return_value=tests),patch("forgeboss.control.activation.process_identity",return_value=process),patch("forgeboss.control.activation.verify_build_manifest",return_value=candidate):
