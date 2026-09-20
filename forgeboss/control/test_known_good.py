@@ -64,6 +64,22 @@ class KnownGoodIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(IdentityError,"checkout HEAD"):verify_build_manifest(manifest,root)
         finally:td.cleanup()
 
+    def test_hostile_git_environment_cannot_redirect_authoritative_checkout(self):
+        td,root,manifest,revision=self._fixture()
+        try:
+            hostile=Path(td.name)/"hostile";hostile.mkdir()
+            subprocess.run(["git","init",str(hostile)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            (hostile/"x.txt").write_text("evil\n",encoding="utf-8")
+            subprocess.run(["git","-C",str(hostile),"config","user.email","test@example.invalid"],check=True)
+            subprocess.run(["git","-C",str(hostile),"config","user.name","Evil"],check=True)
+            subprocess.run(["git","-C",str(hostile),"add","."],check=True)
+            subprocess.run(["git","-C",str(hostile),"commit","-m","evil"],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            env={"GIT_DIR":str(hostile/".git"),"GIT_WORK_TREE":str(hostile),"GIT_CONFIG_GLOBAL":str(hostile/"fake-global")}
+            with patch.dict(os.environ,env,clear=False):
+                result=verify_build_manifest(manifest,root,revision,_sha(manifest))
+            self.assertEqual(result["revision"],revision);self.assertEqual(result["fileCount"],2)
+        finally:td.cleanup()
+
     def test_self_build_requires_verified_expected_identity(self):
         td,root,manifest,revision=self._fixture()
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -13,8 +14,13 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from .known_good import IdentityError, verify_build_manifest
+from .activation_probe import ActivationProbeError,probe_control_endpoint,read_activation_ready,run_activation_core_tests
 
 CNW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _canonical_digest(value)->str:
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
 
 _ENTRY_COMPONENT = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ACTIVATION_BOOTSTRAP = (
@@ -333,6 +339,8 @@ class ActivationManager:
         self.pointer_path = self.state_dir / "known-good.json"
         self.lock_path = self.state_dir / "activation.lock"
         self.running_identity = dict(running_identity or {})
+        self._probe_authority = object()
+        self._health_authority = object()
 
     def status(self):
         value = _read_json(self.state_path, "activation state")
@@ -391,7 +399,7 @@ class ActivationManager:
             prior = (pointer or {}).get("current") or self.running_identity
             if prior.get("revision") != self.running_identity.get("revision"):
                 raise ActivationError("running identity is not current known-good authority")
-            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "candidate": candidate, "probe": None, "pid": None, "processIdentity": None, "activationNonce": None, "reason": None, "updatedAt": time.time()}
+            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "candidate": candidate, "probe": None, "probeEvidence": None, "activationHealth": None, "pid": None, "processIdentity": None, "activationNonce": None, "readyPath": None, "reason": None, "updatedAt": time.time()}
             _atomic_json(self.state_path, state)
             return state
 
@@ -412,16 +420,23 @@ class ActivationManager:
             except ValueError as ex:
                 raise ActivationError("candidate entrypoint escapes candidate root") from ex
             nonce = secrets.token_hex(32)
-            state.update({"phase": "STARTING", "activationNonce": nonce, "updatedAt": time.time()})
+            ready_path=(self.state_dir/f"activation-ready-{state['generation']}.json").resolve()
+            if ready_path.exists() or ready_path.is_symlink():
+                raise ActivationError("activation ready file already exists")
+            extras=list(extra_args or [])
+            denied={"--host","--port","--activation-ready-file"}
+            if any(str(x) in denied for x in extras):
+                raise ActivationError("activation launch network/readiness arguments are controller-owned")
+            state.update({"phase": "STARTING", "activationNonce": nonce, "readyPath": str(ready_path), "updatedAt": time.time()})
             _atomic_json(self.state_path, state)
             env = os.environ.copy()
             env.update(extra_env or {})
             for key in list(env):
                 upper=key.upper()
-                if upper in {"PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","PYTHONINSPECT","GH_TOKEN","GITHUB_TOKEN","GITHUB_PAT"} or upper.startswith("FORGEBOSS_AUTHORITY_"):
+                if upper in {"PYTHONPATH","PYTHONHOME","PYTHONSTARTUP","PYTHONINSPECT","GH_TOKEN","GITHUB_TOKEN","GITHUB_PAT","OPENAI_API_KEY","LLM_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GEMINI_API_KEY"} or upper.startswith("FORGEBOSS_AUTHORITY_") or upper.startswith("GITHUB_") or upper.startswith("GH_") or upper.startswith("GIT_"):
                     env.pop(key,None)
-            env.update({"FORGEBOSS_SELF_BUILD_MODE": "YES", "FORGEBOSS_BUILD_MANIFEST": candidate["manifestPath"], "FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA": candidate["revision"], "FORGEBOSS_EXPECTED_MANIFEST_SHA256": candidate["manifestSha256"], "FORGEBOSS_ACTIVATION_NONCE": nonce, "FORGEBOSS_ACTIVATION_GENERATION": str(state["generation"])})
-            argv=_candidate_launch_command(root,entry,candidate["entrypoint"],extra_args)
+            env.update({"FORGEBOSS_SELF_BUILD_MODE": "YES", "FORGEBOSS_ALLOW_PAID_EXECUTOR":"NO", "FORGEBOSS_WORKTREE_ROOT":str(root/"state"/"forgebossd"/"worktrees"), "FORGEBOSS_BUILD_MANIFEST": candidate["manifestPath"], "FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA": candidate["revision"], "FORGEBOSS_EXPECTED_MANIFEST_SHA256": candidate["manifestSha256"], "FORGEBOSS_ACTIVATION_NONCE": nonce, "FORGEBOSS_ACTIVATION_GENERATION": str(state["generation"])})
+            argv=_candidate_launch_command(root,entry,candidate["entrypoint"],["--host","127.0.0.1","--port","0","--activation-ready-file",str(ready_path),*extras])
             try:
                 proc = subprocess.Popen(argv, cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CNW)
             except Exception as ex:
@@ -453,7 +468,58 @@ class ActivationManager:
             _atomic_json(self.state_path, state)
             return state
 
-    def record_probe(self, result, *, expected_generation=None):
+    def authoritative_probe(self, *, expected_generation=None, timeout:float=15.0):
+        state=self.begin_probe(expected_generation=expected_generation)
+        generation=state["generation"]
+        candidate=state.get("candidate") or {}
+        root=Path(candidate.get("codeRoot") or "").resolve(strict=True)
+        ready_path=Path(state.get("readyPath") or "")
+        try:
+            ready,ready_sha=read_activation_ready(ready_path,timeout=timeout)
+            if ready.get("generation")!=generation or ready.get("nonce")!=state.get("activationNonce"):
+                raise ActivationError("activation ready authority binding mismatch")
+            process=state.get("processIdentity") or {}
+            if int(ready.get("pid") or 0)!=int(process.get("pid") or -1):
+                raise ActivationError("activation ready pid binding mismatch")
+            if not _same_process(process,process_identity(int(process["pid"]))):
+                raise ActivationError("candidate process identity changed before probe")
+            ready_identity=ready.get("identity") or {}
+            for key in ("revision","manifestSha256","treeSha256","identitySha256"):
+                if ready_identity.get(key)!=candidate.get(key):
+                    raise ActivationError("activation ready identity mismatch: "+key)
+            control=probe_control_endpoint(root,ready["host"],ready["port"],candidate,timeout=min(float(timeout),5.0))
+            tests=run_activation_core_tests(root)
+            if tests.get("selftests") is not True or tests.get("multiAgent") is not True:
+                raise ActivationError("candidate activation core tests failed")
+            verify_build_manifest(candidate["manifestPath"],root,candidate["revision"],candidate["manifestSha256"])
+            if not _same_process(process,process_identity(int(process["pid"]))):
+                raise ActivationError("candidate process identity changed during probe")
+            evidence={
+                "schema":1,"generation":generation,"readySha256":ready_sha,
+                "endpoint":{"host":ready["host"],"port":ready["port"]},
+                "control":control,"tests":tests,"identity":ready_identity,
+                "processIdentity":process,
+            }
+            result={
+                "startup":True,"health":control.get("healthy") is True,
+                "control":control.get("control") is True,
+                "selftests":tests.get("selftests") is True,
+                "multiAgent":tests.get("multiAgent") is True and control.get("multiAgentCapability") is True,
+                "identity":ready_identity,"evidence":evidence,
+                "evidenceSha256":_canonical_digest(evidence),
+            }
+            return self.record_probe(result,expected_generation=generation,_authority=self._probe_authority)
+        except Exception as ex:
+            try:self.rollback("candidate authoritative probe failed",expected_generation=generation)
+            except Exception as rollback_ex:
+                raise ActivationError("candidate authoritative probe failed and rollback could not be proven") from rollback_ex
+            if isinstance(ex,ActivationError):raise
+            if isinstance(ex,ActivationProbeError):raise ActivationError(str(ex)) from ex
+            raise ActivationError("candidate authoritative probe failed") from ex
+
+    def record_probe(self, result, *, expected_generation=None, _authority=None):
+        if _authority is not self._probe_authority:
+            raise ActivationError("caller-supplied activation probe denied")
         with _state_lock(self.lock_path):
             state = self.status()
             self._check_generation(state, expected_generation)
@@ -464,6 +530,10 @@ class ActivationManager:
             candidate = state.get("candidate") or {}
             required = ("startup", "health", "control", "selftests", "multiAgent")
             identity = result.get("identity") or {}
+            evidence=result.get("evidence")
+            evidence_digest=str(result.get("evidenceSha256") or "").lower()
+            if not isinstance(evidence,dict) or evidence_digest!=_canonical_digest(evidence):
+                raise ActivationError("authoritative probe evidence digest mismatch")
             healthy = all(result.get(key) is True for key in required)
             bound = identity.get("revision") == candidate.get("revision") and identity.get("manifestSha256") == candidate.get("manifestSha256") and identity.get("treeSha256") == candidate.get("treeSha256") and identity.get("identitySha256") == candidate.get("identitySha256")
             if state.get("processIdentity"):
@@ -472,6 +542,8 @@ class ActivationManager:
                 state["phase"] = "PROBED"
                 state["probe"] = {key: True for key in required}
                 state["probe"]["identity"] = identity
+                state["probe"]["evidenceSha256"]=evidence_digest
+                state["probeEvidence"]=evidence
                 state["updatedAt"] = time.time()
                 _atomic_json(self.state_path, state)
                 return state
@@ -575,9 +647,39 @@ class ActivationManager:
             return self.rollback("recovered incomplete activation", expected_generation=generation)
         return pointer
 
-    def activation_health(self, healthy: bool, *, expected_generation=None):
+    def authoritative_health_check(self, *, expected_generation=None, timeout:float=5.0):
+        with _state_lock(self.lock_path):
+            state=self.status()
+            self._check_generation(state,expected_generation)
+            if state.get("phase")!="PROMOTED":
+                raise ActivationError("activation health is only valid after promotion")
+            generation=state["generation"];candidate=state.get("candidate") or {}
+            process=state.get("processIdentity") or {};ready_path=Path(state.get("readyPath") or "")
+        try:
+            if not _same_process(process,process_identity(int(process["pid"]))):
+                raise ActivationError("promoted candidate process identity is no longer live")
+            ready,ready_sha=read_activation_ready(ready_path,timeout=timeout)
+            if ready.get("generation")!=generation or ready.get("nonce")!=state.get("activationNonce") or int(ready.get("pid") or 0)!=int(process.get("pid") or -1):
+                raise ActivationError("promoted activation readiness binding mismatch")
+            control=probe_control_endpoint(Path(candidate["codeRoot"]),ready["host"],ready["port"],candidate,timeout=timeout)
+            verify_build_manifest(candidate["manifestPath"],candidate["codeRoot"],candidate["revision"],candidate["manifestSha256"])
+            evidence={"schema":1,"generation":generation,"readySha256":ready_sha,"control":control,"identity":ready.get("identity"),"processIdentity":process}
+            return self.activation_health(True,expected_generation=generation,_authority=self._health_authority,evidence=evidence)
+        except Exception as ex:
+            try:self.rollback("promoted candidate failed authoritative activation health",expected_generation=generation)
+            except Exception as rollback_ex:
+                raise ActivationError("promoted health failed and rollback could not be proven") from rollback_ex
+            if isinstance(ex,ActivationError):raise
+            if isinstance(ex,ActivationProbeError):raise ActivationError(str(ex)) from ex
+            raise ActivationError("promoted candidate authoritative health failed") from ex
+
+    def activation_health(self, healthy: bool, *, expected_generation=None, _authority=None, evidence=None):
+        if _authority is not self._health_authority:
+            raise ActivationError("caller-supplied activation health denied")
         if not healthy:
             return self.rollback("promoted candidate failed activation health window", expected_generation=expected_generation)
+        if not isinstance(evidence,dict):
+            raise ActivationError("activation health evidence missing")
         with _state_lock(self.lock_path):
             state = self.status()
             self._check_generation(state, expected_generation)
@@ -586,4 +688,10 @@ class ActivationManager:
             pointer = self.known_good_pointer()
             if not pointer or (pointer.get("current") or {}).get("revision") != (state.get("candidate") or {}).get("revision"):
                 raise ActivationError("activation health pointer mismatch")
+            if state.get("processIdentity") and not _same_process(state["processIdentity"],process_identity(int(state["processIdentity"]["pid"]))):
+                raise ActivationError("activation health process identity mismatch")
+            state["activationHealth"]={**evidence,"evidenceSha256":_canonical_digest(evidence)}
+            state["updatedAt"]=time.time()
+            _atomic_json(self.state_path,state)
             return pointer
+

@@ -7,6 +7,7 @@ from .envelope import secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from .known_good import runtime_identity_from_env
+from .activation_probe import ActivationProbeError,write_activation_ready
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -158,12 +159,23 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--host",default=HOST)
     ap.add_argument("--port",type=int,default=PORT)
+    ap.add_argument("--activation-ready-file")
     ns=ap.parse_args()
     if ns.host not in ("127.0.0.1","localhost","::1"):
         raise SystemExit("forgebossd refuses non-loopback bind")
     STATE.mkdir(parents=True,exist_ok=True)
     with Server((ns.host,ns.port),Handler) as srv:
-        print(json.dumps({"forgebossd":"ready","host":ns.host,"port":ns.port,"db":str(DB)}),flush=True)
+        if ns.activation_ready_file:
+            nonce=str(os.environ.get("FORGEBOSS_ACTIVATION_NONCE") or "")
+            try:generation=int(os.environ.get("FORGEBOSS_ACTIVATION_GENERATION") or "0")
+            except Exception as ex:raise SystemExit("activation generation invalid") from ex
+            try:
+                write_activation_ready(
+                    ns.activation_ready_file,pid=os.getpid(),nonce=nonce,generation=generation,
+                    host=str(srv.server_address[0]),port=int(srv.server_address[1]),identity=RUNTIME_IDENTITY,
+                )
+            except ActivationProbeError as ex:raise SystemExit(str(ex)) from ex
+        print(json.dumps({"forgebossd":"ready","host":ns.host,"port":int(srv.server_address[1]),"db":str(DB)}),flush=True)
         srv.serve_forever()
 
 if __name__=="__main__":main()
