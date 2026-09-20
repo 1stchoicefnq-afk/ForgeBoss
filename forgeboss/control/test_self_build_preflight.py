@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forgeboss.control.self_build_preflight import concise_blockers, self_build_preflight, self_build_session_plan
-from forgeboss.control.self_build_session_evidence import evaluate_p0_session
+from forgeboss.control.self_build_session_evidence import canonical_digest, evaluate_p0_session
 
 
 class SelfBuildPreflightTests(unittest.TestCase):
@@ -66,23 +66,36 @@ class SelfBuildPreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):self_build_session_plan(1.99)
         with self.assertRaises(ValueError):self_build_session_plan(float("nan"))
 
+    def _authority(self,operation,result):
+        receipt={"schema":3,"operation":operation,"requestId":"r","peerId":"controller-a","peerPrincipal":"fixture",
+                 "repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":1,"requestDigest":"a"*64,
+                 "resultDigest":canonical_digest(result),"servicePrincipal":"fixture-service"}
+        return {"receipt":receipt,"receiptDigest":canonical_digest(receipt),"receiptPublicKeyId":"b"*64,"receiptSignature":"fixture-signature"}
+
     def _p0_evidence(self):
         runs=[];base="a"*40
         for i,succ in enumerate(("b"*40,"c"*40,"d"*40),1):
+            activation={"status":"ACTIVATED_KNOWN_GOOD","successor_sha":succ,"generation":i+1,
+                        "probe_evidence_sha256":str(i)*64,"health_evidence_sha256":str(i+3)*64}
             runs.append({
                 "cycle_index":i,"run_id":f"fl1-c{i}","base_revision":base,"successor_sha":succ,
-                "phase":"SUCCESSOR_ACTIVATED","error":None,
-                "activation":{"status":"ACTIVATED_KNOWN_GOOD","successor_sha":succ,"generation":i+1,
-                              "probe_evidence_sha256":str(i)*64,"health_evidence_sha256":str(i+3)*64},
+                "phase":"SUCCESSOR_ACTIVATED","error":None,"activation":activation,
+                "activation_authority":self._authority("activate_self_build_successor",activation),
             });base=succ
-        proof={"status":"ROLLBACK_PROVEN","run_id":"fl1-c1","known_good_revision":"b"*40,
-               "pointer_revision":"b"*40,"final_phase":"ROLLED_BACK","candidate_process_dead":True,
-               "workspace_cleaned":True,"broken_candidate_sha":"e"*40,"evidence_digest":"f"*64}
-        return {"schema":1,"session_id":"fl1s-proof","proof_mode":True,"cycle_target":3,"completed_cycles":3,
+        proof_core={"status":"ROLLBACK_PROVEN","run_id":"fl1-c1","known_good_revision":"b"*40,
+                    "pointer_revision":"b"*40,"final_phase":"ROLLED_BACK","candidate_process_dead":True,
+                    "workspace_cleaned":True,"broken_candidate_sha":"e"*40}
+        proof={**proof_core,"evidence_digest":canonical_digest(proof_core)}
+        final={"phase":"READY","generation":5,"revision":"d"*40,
+               "manifest_sha256":"a"*64,"identity_sha256":"b"*64}
+        record={"schema":1,"session_id":"fl1s-proof","proof_mode":True,"cycle_target":3,"completed_cycles":3,
                 "session_budget_usd":"6.00","reserved_cap_usd":"6.00","stop_requested":False,"error":None,
                 "runs":runs,"rollback_proof":proof,
-                "final_known_good":{"phase":"READY","generation":5,"revision":"d"*40,
-                                    "manifest_sha256":"a"*64,"identity_sha256":"b"*64}}
+                "rollback_proof_authority":self._authority("prove_self_build_activation_rollback",proof),
+                "final_known_good":final,
+                "final_known_good_authority":self._authority("self_build_current_known_good",final)}
+        record["session_record_digest"]=canonical_digest(record)
+        return record
 
     def test_p0_session_evaluator_requires_exact_three_cycle_lineage_and_rollback(self):
         evidence=self._p0_evidence();out=evaluate_p0_session(evidence)
@@ -91,11 +104,13 @@ class SelfBuildPreflightTests(unittest.TestCase):
 
     def test_p0_session_evaluator_fails_closed_on_lineage_stop_budget_or_rollback_gaps(self):
         cases=[]
-        x=self._p0_evidence();x["runs"][1]["base_revision"]="9"*40;cases.append(("cycle-2-lineage",x))
-        x=self._p0_evidence();x["stop_requested"]=True;cases.append(("stop-gate",x))
-        x=self._p0_evidence();x["reserved_cap_usd"]="4.00";cases.append(("budget-reservation",x))
-        x=self._p0_evidence();x["rollback_proof"]["candidate_process_dead"]=False;cases.append(("rollback-process",x))
-        x=self._p0_evidence();x["final_known_good"]["revision"]="9"*40;cases.append(("final-revision",x))
+        x=self._p0_evidence();x["runs"][1]["base_revision"]="9"*40;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-2-lineage",x))
+        x=self._p0_evidence();x["stop_requested"]=True;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("stop-gate",x))
+        x=self._p0_evidence();x["reserved_cap_usd"]="4.00";x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("budget-reservation",x))
+        x=self._p0_evidence();x["rollback_proof"]["candidate_process_dead"]=False;x["rollback_proof"]["evidence_digest"]=canonical_digest({k:v for k,v in x["rollback_proof"].items() if k!="evidence_digest"});x["rollback_proof_authority"]=self._authority("prove_self_build_activation_rollback",x["rollback_proof"]);x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("rollback-process",x))
+        x=self._p0_evidence();x["final_known_good"]["revision"]="9"*40;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("final-revision",x))
+        x=self._p0_evidence();x["runs"][0]["activation"]["successor_sha"]="9"*40;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-1-activation-sha",x))
+        x=self._p0_evidence();x["runs"][0]["activation_authority"]["receipt"]["resultDigest"]="0"*64;x["runs"][0]["activation_authority"]["receiptDigest"]=canonical_digest(x["runs"][0]["activation_authority"]["receipt"]);x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-1-activation-result-digest",x))
         for expected,evidence in cases:
             with self.subTest(expected=expected):
                 out=evaluate_p0_session(evidence);self.assertEqual(out["status"],"FAIL")

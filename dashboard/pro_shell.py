@@ -253,9 +253,11 @@ class Api:
             activation_raw=state.get("activation") or {}
             activation=activation_raw.get("result") if isinstance(activation_raw,dict) else {}
             if not isinstance(activation,dict):activation={}
+            activation_authority={k:v for k,v in activation_raw.items() if k!="result"} if isinstance(activation_raw,dict) and activation else None
             proof_raw=state.get("rollback_proof") or {}
             proof=proof_raw.get("result") if isinstance(proof_raw,dict) else {}
             if not isinstance(proof,dict):proof={}
+            proof_authority={k:v for k,v in proof_raw.items() if k!="result"} if isinstance(proof_raw,dict) and proof else None
             rows.append({
                 "cycle_index":int(state.get("cycle_index") or 0),
                 "run_id":run_id,
@@ -265,14 +267,16 @@ class Api:
                 "successor_manifest_sha256":str(successor.get("manifest_sha256") or "").lower(),
                 "phase":state.get("phase"),"error":state.get("error"),
                 "activation":activation or None,
+                "activation_authority":activation_authority,
                 "rollback_proof":proof or None,
+                "rollback_proof_authority":proof_authority,
             })
-        proof=None
+        proof=None;proof_authority=None
         proof_run=session.get("rollback_proof_run_id")
         if proof_run:
             for row in rows:
                 if row.get("run_id")==proof_run and isinstance(row.get("rollback_proof"),dict):
-                    proof=row["rollback_proof"];break
+                    proof=row["rollback_proof"];proof_authority=row.get("rollback_proof_authority");break
         record={
             "schema":1,"session_id":session_id,"proof_mode":bool(session.get("proof_mode")),
             "phase":session.get("phase"),"cycle_target":int(session.get("cycle_target") or 0),
@@ -281,8 +285,9 @@ class Api:
             "session_budget_usd":f"{float(session.get('session_budget_usd') or 0):.2f}",
             "reserved_cap_usd":f"{float(session.get('reserved_cap_usd') or 0):.2f}",
             "stop_requested":bool(session.get("stop_requested")),"error":session.get("error"),
-            "runs":rows,"rollback_proof":proof,
+            "runs":rows,"rollback_proof":proof,"rollback_proof_authority":proof_authority,
             "final_known_good":session.get("final_known_good"),
+            "final_known_good_authority":session.get("final_known_good_authority"),
         }
         core=dict(record);record["session_record_digest"]=canonical_digest(core)
         return record
@@ -294,19 +299,19 @@ class Api:
             if evaluate:
                 record["p0_evaluation"]=evaluate_p0_session(record)
             root=SELF_BUILD_EVIDENCE_ROOT
-        root.mkdir(parents=True,exist_ok=True)
-        target=root/f"{session_id}.json";tmp=root/f".{session_id}.{uuid.uuid4().hex}.tmp"
-        raw=json.dumps(record,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n"
-        with tmp.open("w",encoding="utf-8",newline="\n") as fh:
-            fh.write(raw);fh.flush();os.fsync(fh.fileno())
-        os.replace(tmp,target)
-        if os.name!="nt":
-            try:
-                fd=os.open(str(root),os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
-                try:os.fsync(fd)
-                finally:os.close(fd)
-            except OSError:pass
-        return {"path":str(target.resolve()),"record":record}
+            root.mkdir(parents=True,exist_ok=True)
+            target=root/f"{session_id}.json";tmp=root/f".{session_id}.{uuid.uuid4().hex}.tmp"
+            raw=json.dumps(record,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n"
+            with tmp.open("w",encoding="utf-8",newline="\n") as fh:
+                fh.write(raw);fh.flush();os.fsync(fh.fileno())
+            os.replace(tmp,target)
+            if os.name!="nt":
+                try:
+                    fd=os.open(str(root),os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
+                    try:os.fsync(fd)
+                    finally:os.close(fd)
+                except OSError:pass
+            return {"path":str(target.resolve()),"record":record}
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
@@ -513,10 +518,12 @@ class Api:
                 if complete:
                     final_response=client.self_build_current_known_good()
                     final_known_good=final_response.get("result") or {}
+                    final_authority={k:v for k,v in final_response.items() if k!="result"} if isinstance(final_response,dict) else None
                     with self._self_build_lock:
                         session=self._self_build_sessions.get(session_id)
                         if session:
                             session["final_known_good"]=final_known_good
+                            session["final_known_good_authority"]=final_authority
                             session["phase"]="COMPLETE"
                     saved=self._persist_self_build_session(session_id,evaluate=bool(session and session.get("proof_mode")))
                     evaluation=((saved or {}).get("record") or {}).get("p0_evaluation") if saved else None
@@ -713,7 +720,7 @@ class Api:
                         "session_budget_usd":float(plan["session_budget_usd"]),"reserved_cap_usd":0.0,
                         "current_run_id":None,"runs":[],"phase":"STARTING","stop_requested":False,"error":None,
                         "proof_mode":proof_mode,"rollback_proven":False,"rollback_proof_run_id":None,
-                        "final_known_good":None,"evidence_path":None,"p0_evaluation":None,
+                        "final_known_good":None,"final_known_good_authority":None,"evidence_path":None,"p0_evaluation":None,
                     }
                 self._persist_self_build_session(session_id)
                 first=self._launch_self_build_cycle(session_id,1)

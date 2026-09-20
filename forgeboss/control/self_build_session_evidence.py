@@ -37,6 +37,9 @@ def evaluate_p0_session(record:dict)->dict:
         return result
 
     require("schema",record.get("schema")==1,"session evidence schema must be 1")
+    supplied_record_digest=str(record.get("session_record_digest") or "").lower()
+    record_core={k:v for k,v in record.items() if k not in {"session_record_digest","p0_evaluation"}}
+    require("session-record-digest",bool(_HEX64.fullmatch(supplied_record_digest)) and supplied_record_digest==canonical_digest(record_core),"durable session record digest mismatch")
     session_id=str(record.get("session_id") or "")
     require("session-id",bool(session_id),"session id missing")
     require("proof-mode",record.get("proof_mode") is True,"P0 proof mode was not owner-authorized")
@@ -77,11 +80,19 @@ def evaluate_p0_session(record:dict)->dict:
         if previous_successor is not None:
             require(f"cycle-{expected}-lineage",base==previous_successor,f"base {base} does not equal prior accepted successor {previous_successor}")
         activation=row.get("activation")
+        authority=row.get("activation_authority")
         if not isinstance(activation,dict):
             require(f"cycle-{expected}-activation",False,"activation evidence missing")
         else:
             require(f"cycle-{expected}-activation-status",activation.get("status")=="ACTIVATED_KNOWN_GOOD",activation.get("status"))
             require(f"cycle-{expected}-activation-sha",str(activation.get("successor_sha") or "").lower()==successor,"activation successor binding mismatch")
+            receipt=(authority or {}).get("receipt") if isinstance(authority,dict) else None
+            require(f"cycle-{expected}-activation-receipt",isinstance(receipt,dict),"protected activation receipt missing")
+            if isinstance(receipt,dict):
+                require(f"cycle-{expected}-activation-operation",receipt.get("operation")=="activate_self_build_successor",receipt.get("operation"))
+                require(f"cycle-{expected}-activation-result-digest",str(receipt.get("resultDigest") or "").lower()==canonical_digest(activation),"protected activation result digest mismatch")
+                require(f"cycle-{expected}-activation-receipt-digest",str((authority or {}).get("receiptDigest") or "").lower()==canonical_digest(receipt),"protected activation receipt digest mismatch")
+                require(f"cycle-{expected}-activation-signature",bool((authority or {}).get("receiptSignature")),"protected activation signature missing")
             probe=str(activation.get("probe_evidence_sha256") or "").lower()
             health=str(activation.get("health_evidence_sha256") or "").lower()
             require(f"cycle-{expected}-probe",bool(_HEX64.fullmatch(probe)),"authoritative probe digest missing/invalid")
@@ -106,7 +117,17 @@ def evaluate_p0_session(record:dict)->dict:
         require("rollback-workspace",proof.get("workspace_cleaned") is True,"broken candidate workspace cleanup not proven")
         broken=str(proof.get("broken_candidate_sha") or "").lower()
         require("rollback-broken-sha",bool(_OID.fullmatch(broken)) and broken!=first_successor,"deliberately broken candidate identity invalid")
-        require("rollback-digest",bool(_HEX64.fullmatch(str(proof.get("evidence_digest") or "").lower())),"rollback evidence digest missing/invalid")
+        proof_digest=str(proof.get("evidence_digest") or "").lower()
+        proof_core={k:v for k,v in proof.items() if k!="evidence_digest"}
+        require("rollback-digest",bool(_HEX64.fullmatch(proof_digest)) and proof_digest==canonical_digest(proof_core),"rollback evidence digest missing/invalid")
+        proof_authority=record.get("rollback_proof_authority")
+        proof_receipt=(proof_authority or {}).get("receipt") if isinstance(proof_authority,dict) else None
+        require("rollback-authority-receipt",isinstance(proof_receipt,dict),"protected rollback receipt missing")
+        if isinstance(proof_receipt,dict):
+            require("rollback-authority-operation",proof_receipt.get("operation")=="prove_self_build_activation_rollback",proof_receipt.get("operation"))
+            require("rollback-authority-result-digest",str(proof_receipt.get("resultDigest") or "").lower()==canonical_digest(proof),"protected rollback result digest mismatch")
+            require("rollback-authority-receipt-digest",str((proof_authority or {}).get("receiptDigest") or "").lower()==canonical_digest(proof_receipt),"protected rollback receipt digest mismatch")
+            require("rollback-authority-signature",bool((proof_authority or {}).get("receiptSignature")),"protected rollback signature missing")
 
     final=record.get("final_known_good")
     third_successor=str(ordered[2].get("successor_sha") or "").lower() if len(ordered)==3 and isinstance(ordered[2],dict) else ""
@@ -118,6 +139,14 @@ def evaluate_p0_session(record:dict)->dict:
         require("final-generation",isinstance(final.get("generation"),int) and not isinstance(final.get("generation"),bool) and final.get("generation")>0,"final generation invalid")
         require("final-manifest",bool(_HEX64.fullmatch(str(final.get("manifest_sha256") or "").lower())),"final manifest digest missing/invalid")
         require("final-identity",bool(_HEX64.fullmatch(str(final.get("identity_sha256") or "").lower())),"final identity digest missing/invalid")
+        final_authority=record.get("final_known_good_authority")
+        final_receipt=(final_authority or {}).get("receipt") if isinstance(final_authority,dict) else None
+        require("final-authority-receipt",isinstance(final_receipt,dict),"protected final known-good receipt missing")
+        if isinstance(final_receipt,dict):
+            require("final-authority-operation",final_receipt.get("operation")=="self_build_current_known_good",final_receipt.get("operation"))
+            require("final-authority-result-digest",str(final_receipt.get("resultDigest") or "").lower()==canonical_digest(final),"protected final known-good result digest mismatch")
+            require("final-authority-receipt-digest",str((final_authority or {}).get("receiptDigest") or "").lower()==canonical_digest(final_receipt),"protected final known-good receipt digest mismatch")
+            require("final-authority-signature",bool((final_authority or {}).get("receiptSignature")),"protected final known-good signature missing")
 
     result={
         "schema":1,"session_id":session_id,
