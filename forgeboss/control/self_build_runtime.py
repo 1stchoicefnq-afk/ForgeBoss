@@ -732,6 +732,11 @@ class SelfBuildRuntime:
             core={k:v for k,v in existing.items() if k!="evidence_digest"}
             if supplied!=receipt_digest(core):
                 raise SelfBuildRuntimeError("ROLLBACK_PROOF_RECORD_INVALID","persisted rollback proof digest mismatch")
+            verified=self._verified_running_identity()
+            restored=str(existing.get("known_good_revision") or "").lower()
+            pointer_revision=str(existing.get("pointer_revision") or "").lower()
+            if not restored or restored!=pointer_revision or verified.get("revision")!=restored:
+                raise SelfBuildRuntimeError("ROLLBACK_PROOF_RESTORE_INVALID","persisted rollback proof no longer matches protected current known-good")
             return existing
         current=self._verified_running_identity()
         if current.get("revision")!=activation.get("successor_sha") or current.get("manifestSha256")!=activation.get("manifest_sha256"):

@@ -391,6 +391,10 @@ class RuntimeTests(unittest.TestCase):
         first=self.runtime.prove_activation_rollback({"runId":run_id});second=self.runtime.prove_activation_rollback({"runId":run_id})
         self.assertEqual(first,second);self.assertEqual(len(calls),1)
         saved=self.runtime.status({"runId":run_id});self.assertEqual(saved["rollbackProof"]["status"],"ROLLBACK_PROVEN")
+        self.runtime._verified_running_identity=lambda:{**current,"revision":"9"*40}
+        with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.prove_activation_rollback({"runId":run_id})
+        self.assertEqual(cm.exception.code,"ROLLBACK_PROOF_RESTORE_INVALID")
+        self.assertEqual(len(calls),1)
 
     def test_current_known_good_requires_ready_activation_and_returns_verified_source(self):
         identity={"verified":True,"revision":"b"*40,"codeRoot":str(self.source.resolve()),
