@@ -297,7 +297,9 @@ class Api:
             record=self._session_public_record_locked(session_id)
             if record is None:return None
             if evaluate:
-                record["p0_evaluation"]=evaluate_p0_session(record)
+                session=self._self_build_sessions.get(session_id) or {}
+                pin=getattr(session.get("client"),"receipt_public_key_b64",None)
+                record["p0_evaluation"]=evaluate_p0_session(record,receipt_public_key_b64=pin)
             root=SELF_BUILD_EVIDENCE_ROOT
             root.mkdir(parents=True,exist_ok=True)
             target=root/f"{session_id}.json";tmp=root/f".{session_id}.{uuid.uuid4().hex}.tmp"

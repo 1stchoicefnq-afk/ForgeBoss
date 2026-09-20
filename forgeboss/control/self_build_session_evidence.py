@@ -20,7 +20,17 @@ def _money(value):
     return out
 
 
-def evaluate_p0_session(record:dict)->dict:
+def _signed_receipt_ok(authority,result,pinned_public_key_b64)->bool:
+    if not isinstance(authority,dict) or not isinstance(pinned_public_key_b64,str) or not pinned_public_key_b64.strip():
+        return False
+    try:
+        from forgeboss.protected_authority.signing import verify_signed_receipt
+        return bool(verify_signed_receipt({**authority,"result":result},pinned_public_key_b64.strip()))
+    except Exception:
+        return False
+
+
+def evaluate_p0_session(record:dict,*,receipt_public_key_b64:str|None=None)->dict:
     """Evaluate durable Issue #178 three-cycle acceptance evidence.
 
     This never invents missing proof. Every acceptance condition must be
@@ -37,6 +47,7 @@ def evaluate_p0_session(record:dict)->dict:
         return result
 
     require("schema",record.get("schema")==1,"session evidence schema must be 1")
+    require("receipt-public-key",isinstance(receipt_public_key_b64,str) and bool(receipt_public_key_b64.strip()),"pinned protected-authority receipt public key missing")
     supplied_record_digest=str(record.get("session_record_digest") or "").lower()
     record_core={k:v for k,v in record.items() if k not in {"session_record_digest","p0_evaluation"}}
     require("session-record-digest",bool(_HEX64.fullmatch(supplied_record_digest)) and supplied_record_digest==canonical_digest(record_core),"durable session record digest mismatch")
@@ -93,6 +104,7 @@ def evaluate_p0_session(record:dict)->dict:
                 require(f"cycle-{expected}-activation-result-digest",str(receipt.get("resultDigest") or "").lower()==canonical_digest(activation),"protected activation result digest mismatch")
                 require(f"cycle-{expected}-activation-receipt-digest",str((authority or {}).get("receiptDigest") or "").lower()==canonical_digest(receipt),"protected activation receipt digest mismatch")
                 require(f"cycle-{expected}-activation-signature",bool((authority or {}).get("receiptSignature")),"protected activation signature missing")
+                require(f"cycle-{expected}-activation-signature-verified",_signed_receipt_ok(authority,activation,receipt_public_key_b64),"protected activation signature verification failed")
             probe=str(activation.get("probe_evidence_sha256") or "").lower()
             health=str(activation.get("health_evidence_sha256") or "").lower()
             require(f"cycle-{expected}-probe",bool(_HEX64.fullmatch(probe)),"authoritative probe digest missing/invalid")
@@ -128,6 +140,7 @@ def evaluate_p0_session(record:dict)->dict:
             require("rollback-authority-result-digest",str(proof_receipt.get("resultDigest") or "").lower()==canonical_digest(proof),"protected rollback result digest mismatch")
             require("rollback-authority-receipt-digest",str((proof_authority or {}).get("receiptDigest") or "").lower()==canonical_digest(proof_receipt),"protected rollback receipt digest mismatch")
             require("rollback-authority-signature",bool((proof_authority or {}).get("receiptSignature")),"protected rollback signature missing")
+            require("rollback-authority-signature-verified",_signed_receipt_ok(proof_authority,proof,receipt_public_key_b64),"protected rollback signature verification failed")
 
     final=record.get("final_known_good")
     third_successor=str(ordered[2].get("successor_sha") or "").lower() if len(ordered)==3 and isinstance(ordered[2],dict) else ""
@@ -147,12 +160,14 @@ def evaluate_p0_session(record:dict)->dict:
             require("final-authority-result-digest",str(final_receipt.get("resultDigest") or "").lower()==canonical_digest(final),"protected final known-good result digest mismatch")
             require("final-authority-receipt-digest",str((final_authority or {}).get("receiptDigest") or "").lower()==canonical_digest(final_receipt),"protected final known-good receipt digest mismatch")
             require("final-authority-signature",bool((final_authority or {}).get("receiptSignature")),"protected final known-good signature missing")
+            require("final-authority-signature-verified",_signed_receipt_ok(final_authority,final,receipt_public_key_b64),"protected final known-good signature verification failed")
 
     result={
         "schema":1,"session_id":session_id,
         "status":"PASS" if not blockers else "FAIL",
         "cycle_count":len(ordered),"accepted_revisions":accepted,
         "rollback_proven":isinstance(proof,dict) and proof.get("status")=="ROLLBACK_PROVEN",
+        "receipt_signatures_verified":not any(str(x.get("name") or "").endswith("signature-verified") or x.get("name")=="receipt-public-key" for x in blockers),
         "budget_usd":None if budget is None else format(budget,".2f"),
         "reserved_cap_usd":None if reserved is None else format(reserved,".2f"),
         "blockers":blockers,

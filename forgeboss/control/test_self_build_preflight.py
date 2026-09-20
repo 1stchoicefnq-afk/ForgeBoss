@@ -67,10 +67,17 @@ class SelfBuildPreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):self_build_session_plan(float("nan"))
 
     def _authority(self,operation,result):
-        receipt={"schema":3,"operation":operation,"requestId":"r","peerId":"controller-a","peerPrincipal":"fixture",
-                 "repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":1,"requestDigest":"a"*64,
-                 "resultDigest":canonical_digest(result),"servicePrincipal":"fixture-service"}
-        return {"receipt":receipt,"receiptDigest":canonical_digest(receipt),"receiptPublicKeyId":"b"*64,"receiptSignature":"fixture-signature"}
+        if not hasattr(self,"_receipt_signer"):
+            import base64
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            from forgeboss.protected_authority.signing import ReceiptSigner
+            self._receipt_signer=ReceiptSigner.from_private_key(Ed25519PrivateKey.generate())
+            self._receipt_pin=base64.b64encode(self._receipt_signer.public_raw).decode("ascii")
+        receipt={"schema":3,"operation":operation,"requestId":"00000000-0000-4000-8000-000000000001",
+                 "peerId":"controller-a","peerPrincipal":"fixture","repository":"1stchoicefnq-afk/ForgeBoss",
+                 "controlRevision":1,"requestDigest":"a"*64,"resultDigest":canonical_digest(result),
+                 "servicePrincipal":"fixture-service"}
+        return self._receipt_signer.sign(receipt)
 
     def _p0_evidence(self):
         runs=[];base="a"*40
@@ -98,8 +105,9 @@ class SelfBuildPreflightTests(unittest.TestCase):
         return record
 
     def test_p0_session_evaluator_requires_exact_three_cycle_lineage_and_rollback(self):
-        evidence=self._p0_evidence();out=evaluate_p0_session(evidence)
+        evidence=self._p0_evidence();out=evaluate_p0_session(evidence,receipt_public_key_b64=self._receipt_pin)
         self.assertEqual(out["status"],"PASS");self.assertEqual(out["cycle_count"],3)
+        self.assertTrue(out["receipt_signatures_verified"])
         self.assertEqual(out["accepted_revisions"],["b"*40,"c"*40,"d"*40]);self.assertEqual(len(out["evidence_digest"]),64)
 
     def test_p0_session_evaluator_fails_closed_on_lineage_stop_budget_or_rollback_gaps(self):
@@ -111,9 +119,10 @@ class SelfBuildPreflightTests(unittest.TestCase):
         x=self._p0_evidence();x["final_known_good"]["revision"]="9"*40;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("final-revision",x))
         x=self._p0_evidence();x["runs"][0]["activation"]["successor_sha"]="9"*40;x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-1-activation-sha",x))
         x=self._p0_evidence();x["runs"][0]["activation_authority"]["receipt"]["resultDigest"]="0"*64;x["runs"][0]["activation_authority"]["receiptDigest"]=canonical_digest(x["runs"][0]["activation_authority"]["receipt"]);x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-1-activation-result-digest",x))
+        x=self._p0_evidence();x["runs"][0]["activation_authority"]["receiptSignature"]="AAAA";x["session_record_digest"]=canonical_digest({k:v for k,v in x.items() if k!="session_record_digest"});cases.append(("cycle-1-activation-signature-verified",x))
         for expected,evidence in cases:
             with self.subTest(expected=expected):
-                out=evaluate_p0_session(evidence);self.assertEqual(out["status"],"FAIL")
+                out=evaluate_p0_session(evidence,receipt_public_key_b64=self._receipt_pin);self.assertEqual(out["status"],"FAIL")
                 self.assertIn(expected,{b["name"] for b in out["blockers"]})
 
     def test_runtime_state_inside_source_is_rejected(self):
