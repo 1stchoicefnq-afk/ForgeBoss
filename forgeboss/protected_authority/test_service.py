@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from forgeboss.protected_authority.boundary import PeerContext
 from forgeboss.protected_authority.protocol import AuthorityError,build_request,canonical_digest,canonical_json,strict_loads
+from forgeboss.protected_authority.client import ProtectedAuthorityClient
 from forgeboss.protected_authority.service import ProtectedAuthorityService
 from forgeboss.protected_authority.signing import ReceiptSigner,verify_signed_receipt
 
@@ -50,6 +51,7 @@ class Runtime:
         if self.leak:return {'assignmentToken':'must-not-escape'}
         return {'schema':1,'run_id':payload['runId'],'base_sha':payload['baseSha'],'builders':[]}
     def prepare_replacement(self,payload):self.calls.append(('replacement',dict(payload)));return {'schema':1,'replacement':True,'run_id':payload['runId']}
+    def compose_successor(self,payload):self.calls.append(('compose',dict(payload)));return {'schema':1,'run_id':payload['runId'],'status':'COMPOSED_AWAITING_ACTIVATION'}
     def status(self,payload):self.calls.append(('status',dict(payload)));return {'schema':1,'phase':'PREPARED','run_id':payload['runId']}
 
 class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
@@ -86,6 +88,17 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         self.assertEqual(runtime.calls[0][0],'prepare')
         self.assertEqual(self.secrets.github_reads,0)
         self.assertEqual(self.backend.calls,[])
+
+    def test_self_build_compose_round_trip_stays_local_and_exact(self):
+        runtime=Runtime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        client=ProtectedAuthorityClient(peer_id='controller-a',repository='owner/repo',control_revision=129,peer_private_key=self.key,receipt_public_key_b64=self.public_b64,transport=lambda raw:svc.handle_json(raw,peer_context=CTX))
+        out=client.compose_self_build_successor(run_id='fl1-compose')
+        self.assertEqual(out['result']['status'],'COMPOSED_AWAITING_ACTIVATION')
+        self.assertEqual(runtime.calls,[('compose',{'runId':'fl1-compose'})])
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
+        with self.assertRaises(AuthorityError) as cm:req('compose_self_build_successor',{'runId':'fl1-compose','extra':True})
+        self.assertEqual(cm.exception.code,'PAYLOAD_INVALID')
 
     def test_self_build_runtime_secret_shaped_result_is_refused(self):
         runtime=Runtime(leak=True)
