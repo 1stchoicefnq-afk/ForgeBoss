@@ -283,7 +283,7 @@ class RuntimeTests(unittest.TestCase):
             def promote(self,expected_generation=None):
                 events.append("promote");self.state["phase"]="PROMOTED";self.pointer={"schema":2,"generation":2,"current":{"revision":"b"*40,"manifestSha256":"c"*64},"previous":running};return self.pointer
             def authoritative_health_check(self,expected_generation=None,timeout=0):
-                events.append("health");self.state["activationHealth"]={"evidenceSha256":"5"*64};return self.pointer
+                events.append("health");self.state["activationHealth"]={"evidenceSha256":"5"*64};self.state["phase"]="READY";self.state["running"]={"revision":"b"*40};return self.pointer
             def known_good_pointer(self):return self.pointer
         self_ref=self
         manager=Manager()

@@ -399,7 +399,15 @@ class ActivationManager:
             prior = (pointer or {}).get("current") or self.running_identity
             if prior.get("revision") != self.running_identity.get("revision"):
                 raise ActivationError("running identity is not current known-good authority")
-            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "candidate": candidate, "probe": None, "probeEvidence": None, "activationHealth": None, "pid": None, "processIdentity": None, "activationNonce": None, "readyPath": None, "candidateStateRoot": None, "reason": None, "updatedAt": time.time()}
+            prior_process=None
+            if state.get("phase") in {"READY","ROLLED_BACK"}:
+                stored_running=state.get("running") or prior
+                if (stored_running or {}).get("revision")!=prior.get("revision"):
+                    raise ActivationError("ready activation state disagrees with current known-good authority")
+                prior_process=state.get("runningProcessIdentity")
+                if prior_process and not _same_process(prior_process,process_identity(int(prior_process["pid"]))):
+                    raise ActivationError("current known-good process identity is no longer live")
+            state = {"schema": 2, "phase": "STAGED", "generation": int(state.get("generation", 0)) + 1, "requestId": secrets.token_hex(16), "prior": prior, "priorProcessIdentity":prior_process, "candidate": candidate, "probe": None, "probeEvidence": None, "activationHealth": None, "pid": None, "processIdentity": None, "activationNonce": None, "readyPath": None, "candidateStateRoot": None, "reason": None, "updatedAt": time.time()}
             _atomic_json(self.state_path, state)
             return state
 
@@ -621,7 +629,9 @@ class ActivationManager:
             pointer = {"schema": 2, "generation": int(state.get("generation", 0)), "current": prior, "previous": None, "rolledBackAt": time.time(), "reason": str(reason), "updatedAt": time.time()}
             _atomic_json(self.pointer_path, pointer)
             state = self.status()
-            state.update({"phase": "ROLLED_BACK", "pid": None, "processIdentity": None, "reason": str(reason), "updatedAt": time.time()})
+            state.update({"phase": "ROLLED_BACK", "pid": None, "processIdentity": None,
+                          "running":prior,"runningProcessIdentity":state.get("priorProcessIdentity"),
+                          "reason": str(reason), "updatedAt": time.time()})
             _atomic_json(self.state_path, state)
             return pointer
 
@@ -643,6 +653,17 @@ class ActivationManager:
                 prior = state.get("prior") or self.running_identity
                 if not pointer or (pointer.get("current") or {}).get("revision") != prior.get("revision"):
                     raise ActivationError("rollback pointer cannot be reconciled")
+                running_process=state.get("runningProcessIdentity")
+                if running_process and not _same_process(running_process,process_identity(int(running_process["pid"]))):
+                    raise ActivationError("rolled-back known-good process identity is no longer live")
+                return pointer
+            if phase == "READY":
+                running=state.get("running") or {}
+                if not pointer or (pointer.get("current") or {}).get("revision")!=running.get("revision"):
+                    raise ActivationError("ready activation state disagrees with known-good pointer")
+                running_process=state.get("runningProcessIdentity")
+                if running_process and not _same_process(running_process,process_identity(int(running_process["pid"]))):
+                    raise ActivationError("ready known-good process identity is no longer live")
                 return pointer
             if phase == "QUARANTINED":
                 raise ActivationError("activation recovery blocked by quarantined candidate")
@@ -697,7 +718,20 @@ class ActivationManager:
                 raise ActivationError("activation health pointer mismatch")
             if state.get("processIdentity") and not _same_process(state["processIdentity"],process_identity(int(state["processIdentity"]["pid"]))):
                 raise ActivationError("activation health process identity mismatch")
-            state["activationHealth"]={**evidence,"evidenceSha256":_canonical_digest(evidence)}
+            health={**evidence,"evidenceSha256":_canonical_digest(evidence)}
+            prior_process=state.get("priorProcessIdentity")
+            current_process=state.get("processIdentity")
+            if prior_process:
+                if current_process and _same_process(prior_process,current_process):
+                    raise ActivationError("prior and promoted process identities unexpectedly match")
+                try:dead=terminate_verified_process(prior_process,5.0)
+                except Exception as ex:raise ActivationError("prior known-good process termination authority unavailable") from ex
+                if not dead:raise ActivationError("prior known-good process remained alive after bounded termination")
+            state["activationHealth"]=health
+            state["phase"]="READY"
+            state["running"]=state.get("candidate")
+            state["runningProcessIdentity"]=current_process
+            state["priorProcessIdentity"]=None
             state["updatedAt"]=time.time()
             _atomic_json(self.state_path,state)
             return pointer

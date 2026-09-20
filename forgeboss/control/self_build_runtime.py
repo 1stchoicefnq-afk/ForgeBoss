@@ -55,8 +55,7 @@ class SelfBuildRuntime:
     def __init__(self,*,protected_root:Path,boundary,receipt_public_key_b64:str,
                  git_resolver=_resolve_git_executable,compose_fn=compose_reviewed_successor,
                  verify_compose_fn=verify_composed_successor,review_fn=review_frozen_candidate,
-                 activation_manager_factory=ActivationManager,identity_verifier=verify_build_manifest,
-                 runtime_code_root:Path|None=None):
+                 activation_manager_factory=ActivationManager,identity_verifier=verify_build_manifest):
         root=Path(protected_root)
         if not root.is_absolute():
             raise SelfBuildRuntimeError("PROTECTED_ROOT_INVALID","protected root must be absolute")
@@ -69,8 +68,6 @@ class SelfBuildRuntime:
         self.review_fn=review_fn
         self.activation_manager_factory=activation_manager_factory
         self.identity_verifier=identity_verifier
-        try:self.runtime_code_root=Path(runtime_code_root or Path(__file__).resolve().parents[2]).resolve(strict=True)
-        except Exception as ex:raise SelfBuildRuntimeError("RUNNING_CODE_ROOT_INVALID","running ForgeBoss code root unavailable") from ex
 
         self.workspace_root=self.root/"self-build-workspaces"
         self.run_root=self.root/"self-build-runs"
@@ -519,8 +516,6 @@ class SelfBuildRuntime:
             root=Path(str(current.get("codeRoot") or "")).resolve(strict=True)
             manifest=Path(str(current.get("manifestPath") or "")).resolve(strict=True)
         except Exception as ex:raise SelfBuildRuntimeError("RUNNING_IDENTITY_INVALID","known-good code/manifest path invalid") from ex
-        if root!=self.runtime_code_root:
-            raise SelfBuildRuntimeError("RUNNING_IDENTITY_MISMATCH","protected service is not executing current known-good code root")
         try:
             observed=self.identity_verifier(
                 manifest,root,str(current.get("revision") or ""),
@@ -632,10 +627,17 @@ class SelfBuildRuntime:
                     raise SelfBuildRuntimeError("ACTIVATION_CONFLICT","another activation candidate owns protected activation state")
             if phase=="QUARANTINED":
                 raise SelfBuildRuntimeError("ACTIVATION_QUARANTINED","protected activation is quarantined")
-            if phase=="ROLLED_BACK":
-                raise SelfBuildRuntimeError("ACTIVATION_ROLLED_BACK","this activation generation already rolled back")
-
-            if phase=="IDLE":
+            prior_attempt=record.get("activation")
+            if phase=="ROLLED_BACK" and isinstance(prior_attempt,dict) and prior_attempt.get("status")=="ACTIVATION_FAILED":
+                raise SelfBuildRuntimeError("ACTIVATION_RETRY_REQUIRES_NEW_RUN","failed activation requires a fresh self-build run")
+            if phase=="READY":
+                ready_running=state.get("running") or {}
+                if ready_running.get("revision")==successor_sha and isinstance(state.get("activationHealth"),dict):
+                    phase="READY"
+                else:
+                    state=manager.stage(workspace,manifest,successor_sha,manifest_sha,expected_generation=int(state.get("generation",0)))
+                    phase=state["phase"]
+            elif phase in {"IDLE","ROLLED_BACK"}:
                 state=manager.stage(workspace,manifest,successor_sha,manifest_sha,expected_generation=int(state.get("generation",0)))
                 phase=state["phase"]
             if phase=="STAGED":
@@ -664,8 +666,11 @@ class SelfBuildRuntime:
             if phase=="PROMOTED" and not isinstance(state.get("activationHealth"),dict):
                 manager.authoritative_health_check(expected_generation=int(state["generation"]),timeout=5.0)
                 state=manager.status();phase=state["phase"]
-            if phase!="PROMOTED" or not isinstance(state.get("activationHealth"),dict):
-                raise SelfBuildRuntimeError("ACTIVATION_INCOMPLETE","successor did not reach proven promoted health")
+            if phase!="READY" or not isinstance(state.get("activationHealth"),dict):
+                raise SelfBuildRuntimeError("ACTIVATION_INCOMPLETE","successor did not reach sealed READY known-good health")
+            running_state=state.get("running") or {}
+            if running_state.get("revision")!=successor_sha:
+                raise SelfBuildRuntimeError("ACTIVATION_IDENTITY_INVALID","READY running identity differs from successor")
 
             self.verify_compose_fn(**verify_kwargs,expected=successor)
             pointer=manager.known_good_pointer() or {}

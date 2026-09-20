@@ -203,6 +203,26 @@ class ActivationTests(unittest.TestCase):
             self.assertEqual(manager.known_good_pointer()["current"]["revision"], prior["revision"])
             self.assertEqual(manager.status()["phase"], "ROLLED_BACK")
 
+    def test_successful_health_seals_ready_and_next_generation_carries_running_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base,revision="a"*40)
+            self._probe(manager,state);manager.promote(expected_generation=state["generation"])
+            current_proc={"pid":222,"startToken":"new","exe":"/python"}
+            prior_proc={"pid":111,"startToken":"old","exe":"/python"}
+            saved=manager.status();saved["processIdentity"]=current_proc;saved["priorProcessIdentity"]=prior_proc
+            manager.state_path.write_text(json.dumps(saved),encoding="utf-8")
+            with patch("forgeboss.control.activation.process_identity",return_value=current_proc),patch("forgeboss.control.activation.terminate_verified_process",return_value=True) as terminate:
+                manager.activation_health(True,expected_generation=state["generation"],_authority=manager._health_authority,evidence={"schema":1,"healthy":True})
+            terminate.assert_called_once_with(prior_proc,5.0)
+            ready=manager.status();self.assertEqual(ready["phase"],"READY")
+            self.assertEqual(ready["running"]["revision"],"a"*40);self.assertEqual(ready["runningProcessIdentity"],current_proc)
+            self.assertIsNone(ready["priorProcessIdentity"])
+            next_manager=ActivationManager(manager.state_dir,ready["running"])
+            with patch("forgeboss.control.activation.process_identity",return_value=current_proc):
+                next_state=self._stage(next_manager,base,revision="b"*40,expected_generation=ready["generation"])
+            self.assertEqual(next_state["generation"],ready["generation"]+1)
+            self.assertEqual(next_state["priorProcessIdentity"],current_proc)
+
     def test_forced_rollback_revokes_candidate_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
