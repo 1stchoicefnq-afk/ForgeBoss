@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.control.self_build_preflight import concise_blockers, self_build_preflight
+from forgeboss.control.self_build_preflight import concise_blockers, self_build_preflight, self_build_session_plan
 
 
 class SelfBuildPreflightTests(unittest.TestCase):
@@ -57,6 +57,13 @@ class SelfBuildPreflightTests(unittest.TestCase):
             rows={x["name"]:x for x in out["checks"]}
             self.assertTrue(rows["self-target"]["ok"]);self.assertTrue(rows["protected-known-good-root"]["ok"])
             self.assertTrue(rows["known-good-manifest"]["ok"]);self.assertEqual(out["known_good_sha"],"b"*40)
+
+    def test_session_plan_reserves_full_two_dollar_cap_per_cycle(self):
+        one=self_build_session_plan(3.0);self.assertEqual(one["cycle_target"],1);self.assertEqual(one["reserved_cap_usd"],"2.00");self.assertEqual(one["unreserved_usd"],"1.00")
+        three=self_build_session_plan(6.0);self.assertEqual(three["cycle_target"],3);self.assertEqual(three["reserved_cap_usd"],"6.00");self.assertEqual(three["unreserved_usd"],"0.00")
+        capped=self_build_session_plan(99.0);self.assertEqual(capped["cycle_target"],3)
+        with self.assertRaises(ValueError):self_build_session_plan(1.99)
+        with self.assertRaises(ValueError):self_build_session_plan(float("nan"))
 
     def test_runtime_state_inside_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:

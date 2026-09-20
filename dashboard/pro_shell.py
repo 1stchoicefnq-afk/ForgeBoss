@@ -55,7 +55,7 @@ def ensure_webview():
 sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(HERE))
 import server as fb
-from forgeboss.control.self_build_preflight import self_build_preflight,concise_blockers
+from forgeboss.control.self_build_preflight import self_build_preflight,concise_blockers,self_build_session_plan
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
 from forgeboss.control.process_supervisor import ProcessSupervisor
@@ -237,16 +237,94 @@ class Api:
         self._self_build_lock=threading.RLock()
         self._self_build_launcher=None
         self._self_build_runs={}
+        self._self_build_sessions={}
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
-            if self._self_build_launcher is None:
+            terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
+            active=any(str(x.get("phase") or "") not in terminal for x in self._self_build_sessions.values())
+            if self._self_build_launcher is None or not active:
                 self._self_build_launcher=SelfBuildLauncher(
                     client=client,
                     supervisor=ProcessSupervisor(),
                     state_root=DASH_STATE_ROOT,
                 )
             return self._self_build_launcher
+
+    def _session_stop_requested(self,session_id):
+        with self._self_build_lock:
+            session=self._self_build_sessions.get(session_id)
+            return session is None or bool(session.get("stop_requested"))
+
+    def _revoke_prepared_unlaunched(self,client,prepared,reason):
+        for item in list(prepared.get("builders") or []):
+            try:
+                client.revoke_self_build_worker(
+                    run_id=prepared["run_id"],task_id=item["task_id"],
+                    worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
+                    reason=reason,
+                )
+            except Exception as e:
+                fb.log(f"SELF-BUILD PRELAUNCH REVOKE FAILED {item.get('builder_id')}: {e}")
+
+    def _launch_self_build_cycle(self,session_id,cycle_index):
+        with self._self_build_lock:
+            session=self._self_build_sessions.get(session_id)
+            if not session or session.get("stop_requested"):
+                return None
+            client=session["client"];launcher=session["launcher"];plan=dict(session["plan"])
+            target=int(plan["cycle_target"]);budget=float(plan["session_budget_usd"])
+        if not 1<=int(cycle_index)<=target:
+            raise RuntimeError("self-build cycle index exceeds owner-authorized session target")
+        reserved_before=(int(cycle_index)-1)*float(plan["per_cycle_cap_usd"])
+        remaining=budget-reserved_before
+        if remaining+1e-9<float(plan["per_cycle_cap_usd"]):
+            raise RuntimeError("self-build session budget exhausted before next protected cycle")
+
+        known_good_response=client.self_build_current_known_good()
+        known_good=known_good_response.get("result") or {}
+        source_root=known_good.get("code_root")
+        if not source_root:
+            raise RuntimeError("protected current known-good source is unavailable")
+        preflight=self_build_preflight(
+            source_root,running_root=ROOT,requested_budget_usd=remaining,
+            env=os.environ,authoritative_known_good=known_good,
+        )
+        if not preflight.get("ready"):
+            raise RuntimeError("ForgeBoss self-build preflight blocked: "+concise_blockers(preflight))
+        if self._session_stop_requested(session_id):
+            return None
+
+        run_id=f"fl1-{session_id[-8:]}-c{int(cycle_index)}-{uuid.uuid4().hex[:6]}"
+        response=client.prepare_self_build(
+            source_root=source_root,base_sha=preflight["known_good_sha"],run_id=run_id,
+        )
+        prepared=response.get("result") or {}
+        if self._session_stop_requested(session_id):
+            self._revoke_prepared_unlaunched(client,prepared,"owner safe stop before paid cycle launch")
+            return None
+
+        with self._self_build_lock:
+            session=self._self_build_sessions.get(session_id)
+            if not session or session.get("stop_requested"):
+                self._revoke_prepared_unlaunched(client,prepared,"owner safe stop before paid cycle launch")
+                return None
+            launched=launcher.launch_initial(prepared)
+            self._self_build_runs[run_id]={
+                "client":client,"launcher":launcher,"prepared":prepared,
+                "launched":launched,"phase":"TWO_BUILDERS_RUNNING",
+                "stop_requested":False,"error":None,"session_id":session_id,
+                "cycle_index":int(cycle_index),"cycle_target":target,
+                "session_budget_usd":budget,
+            }
+            session.setdefault("runs",[]).append(run_id)
+            session["current_run_id"]=run_id
+            session["current_cycle"]=int(cycle_index)
+            session["reserved_cap_usd"]=int(cycle_index)*float(plan["per_cycle_cap_usd"])
+            session["phase"]="TWO_BUILDERS_RUNNING"
+        fb.log(f"SELF-BUILD CYCLE {cycle_index}/{target} TWO BUILDERS RUNNING run={run_id} base={preflight['known_good_sha']} session={session_id}")
+        threading.Thread(target=self._mandatory_b2,args=(run_id,),daemon=True).start()
+        return {"run_id":run_id,"preflight":preflight,"launched":launched,"known_good":known_good}
 
     def _mandatory_b2(self,run_id):
         # First-run proof only: after durable simultaneous RUNNING evidence,
@@ -258,6 +336,7 @@ class Api:
                 state=self._self_build_runs.get(run_id)
                 if not state or state.get("stop_requested"):return
                 launcher=state["launcher"];prepared=state["prepared"];launched=state["launched"];client=state["client"]
+                session_id=state.get("session_id");cycle_index=int(state.get("cycle_index") or 1);cycle_target=int(state.get("cycle_target") or 1)
             launcher.stop_worker(
                 prepared_run=prepared,launched_run=launched,builder_id="builder-b",
                 reason="mandatory Finish Line 1 stop/reassign proof",
@@ -280,7 +359,10 @@ class Api:
             def stop_requested():
                 with self._self_build_lock:
                     current=self._self_build_runs.get(run_id)
-                    return current is None or bool(current.get("stop_requested"))
+                    run_stop=current is None or bool(current.get("stop_requested"))
+                    session=self._self_build_sessions.get(session_id) if session_id else None
+                    session_stop=bool(session_id and (session is None or session.get("stop_requested")))
+                    return run_stop or session_stop
             finished=launcher.finish_review_accept_compose(
                 prepared_run=prepared,launched_run=launched2,
                 builder_ids=("builder-a","builder-b2"),stop_requested=stop_requested,
@@ -310,12 +392,41 @@ class Api:
                     state["phase"]="SUCCESSOR_ACTIVATED"
                     state["error"]=None
             fb.log(f"SELF-BUILD SUCCESSOR ACTIVATED run={run_id} sha={activated.get('successor_sha')} status={activated.get('status')}")
+            next_cycle=None
+            with self._self_build_lock:
+                session=self._self_build_sessions.get(session_id) if session_id else None
+                if session:
+                    session["completed_cycles"]=max(int(session.get("completed_cycles") or 0),cycle_index)
+                    session["phase"]="CYCLE_ACTIVATED"
+                    session["last_activation"]=activated
+                    should_continue=(not session.get("stop_requested")) and cycle_index<cycle_target
+                else:
+                    should_continue=False
+            if should_continue:
+                next_cycle=self._launch_self_build_cycle(session_id,cycle_index+1)
+                if next_cycle is None:
+                    fb.log(f"SELF-BUILD SESSION STOPPED BEFORE CYCLE {cycle_index+1} session={session_id}")
+                else:
+                    fb.log(f"SELF-BUILD NEXT CYCLE STARTED session={session_id} cycle={cycle_index+1}/{cycle_target} run={next_cycle['run_id']}")
+            else:
+                with self._self_build_lock:
+                    session=self._self_build_sessions.get(session_id) if session_id else None
+                    if session and not session.get("stop_requested"):
+                        session["phase"]="COMPLETE"
+                if session_id:
+                    fb.log(f"SELF-BUILD SESSION COMPLETE session={session_id} cycles={cycle_index}/{cycle_target}")
         except Exception as e:
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
                 if state:
                     state["phase"]="SELF_BUILD_FAILED"
                     state["error"]=str(e)
+                    sid=state.get("session_id")
+                    session=self._self_build_sessions.get(sid) if sid else None
+                    if session:
+                        session["phase"]="FAILED"
+                        session["error"]=str(e)
+                        session["stop_requested"]=True
             fb.log(f"SELF-BUILD FAILED run={run_id}: {e}")
 
     def _probe(self):
@@ -358,6 +469,14 @@ class Api:
         s["forgebossd"]=forgebossd_health()
         s["project_profiles"]=project_profiles_snapshot()
         s["selected_project"]=load_selected_project()
+        with self._self_build_lock:
+            sessions=list(self._self_build_sessions.values())
+            if sessions:
+                latest=sessions[-1]
+                s["self_build_session"]={k:latest.get(k) for k in (
+                    "session_id","phase","cycle_target","current_cycle","completed_cycles",
+                    "session_budget_usd","reserved_cap_usd","current_run_id","stop_requested","error"
+                )}
         return s
 
     def set_safety_toggle(self,name,value):
@@ -449,48 +568,33 @@ class Api:
             selected=load_selected_project()
             budget=float(settings.get("budget_usd",3.0))
             if selected and selected.get("project_id")=="forgeboss":
-                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
-                known_good_response=client.self_build_current_known_good()
-                known_good=known_good_response.get("result") or {}
-                source_root=known_good.get("code_root")
-                if not source_root:
-                    raise RuntimeError("protected current known-good source is unavailable")
-                preflight=self_build_preflight(
-                    source_root,
-                    running_root=ROOT,
-                    requested_budget_usd=budget,
-                    env=os.environ,
-                    authoritative_known_good=known_good,
-                )
-                if not preflight.get("ready"):
-                    message="ForgeBoss self-build preflight blocked: "+concise_blockers(preflight)
-                    fb.log(message)
-                    return {"ok":False,"blocked":True,"phase":"PREFLIGHT_BLOCKED","message":message,"preflight":preflight}
-                launcher=self._get_self_build_launcher(client)
-                run_id="fl1-"+uuid.uuid4().hex[:12]
-                response=client.prepare_self_build(
-                    source_root=source_root,
-                    base_sha=preflight["known_good_sha"],
-                    run_id=run_id,
-                )
-                prepared=response.get("result") or {}
-                launched=launcher.launch_initial(prepared)
+                plan=self_build_session_plan(budget)
                 with self._self_build_lock:
-                    self._self_build_runs[run_id]={
-                        "client":client,"launcher":launcher,"prepared":prepared,
-                        "launched":launched,"phase":"TWO_BUILDERS_RUNNING",
-                        "stop_requested":False,"error":None,
+                    terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
+                    active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
+                    if active:
+                        return {"ok":False,"blocked":True,"phase":"SELF_BUILD_SESSION_ACTIVE","message":"A ForgeBoss self-build session is already active. Stop it safely or let it finish before starting another."}
+                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
+                launcher=self._get_self_build_launcher(client)
+                session_id="fl1s-"+uuid.uuid4().hex[:12]
+                with self._self_build_lock:
+                    self._self_build_sessions[session_id]={
+                        "session_id":session_id,"client":client,"launcher":launcher,"plan":plan,
+                        "cycle_target":int(plan["cycle_target"]),"current_cycle":0,"completed_cycles":0,
+                        "session_budget_usd":float(plan["session_budget_usd"]),"reserved_cap_usd":0.0,
+                        "current_run_id":None,"runs":[],"phase":"STARTING","stop_requested":False,"error":None,
                     }
-                fb.log(f"SELF-BUILD TWO BUILDERS RUNNING run={run_id} base={preflight['known_good_sha']}")
-                threading.Thread(target=self._mandatory_b2,args=(run_id,),daemon=True).start()
+                first=self._launch_self_build_cycle(session_id,1)
+                if first is None:
+                    return {"ok":False,"cancelled":True,"phase":"SAFE_STOPPED","message":"Self-build stopped before paid launch."}
                 return {
-                    "ok":True,
-                    "launched":True,
-                    "phase":"TWO_BUILDERS_RUNNING",
-                    "run_id":run_id,
-                    "message":"ForgeBoss self-build started under the $2.00 protected run cap. A+B are contained; mandatory B stop/reassign to B2 is scheduled.",
-                    "preflight":preflight,
-                    "concurrent_proof":launched.get("concurrent_proof"),
+                    "ok":True,"launched":True,"phase":"TWO_BUILDERS_RUNNING",
+                    "run_id":first["run_id"],"session_id":session_id,
+                    "cycle_target":int(plan["cycle_target"]),
+                    "message":f"ForgeBoss self-build session started. Up to {plan['cycle_target']} cycle(s) authorized by the owner budget; each cycle is capped at $2.00.",
+                    "preflight":first["preflight"],
+                    "concurrent_proof":first["launched"].get("concurrent_proof"),
+                    "session_plan":plan,
                 }
             duration_mode=str(settings.get("duration_mode","timed"))
             duration=int(settings.get("duration_minutes",120)) if duration_mode!="until-stopped" else 120
@@ -503,6 +607,9 @@ class Api:
         with self._self_build_lock:
             runs=list(self._self_build_runs.items())
             for _,state in runs:state["stop_requested"]=True
+            for session in self._self_build_sessions.values():
+                session["stop_requested"]=True
+                session["phase"]="SAFE_STOP_REQUESTED"
         for run_id,state in runs:
             launcher=state["launcher"];prepared=state["prepared"];launched=state["launched"]
             try:status=launcher.status(launched)

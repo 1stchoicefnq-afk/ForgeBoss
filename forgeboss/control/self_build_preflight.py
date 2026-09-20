@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+from decimal import Decimal, InvalidOperation
 import os
 import shutil
 import subprocess
@@ -41,6 +42,29 @@ def _money(value)->float:
     if not math.isfinite(out) or out<=0:
         raise ValueError("budget invalid")
     return out
+
+
+
+SELF_BUILD_CYCLE_CAP_USD=Decimal("2.00")
+SELF_BUILD_MAX_AUTOMATIC_CYCLES=3
+
+def self_build_session_plan(requested_budget_usd,max_cycles:int=SELF_BUILD_MAX_AUTOMATIC_CYCLES)->dict:
+    if isinstance(requested_budget_usd,bool) or isinstance(max_cycles,bool) or not isinstance(max_cycles,int) or not 1<=max_cycles<=SELF_BUILD_MAX_AUTOMATIC_CYCLES:
+        raise ValueError("self-build session budget/cycle limit invalid")
+    try:budget=Decimal(str(requested_budget_usd))
+    except (InvalidOperation,ValueError,TypeError) as ex:raise ValueError("self-build session budget invalid") from ex
+    if not budget.is_finite() or budget<SELF_BUILD_CYCLE_CAP_USD:
+        raise ValueError("self-build session requires at least $2.00 owner budget")
+    cycles=min(max_cycles,int(budget//SELF_BUILD_CYCLE_CAP_USD))
+    if cycles<1:raise ValueError("self-build session budget cannot fund one protected cycle")
+    reserved=SELF_BUILD_CYCLE_CAP_USD*cycles
+    return {
+        "schema":1,"cycle_target":cycles,
+        "per_cycle_cap_usd":format(SELF_BUILD_CYCLE_CAP_USD,".2f"),
+        "session_budget_usd":format(budget.quantize(Decimal("0.01")),".2f"),
+        "reserved_cap_usd":format(reserved,".2f"),
+        "unreserved_usd":format((budget-reserved).quantize(Decimal("0.01")),".2f"),
+    }
 
 
 def self_build_preflight(source_path,*,running_root,requested_budget_usd,env:Mapping[str,str]|None=None,authoritative_known_good:Mapping|None=None)->dict:
