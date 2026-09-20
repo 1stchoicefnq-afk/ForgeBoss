@@ -415,6 +415,16 @@ class SelfBuildLauncher:
                     pass
             raise
 
+    def activate_composed_successor(self,*,run_id:str)->dict:
+        if not isinstance(run_id,str) or not run_id:
+            raise SelfBuildLaunchError("RUN_ID_INVALID","self-build run id missing for activation")
+        response=self.client.activate_self_build_successor(run_id=run_id)
+        result=response.get("result") or {}
+        if result.get("status")!="ACTIVATED_KNOWN_GOOD":
+            raise SelfBuildLaunchError("SUCCESSOR_ACTIVATION_FAILED","protected successor activation did not complete")
+        _atomic_json(self.run_root/run_id/"activation.json",response)
+        return response
+
     def stop_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str,reason:str)->dict:
         public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
         prepared_items=list(prepared_run.get("builders") or [])

@@ -35,7 +35,7 @@ class ProtectedAuthorityClient:
         if not isinstance(repository,str) or "/" not in repository: raise AuthorityError("REPOSITORY_INVALID")
         if isinstance(control_revision,bool) or not isinstance(control_revision,int) or control_revision<1: raise AuthorityError("CONTROL_REVISION_INVALID")
         if not isinstance(receipt_public_key_b64,str) or not receipt_public_key_b64.strip(): raise AuthorityError("RECEIPT_PUBLIC_KEY_INVALID")
-        if not isinstance(timeout,(int,float)) or not 0.1<=float(timeout)<=30: raise AuthorityError("IPC_TIMEOUT_INVALID")
+        if not isinstance(timeout,(int,float)) or not 0.1<=float(timeout)<=300: raise AuthorityError("IPC_TIMEOUT_INVALID")
         self.peer_id=peer_id.strip();self.repository=repository.strip();self.control_revision=control_revision
         self.peer_private_key=peer_private_key;self.receipt_public_key_b64=receipt_public_key_b64.strip()
         self.unix_socket_path=Path(unix_socket_path) if unix_socket_path is not None else None

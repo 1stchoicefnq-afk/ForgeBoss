@@ -286,14 +286,30 @@ class Api:
                 builder_ids=("builder-a","builder-b2"),stop_requested=stop_requested,
                 timeout=1200.0,poll_seconds=0.5,
             )
+            successor=finished.get("successor") or {}
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
                 if state:
                     state["finish"]=finished
                     state["phase"]="SUCCESSOR_COMPOSED"
+                    state["next_cycle_source"]=successor.get("workspace")
                     state["error"]=None
-            successor=finished.get("successor") or {}
             fb.log(f"SELF-BUILD SUCCESSOR COMPOSED run={run_id} sha={successor.get('successor_sha')} awaiting activation")
+            if stop_requested():
+                with self._self_build_lock:
+                    state=self._self_build_runs.get(run_id)
+                    if state:state["phase"]="SUCCESSOR_COMPOSED_STOPPED_BEFORE_ACTIVATION"
+                fb.log(f"SELF-BUILD STOPPED BEFORE ACTIVATION run={run_id}")
+                return
+            activation=launcher.activate_composed_successor(run_id=run_id)
+            activated=activation.get("result") or {}
+            with self._self_build_lock:
+                state=self._self_build_runs.get(run_id)
+                if state:
+                    state["activation"]=activation
+                    state["phase"]="SUCCESSOR_ACTIVATED"
+                    state["error"]=None
+            fb.log(f"SELF-BUILD SUCCESSOR ACTIVATED run={run_id} sha={activated.get('successor_sha')} status={activated.get('status')}")
         except Exception as e:
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
@@ -443,7 +459,7 @@ class Api:
                     message="ForgeBoss self-build preflight blocked: "+concise_blockers(preflight)
                     fb.log(message)
                     return {"ok":False,"blocked":True,"phase":"PREFLIGHT_BLOCKED","message":message,"preflight":preflight}
-                client=ProtectedAuthorityClient.from_environment(os.environ)
+                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
                 launcher=self._get_self_build_launcher(client)
                 run_id="fl1-"+uuid.uuid4().hex[:12]
                 response=client.prepare_self_build(

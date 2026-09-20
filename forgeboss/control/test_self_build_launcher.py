@@ -34,7 +34,7 @@ class E:
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[];self.composed=[]
+        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[];self.composed=[];self.activated=[]
     def attest_launch_payload(self,signed):
         self.attested.append(dict(signed))
         return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
@@ -48,6 +48,8 @@ class Client(ProtectedAuthorityClient):
         self.accepted.append(dict(kw));return {"result":{"status":"ACCEPTED"},"receipt":{"operation":"accept_self_build_candidate"}}
     def compose_self_build_successor(self,**kw):
         self.composed.append(dict(kw));return {"result":{"status":"COMPOSED_AWAITING_ACTIVATION","run_id":kw["run_id"]},"receipt":{"operation":"compose_self_build_successor"}}
+    def activate_self_build_successor(self,**kw):
+        self.activated.append(dict(kw));return {"result":{"status":"ACTIVATED_KNOWN_GOOD","successor_sha":"f"*40},"receipt":{"operation":"activate_self_build_successor"}}
 
 
 
@@ -252,6 +254,13 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(completed,["builder-a","builder-b2"]);self.assertEqual(reviewed,completed);self.assertEqual(accepted,completed)
         self.assertEqual(out["successor"]["status"],"COMPOSED_AWAITING_ACTIVATION")
         self.assertEqual(self.client.composed,[{"run_id":"fl1-run"}])
+
+    def test_activate_composed_successor_requires_protected_final_status_and_persists_receipt(self):
+        launcher=self.launcher()
+        out=launcher.activate_composed_successor(run_id="fl1-run")
+        self.assertEqual(out["result"]["status"],"ACTIVATED_KNOWN_GOOD")
+        self.assertEqual(self.client.activated,[{"run_id":"fl1-run"}])
+        self.assertTrue((launcher.run_root/"fl1-run"/"activation.json").is_file())
 
     def test_finish_review_failure_revokes_unaccepted_writers_and_never_composes(self):
         launcher=self.launcher()
