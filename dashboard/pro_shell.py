@@ -291,7 +291,14 @@ class Api:
             env=os.environ,authoritative_known_good=known_good,
         )
         if not preflight.get("ready"):
-            raise RuntimeError("ForgeBoss self-build preflight blocked: "+concise_blockers(preflight))
+            message="ForgeBoss self-build preflight blocked: "+concise_blockers(preflight)
+            with self._self_build_lock:
+                session=self._self_build_sessions.get(session_id)
+                if session:
+                    session["phase"]="PREFLIGHT_BLOCKED"
+                    session["error"]=message
+                    session["stop_requested"]=True
+            raise RuntimeError(message)
         if self._session_stop_requested(session_id):
             return None
 
