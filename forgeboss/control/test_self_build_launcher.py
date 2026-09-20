@@ -34,7 +34,7 @@ class E:
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[]
+        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[];self.composed=[]
     def attest_launch_payload(self,signed):
         self.attested.append(dict(signed))
         return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
@@ -46,6 +46,8 @@ class Client(ProtectedAuthorityClient):
         self.reviews.append(dict(kw));return {"result":{"status":"PASS"},"receipt":{"operation":"review_self_build_candidate"}}
     def accept_self_build_candidate(self,**kw):
         self.accepted.append(dict(kw));return {"result":{"status":"ACCEPTED"},"receipt":{"operation":"accept_self_build_candidate"}}
+    def compose_self_build_successor(self,**kw):
+        self.composed.append(dict(kw));return {"result":{"status":"COMPOSED_AWAITING_ACTIVATION","run_id":kw["run_id"]},"receipt":{"operation":"compose_self_build_successor"}}
 
 
 
@@ -235,6 +237,36 @@ class LauncherTests(unittest.TestCase):
         accepted=handoff.accept_reviewed_candidate(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
         self.assertEqual(accepted["result"]["status"],"ACCEPTED")
         self.assertEqual(self.client.accepted[-1]["task_id"],"task-a")
+
+    def test_finish_review_accept_compose_uses_only_a_and_b2(self):
+        launcher=self.launcher()
+        replacement=self._item("builder-b2","task-b2",self.root/"wb2","0.50")
+        replacement["replacement_for"]="task-b";self.prepared["replacement"]=replacement
+        launched={"run_id":"fl1-run","workers":[{"builder_id":"builder-a"},{"builder_id":"builder-b2"}]}
+        completed=[];reviewed=[];accepted=[]
+        def complete(**kw):completed.append(kw["builder_id"]);return {"candidate_sha":"c"*40}
+        def review(**kw):reviewed.append(kw["builder_id"]);return {"result":{"status":"PASS"}}
+        def accept(**kw):accepted.append(kw["builder_id"]);return {"result":{"status":"ACCEPTED"}}
+        with patch.object(launcher,"complete_worker",side_effect=complete),patch.object(launcher,"review_candidate",side_effect=review),patch.object(launcher,"accept_reviewed_candidate",side_effect=accept):
+            out=launcher.finish_review_accept_compose(prepared_run=self.prepared,launched_run=launched,timeout=1,poll_seconds=0.01)
+        self.assertEqual(completed,["builder-a","builder-b2"]);self.assertEqual(reviewed,completed);self.assertEqual(accepted,completed)
+        self.assertEqual(out["successor"]["status"],"COMPOSED_AWAITING_ACTIVATION")
+        self.assertEqual(self.client.composed,[{"run_id":"fl1-run"}])
+
+    def test_finish_review_failure_revokes_unaccepted_writers_and_never_composes(self):
+        launcher=self.launcher()
+        replacement=self._item("builder-b2","task-b2",self.root/"wb2","0.50")
+        replacement["replacement_for"]="task-b";self.prepared["replacement"]=replacement
+        launched={"run_id":"fl1-run","workers":[{"builder_id":"builder-a"},{"builder_id":"builder-b2"}]}
+        stops=[]
+        def review(**kw):
+            return {"result":{"status":"PASS" if kw["builder_id"]=="builder-a" else "FAIL"}}
+        def stop(**kw):stops.append(kw["builder_id"]);return {"stopped":True}
+        with patch.object(launcher,"complete_worker",return_value={"candidate_sha":"c"*40}),patch.object(launcher,"review_candidate",side_effect=review),patch.object(launcher,"stop_worker",side_effect=stop):
+            with self.assertRaises(SelfBuildLaunchError) as cm:
+                launcher.finish_review_accept_compose(prepared_run=self.prepared,launched_run=launched,timeout=1,poll_seconds=0.01)
+        self.assertEqual(cm.exception.code,"INDEPENDENT_REVIEW_FAILED")
+        self.assertEqual(stops,["builder-a","builder-b2"]);self.assertEqual(self.client.composed,[])
 
     @unittest.skipUnless(__import__("shutil").which("git"),"git required")
     def test_freeze_candidate_real_git_scope_test_and_exact_sha(self):

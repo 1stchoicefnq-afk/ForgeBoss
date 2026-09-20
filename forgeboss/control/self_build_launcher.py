@@ -332,6 +332,89 @@ class SelfBuildLauncher:
         _atomic_json(self._paths(run_id,builder_id)["acceptance"],response)
         return response
 
+    def finish_review_accept_compose(self,*,prepared_run:dict,launched_run:dict,
+                                     builder_ids=("builder-a","builder-b2"),stop_requested=None,
+                                     timeout:float=1200.0,poll_seconds:float=0.5)->dict:
+        ids=tuple(builder_ids)
+        if ids!=("builder-a","builder-b2"):
+            raise SelfBuildLaunchError("FINISH_BUILDER_SET_INVALID","Finish Line 1 must finish exactly A + B2")
+        if isinstance(timeout,bool) or not isinstance(timeout,(int,float)) or timeout<=0 or timeout>3600:
+            raise SelfBuildLaunchError("FINISH_TIMEOUT_INVALID","finish timeout invalid")
+        if isinstance(poll_seconds,bool) or not isinstance(poll_seconds,(int,float)) or poll_seconds<=0 or poll_seconds>10:
+            raise SelfBuildLaunchError("FINISH_POLL_INVALID","finish poll interval invalid")
+        checker=stop_requested if callable(stop_requested) else (lambda:False)
+        run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or "")
+        if not run_id:
+            raise SelfBuildLaunchError("PREPARED_RUN_INVALID","self-build run id missing")
+        replacement=prepared_run.get("replacement")
+        if not isinstance(replacement,dict) or replacement.get("builder_id")!="builder-b2":
+            raise SelfBuildLaunchError("REPLACEMENT_REQUIRED","B2 replacement must exist before finish")
+        launched_ids={str(x.get("builder_id") or "") for x in (launched_run.get("workers") or [])}
+        if not set(ids).issubset(launched_ids):
+            raise SelfBuildLaunchError("FINISH_WORKER_MISSING","A and B2 must both be launched before finish")
+
+        pending=set(ids);handoffs={};reviews={};acceptances={};accepted=set()
+        deadline=time.monotonic()+float(timeout)
+        failure=None
+        try:
+            while pending:
+                if checker():
+                    raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested during self-build finish")
+                if time.monotonic()>=deadline:
+                    raise SelfBuildLaunchError("FINISH_TIMEOUT","self-build workers did not finish within the bounded window")
+                progressed=False
+                for builder_id in ids:
+                    if builder_id not in pending:continue
+                    try:
+                        handoffs[builder_id]=self.complete_worker(
+                            prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id,
+                        )
+                    except SelfBuildLaunchError as ex:
+                        if ex.code=="WORKER_STILL_RUNNING":continue
+                        raise
+                    pending.remove(builder_id);progressed=True
+                if pending and not progressed:time.sleep(float(poll_seconds))
+
+            for builder_id in ids:
+                if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before independent review")
+                response=self.review_candidate(prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id)
+                reviews[builder_id]=response
+                result=response.get("result") or {}
+                if result.get("status")!="PASS":
+                    raise SelfBuildLaunchError("INDEPENDENT_REVIEW_FAILED",f"{builder_id} independent review did not PASS")
+
+            for builder_id in ids:
+                if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before candidate acceptance")
+                response=self.accept_reviewed_candidate(prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id)
+                acceptances[builder_id]=response
+                result=response.get("result") or {}
+                if result.get("status")!="ACCEPTED":
+                    raise SelfBuildLaunchError("CANDIDATE_ACCEPTANCE_FAILED",f"{builder_id} candidate was not accepted")
+                accepted.add(builder_id)
+
+            if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before successor composition")
+            composition=self.client.compose_self_build_successor(run_id=run_id)
+            successor=composition.get("result") or {}
+            if successor.get("status")!="COMPOSED_AWAITING_ACTIVATION":
+                raise SelfBuildLaunchError("SUCCESSOR_COMPOSITION_FAILED","protected successor composition did not complete")
+            return {
+                "schema":1,"run_id":run_id,"builders":list(ids),"handoffs":handoffs,
+                "reviews":reviews,"acceptances":acceptances,"successor":successor,
+                "protected_composition_receipt":composition,
+            }
+        except BaseException as ex:
+            failure=ex
+            for builder_id in ids:
+                if builder_id in accepted:continue
+                try:
+                    self.stop_worker(
+                        prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id,
+                        reason="self-build finish aborted before protected acceptance",
+                    )
+                except Exception:
+                    pass
+            raise
+
     def stop_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str,reason:str)->dict:
         public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
         prepared_items=list(prepared_run.get("builders") or [])

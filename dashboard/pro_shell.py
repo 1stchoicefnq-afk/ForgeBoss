@@ -276,13 +276,31 @@ class Api:
                     state["launched"]=launched2
                     state["phase"]="B2_RUNNING"
             fb.log(f"SELF-BUILD B2 RUNNING run={run_id} task={replacement.get('task_id')}")
+
+            def stop_requested():
+                with self._self_build_lock:
+                    current=self._self_build_runs.get(run_id)
+                    return current is None or bool(current.get("stop_requested"))
+            finished=launcher.finish_review_accept_compose(
+                prepared_run=prepared,launched_run=launched2,
+                builder_ids=("builder-a","builder-b2"),stop_requested=stop_requested,
+                timeout=1200.0,poll_seconds=0.5,
+            )
+            with self._self_build_lock:
+                state=self._self_build_runs.get(run_id)
+                if state:
+                    state["finish"]=finished
+                    state["phase"]="SUCCESSOR_COMPOSED"
+                    state["error"]=None
+            successor=finished.get("successor") or {}
+            fb.log(f"SELF-BUILD SUCCESSOR COMPOSED run={run_id} sha={successor.get('successor_sha')} awaiting activation")
         except Exception as e:
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
                 if state:
-                    state["phase"]="REASSIGNMENT_FAILED"
+                    state["phase"]="SELF_BUILD_FAILED"
                     state["error"]=str(e)
-            fb.log(f"SELF-BUILD REASSIGNMENT FAILED run={run_id}: {e}")
+            fb.log(f"SELF-BUILD FAILED run={run_id}: {e}")
 
     def _probe(self):
         if time.time()-self._last_probe < 25:return
