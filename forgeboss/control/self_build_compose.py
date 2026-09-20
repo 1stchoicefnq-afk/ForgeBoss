@@ -242,4 +242,56 @@ def compose_successor(*,record,run_id,source_root,workspace_root,protected_state
     if sorted(x.casefold() for x in changed)!=sorted(x.casefold() for x in all_paths):_fail("SUCCESSOR_DIFF_MISMATCH","frozen successor differs from accepted union")
     md,identity=build_manifest(git=git,root=successor,revision=sha,manifest_path=manifest)
     result={"schema":1,"run_id":run_id,"base_sha":base,"successor_sha":sha,"successor_tree_sha":tree,"workspace":str(successor),"branch":branch,"composed_task_ids":[str(x.get("task_id") or "") for x in items],"replaced_task_id":str(original.get("task_id") or ""),"source_candidates":[{"task_id":r["task"],"candidate_sha":r["candidate"],"candidate_tree_sha":r["tree"],"handoff_digest":r["hd"],"review_digest":r["rd"],"acceptance_digest":r["ad"]} for r in rows],"changed_files":sorted(all_paths,key=str.casefold),"focused_tests":tests,"manifest_path":str(manifest.resolve(strict=True)),"manifest_sha256":md,"identity_sha256":identity["identitySha256"],"tree_sha256":identity["treeSha256"]}
-    result["composition_digest"]=_canonical_digest(result);return result
+    result["composition_digest"]=_canonical_digest(result)
+    verify_composed_successor(record=record,run_id=run_id,source_root=source,workspace_root=workspaces,git_executable=git,manifest_path=manifest,expected={**result,"status":"COMPOSED_AWAITING_ACTIVATION"})
+    return result
+
+def verify_composed_successor(*,record,run_id,source_root,workspace_root,git_executable,manifest_path,expected):
+    """Re-prove a persisted composition without mutating it."""
+    if not isinstance(record,dict) or record.get("schema")!=1:_fail("RUN_STATE_INVALID","self-build run state invalid")
+    if not isinstance(run_id,str) or not _RUN_ID.fullmatch(run_id):_fail("RUN_ID_INVALID","self-build run id invalid")
+    if not isinstance(expected,dict) or expected.get("status")!="COMPOSED_AWAITING_ACTIVATION":_fail("SUCCESSOR_RECORD_INVALID","persisted successor record invalid")
+    prepared=record.get("prepared") or {};base=_sha(prepared.get("base_sha"),"BASE_SHA_INVALID")
+    if str(prepared.get("run_id") or "")!=run_id:_fail("RUN_ID_MISMATCH","run id differs from protected preparation")
+    source=Path(source_root).resolve(strict=True);workspaces=Path(workspace_root).resolve(strict=True);git=Path(git_executable).resolve(strict=True)
+    if source!=Path(str(prepared.get("source_root") or "")).resolve(strict=True):_fail("SOURCE_ROOT_MISMATCH","source root differs from protected preparation")
+    survivor,original,replacement,replaced=_worker_set(record);items=[survivor,replacement];required={str(x.get("task_id") or "") for x in items};accepted=list(record.get("accepted") or [])
+    if len(accepted)!=2 or {str(x.get("taskId") or "") for x in accepted}!=required or replaced in required:_fail("ACCEPTED_SET_INVALID","successor must contain exactly survivor + replacement")
+    rows=[_validate_chain(record,item,base) for item in items];all_paths=[p for row in rows for p in row["paths"]]
+    if len({k for row in rows for k in row["keys"]})!=len(all_paths) or _paths_collide(all_paths):_fail("COMPOSITION_SCOPE_COLLISION","accepted candidate paths overlap/alias")
+    verified=[(*_verify_candidate(git,workspaces,item,row,base),item,row) for item,row in zip(items,rows)]
+
+    successor=workspaces/f"{run_id}-successor";branch=f"forgeboss/fl1-successor-{run_id}"
+    if not successor.is_dir() or _is_linklike(successor):_fail("SUCCESSOR_WORKSPACE_INVALID","persisted successor workspace missing/aliased")
+    successor=successor.resolve(strict=True);sha=_sha(_git_text(git,successor,"rev-parse","HEAD"),"SUCCESSOR_SHA_INVALID")
+    tree=_sha(_git_text(git,successor,"rev-parse",f"{sha}^{{tree}}"),"SUCCESSOR_TREE_INVALID")
+    if _git_text(git,successor,"status","--porcelain=v1","--untracked-files=all") or _git_text(git,successor,"remote"):_fail("SUCCESSOR_FREEZE_INVALID","persisted successor is dirty or remote-bearing")
+    parents=_git_text(git,successor,"rev-list","--parents","-n","1",sha).split();changed=[_path(x) for x in _git_text(git,successor,"diff","--name-only",base,sha,"--").splitlines() if x.strip()]
+    if len(parents)!=2 or parents[1].lower()!=base:_fail("SUCCESSOR_PARENT_MISMATCH","persisted successor is not one direct child of base")
+    if sorted(x.casefold() for x in changed)!=sorted(x.casefold() for x in all_paths):_fail("SUCCESSOR_DIFF_MISMATCH","persisted successor changed-path union mismatch")
+    for work,blobs,_item,row in verified:
+        for rel in row["paths"]:
+            lines=[x for x in _git_bin(git,successor,"ls-tree","-z",sha,"--",rel).split(b"\0") if x]
+            if len(lines)!=1:_fail("SUCCESSOR_BLOB_MISMATCH","persisted successor path missing")
+            meta,name=lines[0].split(b"\t",1);mode,kind,oid=meta.decode("ascii").split(" ")
+            if name.decode("utf-8","strict").replace("\\","/")!=rel or kind!="blob" or (mode,oid.lower())!=blobs[rel]:_fail("SUCCESSOR_BLOB_MISMATCH","persisted successor does not contain exact accepted blob")
+
+    manifest=Path(manifest_path)
+    if not manifest.is_file() or _is_linklike(manifest):_fail("MANIFEST_PATH_INVALID","persisted successor manifest missing/aliased")
+    if manifest.resolve(strict=True)!=Path(str(expected.get("manifest_path") or "")).resolve(strict=True):_fail("SUCCESSOR_RECORD_MISMATCH","manifest path differs from persisted record")
+    md=hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if md!=str(expected.get("manifest_sha256") or "").lower():_fail("MANIFEST_DIGEST_MISMATCH","persisted successor manifest digest mismatch")
+    identity=verify_build_manifest(manifest,successor,sha,md)
+    derived_sources=[{"task_id":r["task"],"candidate_sha":r["candidate"],"candidate_tree_sha":r["tree"],"handoff_digest":r["hd"],"review_digest":r["rd"],"acceptance_digest":r["ad"]} for r in rows]
+    exact={"schema":1,"run_id":run_id,"base_sha":base,"successor_sha":sha,"successor_tree_sha":tree,"workspace":str(successor),"branch":branch,"composed_task_ids":[str(x.get("task_id") or "") for x in items],"replaced_task_id":str(original.get("task_id") or ""),"source_candidates":derived_sources,"changed_files":sorted(all_paths,key=str.casefold),"manifest_path":str(manifest.resolve(strict=True)),"manifest_sha256":md,"identity_sha256":identity["identitySha256"],"tree_sha256":identity["treeSha256"]}
+    for key,want in exact.items():
+        if expected.get(key)!=want:_fail("SUCCESSOR_RECORD_MISMATCH",f"persisted successor {key} mismatch")
+    tests=expected.get("focused_tests")
+    if not isinstance(tests,list) or not tests:_fail("SUCCESSOR_RECORD_MISMATCH","persisted focused-test evidence missing")
+    for row in tests:
+        if not isinstance(row,dict) or row.get("exit_code")!=0:_fail("SUCCESSOR_RECORD_MISMATCH","persisted focused-test evidence invalid")
+        supplied=str(row.get("receipt_digest") or "").lower();core={k:v for k,v in row.items() if k!="receipt_digest"}
+        if supplied!=_canonical_digest(core):_fail("SUCCESSOR_RECORD_MISMATCH","persisted focused-test receipt digest mismatch")
+    supplied=str(expected.get("composition_digest") or "").lower();core={k:v for k,v in expected.items() if k not in {"composition_digest","status"}}
+    if supplied!=_canonical_digest(core):_fail("COMPOSITION_DIGEST_MISMATCH","persisted composition digest mismatch")
+    return {"verified":True,"successor_sha":sha,"successor_tree_sha":tree,"manifest_sha256":md,"identity":identity}

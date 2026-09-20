@@ -163,6 +163,39 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.prepare_replacement({"runId":"fl1-r"})
         self.assertIn(cm.exception.code,{"RUN_STATE_INVALID","REPLACEMENT_ALREADY_PREPARED"})
 
+    def test_compose_successor_persists_once_and_reverifies_on_reentry(self):
+        self.pointer();self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-compose"});self.runtime.prepare_replacement({"runId":"fl1-compose"})
+        calls={"compose":0,"verify":0}
+        def compose(**kw):
+            calls["compose"]+=1;work=self.runtime.workspace_root/"fl1-compose-successor";work.mkdir();manifest=Path(kw["manifest_path"]);manifest.write_text("{}",encoding="utf-8")
+            return {"schema":1,"run_id":"fl1-compose","workspace":str(work.resolve()),"manifest_path":str(manifest.resolve()),"composition_digest":"a"*64}
+        def verify(**kw):
+            calls["verify"]+=1;self.assertEqual(kw["expected"]["status"],"COMPOSED_AWAITING_ACTIVATION");return {"verified":True}
+        self.runtime.compose_fn=compose;self.runtime.verify_compose_fn=verify
+        first=self.runtime.compose_successor({"runId":"fl1-compose"});self.assertEqual(first["status"],"COMPOSED_AWAITING_ACTIVATION")
+        state=self.runtime.status({"runId":"fl1-compose"});self.assertEqual(state["phase"],"SUCCESSOR_COMPOSED");self.assertEqual(state["successor"],first)
+        second=self.runtime.compose_successor({"runId":"fl1-compose"});self.assertEqual(second,first);self.assertEqual(calls,{"compose":1,"verify":2})
+
+    def test_compose_successor_fails_closed_on_unrecorded_artifacts(self):
+        self.pointer();self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-orphan"});self.runtime.prepare_replacement({"runId":"fl1-orphan"})
+        (self.runtime.workspace_root/"fl1-orphan-successor").mkdir()
+        self.runtime.compose_fn=lambda **kw:self.fail("orphaned successor must not be silently reused")
+        with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.compose_successor({"runId":"fl1-orphan"})
+        self.assertEqual(cm.exception.code,"SUCCESSOR_RECOVERY_REQUIRED")
+
+    def test_compose_successor_reverify_failure_is_runtime_failure(self):
+        from forgeboss.control.self_build_compose import SelfBuildComposeError
+        self.pointer();self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-reverify"});self.runtime.prepare_replacement({"runId":"fl1-reverify"})
+        def compose(**kw):
+            work=self.runtime.workspace_root/"fl1-reverify-successor";work.mkdir();manifest=Path(kw["manifest_path"]);manifest.write_text("{}",encoding="utf-8")
+            return {"schema":1,"workspace":str(work.resolve()),"manifest_path":str(manifest.resolve()),"composition_digest":"b"*64}
+        self.runtime.compose_fn=compose;self.runtime.verify_compose_fn=lambda **kw:({"verified":True})
+        self.runtime.compose_successor({"runId":"fl1-reverify"})
+        def denied(**kw):raise SelfBuildComposeError("SUCCESSOR_RECORD_MISMATCH","tampered")
+        self.runtime.verify_compose_fn=denied
+        with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.compose_successor({"runId":"fl1-reverify"})
+        self.assertEqual(cm.exception.code,"SUCCESSOR_RECORD_MISMATCH")
+
     def test_service_principal_revocation_denies_status(self):
         self.pointer()
         self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-deny"})

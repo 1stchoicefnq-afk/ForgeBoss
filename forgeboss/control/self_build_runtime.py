@@ -14,6 +14,7 @@ from forgeboss.control.store import ControlStore
 from forgeboss.control.workspace_state import ProtectedWorkspaceState
 from forgeboss.security.executor_guard import _resolve_git_executable
 from forgeboss.control.receipts import CandidateHandoff,ReviewerReceipt,ControllerAcceptanceReference,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
+from forgeboss.control.self_build_compose import SelfBuildComposeError,compose_successor as compose_reviewed_successor,verify_composed_successor
 
 
 class SelfBuildRuntimeError(RuntimeError):
@@ -49,7 +50,8 @@ class SelfBuildRuntime:
     workspace and budget authority. Paid launch remains separately attested.
     """
     def __init__(self,*,protected_root:Path,boundary,receipt_public_key_b64:str,
-                 git_resolver=_resolve_git_executable):
+                 git_resolver=_resolve_git_executable,compose_fn=compose_reviewed_successor,
+                 verify_compose_fn=verify_composed_successor):
         root=Path(protected_root)
         if not root.is_absolute():
             raise SelfBuildRuntimeError("PROTECTED_ROOT_INVALID","protected root must be absolute")
@@ -57,6 +59,8 @@ class SelfBuildRuntime:
         boundary.assert_service_principal(self.root)
         self.boundary=boundary
         self.git_resolver=git_resolver
+        self.compose_fn=compose_fn
+        self.verify_compose_fn=verify_compose_fn
 
         self.workspace_root=self.root/"self-build-workspaces"
         self.run_root=self.root/"self-build-runs"
@@ -437,6 +441,48 @@ class SelfBuildRuntime:
             code=getattr(ex,"code","ACCEPTANCE_RELEASE_FAILED")
             raise SelfBuildRuntimeError(code,str(ex)) from ex
         return self._finalize_acceptance(path,record,pending)
+
+    def compose_successor(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        if not isinstance(record,dict) or record.get("schema")!=1 or not isinstance(record.get("prepared"),dict):
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run preparation missing")
+        if record.get("phase") not in {"REPLACEMENT_PREPARED","SUCCESSOR_COMPOSED"}:
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run is not composition-ready")
+        prepared=record["prepared"];manifest=self.run_root/f"{run_id}-successor-manifest.json";git=self.git_resolver()
+        kwargs={"record":record,"run_id":run_id,"source_root":prepared.get("source_root"),"workspace_root":self.workspace_root,"git_executable":git,"manifest_path":manifest}
+        existing=record.get("successor")
+        if existing is not None:
+            if record.get("phase")!="SUCCESSOR_COMPOSED" or not isinstance(existing,dict):
+                raise SelfBuildRuntimeError("SUCCESSOR_RECORD_INVALID","persisted successor phase/record mismatch")
+            try:self.verify_compose_fn(**kwargs,expected=existing)
+            except SelfBuildComposeError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+            return existing
+        if record.get("phase")!="REPLACEMENT_PREPARED":
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","successor record missing from composed run")
+        successor_path=self.workspace_root/f"{run_id}-successor"
+        if successor_path.exists() or successor_path.is_symlink() or manifest.exists() or manifest.is_symlink():
+            raise SelfBuildRuntimeError("SUCCESSOR_RECOVERY_REQUIRED","unrecorded successor artifacts require explicit reconciliation")
+        try:
+            result=self.compose_fn(**kwargs,protected_state=self.workspace_state)
+        except SelfBuildComposeError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+        if not isinstance(result,dict) or result.get("schema")!=1:
+            raise SelfBuildRuntimeError("SUCCESSOR_RESULT_INVALID","composer returned invalid successor evidence")
+        entry={**result,"status":"COMPOSED_AWAITING_ACTIVATION"}
+        try:self.verify_compose_fn(**kwargs,expected=entry)
+        except SelfBuildComposeError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+        try:
+            workspace=Path(str(entry.get("workspace") or "")).resolve(strict=True)
+            manifest_observed=Path(str(entry.get("manifest_path") or "")).resolve(strict=True)
+        except Exception as ex:raise SelfBuildRuntimeError("SUCCESSOR_RESULT_INVALID","successor paths invalid") from ex
+        if workspace!=(self.workspace_root/f"{run_id}-successor").resolve(strict=True) or manifest_observed!=manifest.resolve(strict=True):
+            raise SelfBuildRuntimeError("SUCCESSOR_RESULT_INVALID","successor paths differ from protected runtime authority")
+        self._assert_path(manifest_observed)
+        record["successor"]=entry;record["phase"]="SUCCESSOR_COMPOSED";_atomic_json(path,record);self._assert_path(path)
+        return entry
 
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")
