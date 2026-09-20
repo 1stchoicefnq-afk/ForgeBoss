@@ -55,7 +55,9 @@ def _run_git(root: Path, *args: str, binary: bool = False):
             text=not binary,
             encoding=None if binary else "utf-8",
             errors=None if binary else "strict",
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"},
+            env={**{k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")},
+                 "GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":os.devnull,
+                 "GIT_OPTIONAL_LOCKS":"0","GIT_TERMINAL_PROMPT":"0","GIT_ASKPASS":""},
         )
     except Exception as ex:
         raise IdentityError("unable to establish authoritative git identity") from ex

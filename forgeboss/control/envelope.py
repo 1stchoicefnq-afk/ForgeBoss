@@ -6,8 +6,24 @@ from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 def canonical(obj):
     return json.dumps(obj,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
 
+def daemon_state_root(root:Path)->Path:
+    code=Path(root).resolve(strict=True)
+    override=os.environ.get("FORGEBOSS_DAEMON_STATE_ROOT")
+    if not override:return code/"state"/"forgebossd"
+    if os.environ.get("FORGEBOSS_SELF_BUILD_MODE")!="YES":
+        raise RuntimeError("external daemon state is allowed only in self-build mode")
+    raw=Path(override)
+    if not raw.is_absolute():raise RuntimeError("external daemon state root must be absolute")
+    state=raw.resolve(strict=False)
+    try:
+        if os.path.normcase(os.path.commonpath([str(code),str(state)]))==os.path.normcase(str(code)):
+            raise RuntimeError("external daemon state root must be outside code root")
+    except ValueError:
+        pass
+    return state
+
 def secret_file(root:Path):
-    p=Path(root)/"state"/"forgebossd"/"daemon-secret.bin"
+    p=daemon_state_root(Path(root))/"daemon-secret.bin"
     harden_private_dir(p.parent)
     if not p.exists():
         try:

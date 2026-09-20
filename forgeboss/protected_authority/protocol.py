@@ -4,8 +4,8 @@ import hashlib,json,math,re,uuid
 from typing import Any,Mapping
 
 MAX_REQUEST_BYTES=128*1024;MAX_TEXT=64*1024;SCHEMA=2
-OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','verify_launch_authority'}
-_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I)
+OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','verify_launch_authority','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}
+_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_MONEY=re.compile(r'^[0-9]{1,6}(?:\\.[0-9]{1,6})?$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 class AuthorityError(RuntimeError):
     def __init__(self,code:str,message:str='protected authority request denied'):super().__init__(message);self.code=code
 
@@ -82,6 +82,50 @@ def _payload(op,raw):
         o=_exact(raw,('envelope','envelopeDigest'),'PAYLOAD_INVALID')
         if not isinstance(o['envelope'],Mapping):raise AuthorityError('LAUNCH_ENVELOPE_INVALID')
         o['envelope']=_jsonable(o['envelope']);o['envelopeDigest']=_text(o['envelopeDigest'],'ENVELOPE_DIGEST_INVALID',64,_HEX64,True);return o
+    if op=='prepare_self_build':
+        o=_exact(raw,('sourceRoot','baseSha','runId'),'PAYLOAD_INVALID')
+        o['sourceRoot']=_text(o['sourceRoot'],'SOURCE_ROOT_INVALID',4096)
+        o['baseSha']=_text(o['baseSha'],'BASE_SHA_INVALID',64,_OID,True)
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        return o
+    if op=='self_build_current_known_good':
+        o=_exact(raw,(),'PAYLOAD_INVALID')
+        return o
+    if op in {'prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_status'}:
+        o=_exact(raw,('runId',),'PAYLOAD_INVALID')
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        return o
+    if op=='revoke_self_build_worker':
+        o=_exact(raw,('runId','taskId','workerRunId','ownerEpoch','reason'),'PAYLOAD_INVALID')
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        o['taskId']=_text(o['taskId'],'TASK_ID_INVALID',128,_PEER)
+        o['workerRunId']=_text(o['workerRunId'],'WORKER_RUN_ID_INVALID',128,_PEER)
+        o['ownerEpoch']=_int(o['ownerEpoch'],'OWNER_EPOCH_INVALID')
+        o['reason']=_text(o['reason'],'REVOKE_REASON_INVALID',512)
+        return o
+    if op=='record_self_build_handoff':
+        o=_exact(raw,('runId','taskId','workerRunId','ownerEpoch','evidence'),'PAYLOAD_INVALID')
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        o['taskId']=_text(o['taskId'],'TASK_ID_INVALID',128,_PEER)
+        o['workerRunId']=_text(o['workerRunId'],'WORKER_RUN_ID_INVALID',128,_PEER)
+        o['ownerEpoch']=_int(o['ownerEpoch'],'OWNER_EPOCH_INVALID')
+        if not isinstance(o['evidence'],Mapping):raise AuthorityError('HANDOFF_EVIDENCE_INVALID')
+        o['evidence']=_jsonable(o['evidence'])
+        return o
+    if op=='review_self_build_candidate':
+        o=_exact(raw,('runId','taskId','workerRunId','ownerEpoch'),'PAYLOAD_INVALID')
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        o['taskId']=_text(o['taskId'],'TASK_ID_INVALID',128,_PEER)
+        o['workerRunId']=_text(o['workerRunId'],'WORKER_RUN_ID_INVALID',128,_PEER)
+        o['ownerEpoch']=_int(o['ownerEpoch'],'OWNER_EPOCH_INVALID')
+        return o
+    if op=='accept_self_build_candidate':
+        o=_exact(raw,('runId','taskId','workerRunId','ownerEpoch'),'PAYLOAD_INVALID')
+        o['runId']=_text(o['runId'],'RUN_ID_INVALID',64,_RUN_ID)
+        o['taskId']=_text(o['taskId'],'TASK_ID_INVALID',128,_PEER)
+        o['workerRunId']=_text(o['workerRunId'],'WORKER_RUN_ID_INVALID',128,_PEER)
+        o['ownerEpoch']=_int(o['ownerEpoch'],'OWNER_EPOCH_INVALID')
+        return o
     raise AuthorityError('OPERATION_DENIED')
 def _canonical_unsigned(raw):
     o=_exact(raw,('schema','operation','requestId','peerId','repository','controlRevision','payload'),'REQUEST_FIELDS_INVALID')

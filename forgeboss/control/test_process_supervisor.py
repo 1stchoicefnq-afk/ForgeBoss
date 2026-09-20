@@ -37,6 +37,31 @@ class FakeContainment:
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_complete_accepts_only_zero_exit_with_empty_containment(self):
+        fake=FakeContainment(rc=0,empty=True)
+        with mock.patch("forgeboss.control.process_supervisor._launch_containment",return_value=fake):
+            self.sup=ProcessSupervisor()
+            self.sup.launch("w",[PY,"-c","pass"])
+            ev=self.sup.complete("w",1,timeout=.2)
+        self.assertEqual(ev.state,STATE_STOPPED)
+        self.assertTrue(ev.containment_empty)
+        self.assertEqual(ev.exit_code,0)
+        self.assertEqual(ev.reason,"verified-complete")
+        self.assertEqual(self.sup.get("w").last_evidence,ev)
+        self.assertEqual(self.sup.complete("w",1),ev)
+
+    def test_complete_fails_closed_for_live_nonzero_or_nonempty_worker(self):
+        for rc,empty,code in ((None,True,"WORKER_STILL_RUNNING"),(7,True,"WORKER_COMPLETION_UNPROVEN"),(0,False,"WORKER_COMPLETION_UNPROVEN")):
+            with self.subTest(rc=rc,empty=empty):
+                fake=FakeContainment(rc=rc,empty=empty)
+                with mock.patch("forgeboss.control.process_supervisor._launch_containment",return_value=fake):
+                    self.sup=ProcessSupervisor()
+                    self.sup.launch("w",[PY,"-c","pass"])
+                    with self.assertRaises(SupervisorError) as cm:self.sup.complete("w",1,timeout=.2)
+                    self.assertEqual(cm.exception.code,code)
+                self.sup.close()
+                del self.sup
+
     def tearDown(self):
         try:
             if hasattr(self, "sup"): self.sup.close()

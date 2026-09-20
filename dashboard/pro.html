@@ -128,6 +128,7 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
     <div class="controls">
      <div class="field"><label>DURATION</label><select id="duration"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120" selected>2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="until-stop">RUN UNTIL STOPPED</option></select></div>
      <div class="field"><label>MAX API SPEND</label><input id="budget" type="number" step=".10" min=".10" value="3.00"></div>
+     <div class="field"><label>P0 PROOF MODE</label><label style="display:flex;gap:8px;align-items:center;font-size:11px"><input id="p0Proof" type="checkbox" style="width:auto">3 cycles + $0 rollback drill</label></div>
      <div class="field"><label>MODE</label><select id="mode"><option value="cost-optimized">Cost optimized · Repair Rat first → Luna</option><option value="balanced">Balanced · Terra</option><option value="strong">Strong · Sol</option></select></div>
      <button class="start" onclick="startBuild()">▶ START BUILD</button>
     </div>
@@ -288,11 +289,13 @@ function installProjectDrop(){
  z.addEventListener('drop',e=>{e.preventDefault();projectDropTitle.textContent='READING FORGEBOSS…'});
 }
 async function startBuild(){
- let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw);
+ let b=Number(budget.value),raw=duration.value,forever=raw==='until-stop',d=forever?120:Number(raw),proof=!!document.getElementById('p0Proof')?.checked;
  let dur=forever?'until you stop the session':`${d} minutes`;
  if(!last.selected_project){alert('Drop ForgeBoss onto the Self-Build Project box first.');return}
- if(!confirm(`ForgeBoss will work on FORGEBOSS ITSELF ${dur} and may spend up to $${b.toFixed(2)}.\n\nThe running known-good ForgeBoss must stay untouched while candidates build in isolated workspaces.\n\nStart?`))return;
- const r=await window.pywebview.api.start_build({budget_usd:b,duration_minutes:d,duration_mode:forever?'until-stopped':'timed',mode:mode.value});
+ if(proof&&b<6){alert('P0 proof mode requires at least $6.00 so all three $2.00 protected cycle caps are reserved before launch.');return}
+ let proofText=proof?'\n\nP0 PROOF MODE: 3 cycles are authorized and ForgeBoss will run one deliberate $0 broken-candidate activation drill to prove rollback after cycle 1.':'';
+ if(!confirm(`ForgeBoss will work on FORGEBOSS ITSELF ${dur} and may spend up to ${b.toFixed(2)}.\n\nThe running known-good ForgeBoss must stay untouched while candidates build in isolated workspaces.${proofText}\n\nStart?`))return;
+ const r=await window.pywebview.api.start_build({budget_usd:b,duration_minutes:d,duration_mode:forever?'until-stopped':'timed',mode:mode.value,p0_three_cycle_proof:proof});
  if(!r?.ok)alert(r?.message||'ForgeBoss refused to start safely.');
 }
 async function safeStop(){await window.pywebview.api.safe_stop()}

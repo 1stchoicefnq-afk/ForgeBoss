@@ -3,7 +3,15 @@ import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
-STATE=ROOT/"state"/"executor-security";STATE.mkdir(parents=True,exist_ok=True)
+
+def _runtime_state_root()->Path:
+    return Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
+
+def _state_dir()->Path:
+    path=_runtime_state_root()/"executor-security"
+    path.mkdir(parents=True,exist_ok=True)
+    return path
+
 CNW=getattr(subprocess,"CREATE_NO_WINDOW",0)
 class SecurityError(RuntimeError):pass
 
@@ -460,7 +468,7 @@ def _atomic_write_json(path,obj):
         except OSError:pass
     os.replace(tmp,path)
 class _WorkspaceFence:
-    def __init__(self,workspace):self.path=STATE/("paid-start-"+hashlib.sha256(str(Path(workspace).resolve()).encode()).hexdigest()+".lock");self.f=None
+    def __init__(self,workspace):self.path=_state_dir()/("paid-start-"+hashlib.sha256(str(Path(workspace).resolve()).encode()).hexdigest()+".lock");self.f=None
     def __enter__(self):
         self.f=self.path.open("a+b");self.f.seek(0,2)
         if self.f.tell()==0:self.f.write(b"\0");self.f.flush()
@@ -488,6 +496,83 @@ def _load_control_envelope(raw):
         from forgeboss.control.envelope import secret_file,verify_envelope
         _,secret=secret_file(ROOT);return verify_envelope(payload,secret)
     except Exception as e:raise SecurityError("signed control envelope verification failed: "+str(e)) from e
+def _protected_launch_bundle(raw):
+    if not isinstance(raw,str) or not raw.strip():raise SecurityError("protected launch bundle missing")
+    p=Path(raw)
+    try:obj=json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:raise SecurityError("protected launch bundle is invalid") from e
+    if not isinstance(obj,dict) or set(obj)!={"schema","envelope","authorityResponse"} or obj.get("schema")!=1:
+        raise SecurityError("protected launch bundle schema invalid")
+    return obj
+
+def _protected_control_authority(raw,lease,packet,workspace,executor,cli_budget=None):
+    bundle=_protected_launch_bundle(raw);authority=packet.get("self_build_authority")
+    if not isinstance(authority,dict):raise SecurityError("self-build protected authority packet missing")
+    required={"repository","control_revision","task_id","run_id","owner_epoch","builder_id","assignment_generation","assignment_sha256",
+              "branch","budget_usd","global_budget_run_id","global_budget_reservation_id","receipt_public_key_b64"}
+    if set(authority)!=required:raise SecurityError("self-build protected authority packet shape invalid")
+    env=bundle["envelope"]
+    if not isinstance(env,dict) or set(env)!={"signed","signature"} or not isinstance(env.get("signed"),dict) or not isinstance(env.get("signature"),str):
+        raise SecurityError("protected launch envelope invalid")
+    signed=env["signed"]
+    from forgeboss.protected_authority.protocol import canonical_digest
+    from forgeboss.protected_authority.signing import verify_signed_receipt
+    digest=canonical_digest(signed);response=bundle["authorityResponse"]
+    pin=authority["receipt_public_key_b64"]
+    if not verify_signed_receipt(response,pin):raise SecurityError("protected authority service receipt invalid")
+    receipt=response["receipt"];result=response["result"]
+    if receipt.get("operation")!="verify_launch_authority":raise SecurityError("protected authority receipt operation mismatch")
+    if str(receipt.get("repository","")).casefold()!=str(authority["repository"]).casefold():raise SecurityError("protected authority receipt repository mismatch")
+    if int(receipt.get("controlRevision",0))!=int(authority["control_revision"]):raise SecurityError("protected authority control revision mismatch")
+    if result.get("verified") is not True or result.get("envelopeDigest")!=digest:raise SecurityError("protected launch authority not verified")
+    work=Path(workspace).resolve();allowed=[norm(x) for x in lease.get("allowed_files",[])]
+    expected={
+        "schema":1,
+        "repository":authority["repository"],
+        "controlRevision":int(authority["control_revision"]),
+        "taskId":authority["task_id"],
+        "runId":authority["run_id"],
+        "ownerEpoch":int(authority["owner_epoch"]),
+        "builderId":authority["builder_id"],
+        "assignmentGeneration":int(authority["assignment_generation"]),
+        "assignmentSha256":authority["assignment_sha256"],
+        "branch":authority["branch"],
+        "worktreePath":str(work),
+        "runtimeId":executor,
+        "allowedPaths":allowed,
+        "packetSha256":lease.get("packet_sha256"),
+        "budgetUsd":str(authority["budget_usd"]),
+        "globalBudgetRunId":authority["global_budget_run_id"],
+        "globalBudgetReservationId":authority["global_budget_reservation_id"],
+    }
+    expires=signed.get("expiresAt")
+    if isinstance(expires,bool):
+        raise SecurityError("protected launch expiry invalid")
+    try:expires=float(expires)
+    except Exception as e:raise SecurityError("protected launch expiry invalid") from e
+    if not math.isfinite(expires) or expires<=time.time():raise SecurityError("protected launch authority expired")
+    actual=dict(signed);actual.pop("expiresAt",None)
+    if actual!=expected:raise SecurityError("protected launch envelope binding mismatch")
+    budget=_positive_budget(authority["budget_usd"])
+    if cli_budget is not None and _positive_budget(cli_budget)!=budget:raise SecurityError("runner budget differs from protected launch authority")
+    return {"taskId":authority["task_id"],"runId":authority["run_id"],"ownerEpoch":int(authority["owner_epoch"]),
+            "budgetUsd":budget,"worktreePath":str(work),"runtime":{"adapter":executor},"expiresAt":expires,
+            "allowedPaths":allowed,"envelopeSha256":digest,"protected":True,
+            "globalBudgetRunId":authority["global_budget_run_id"],"globalBudgetReservationId":authority["global_budget_reservation_id"]}
+
+def consume_protected_paid_start(lease_path,token,packet_path,workspace,executor,launch_bundle,cli_budget=None):
+    lease_path=Path(lease_path);pp=Path(packet_path)
+    with _WorkspaceFence(workspace):
+        lease=_verify_unlocked(lease_path,token,pp,workspace,executor)
+        if lease.get("paid_consumed") is True:raise SecurityError("paid executor authority already consumed")
+        packet=json.loads(pp.read_text(encoding="utf-8"))
+        authority=_protected_control_authority(launch_bundle,lease,packet,workspace,executor,cli_budget)
+        ch=changed(lease.get("git_metadata"),git_metadata_snapshot(Path(workspace).resolve()))
+        if ch:raise SecurityError("Git metadata changed at protected paid-start boundary: "+json.dumps(ch))
+        lease["paid_consumed"]=True;lease["paid_consumed_at"]=time.time();lease["paid_authority"]=authority
+        _atomic_write_json(lease_path,lease)
+        return authority
+
 def _control_authority(raw,lease,workspace,executor):
     env=_load_control_envelope(raw);work=Path(workspace).resolve()
     if Path(env.get("worktreePath","")).resolve()!=work:raise SecurityError("control envelope workspace mismatch")
@@ -502,14 +587,18 @@ def _control_authority(raw,lease,workspace,executor):
     if [x.casefold() for x in ea]!=[x.casefold() for x in la]:raise SecurityError("control envelope allowedPaths differ from executor lease")
     unsigned=json.dumps(env,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
     return {"taskId":task,"runId":run,"ownerEpoch":epoch,"budgetUsd":budget,"worktreePath":str(work),"runtime":runtime,"expiresAt":float(env["expiresAt"]),"allowedPaths":ea,"envelopeSha256":hashlib.sha256(unsigned).hexdigest()}
-def issue(packet_path,workspace,executor,ttl=1200):
+def issue_lease(packet_path,workspace,executor,ttl=1200):
     pp=Path(packet_path);work=Path(workspace).resolve();packet=json.loads(pp.read_text(encoding="utf-8"));allowed,context=validate_packet(packet)
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} write-capable execution is quarantined until OS/network isolation is verified")
     with _WorkspaceFence(work):
         assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
         lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
-        lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
-    print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
+        lp=_state_dir()/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
+    return {"ok":True,"lease":str(lp),"token":token}
+
+def issue(packet_path,workspace,executor,ttl=1200):
+    print(json.dumps(issue_lease(packet_path,workspace,executor,ttl)));return 0
+
 def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
     if time.time()>float(lease.get("expires_at",0)):raise SecurityError("executor lease expired")
@@ -554,10 +643,13 @@ def main():
     ap=argparse.ArgumentParser();sp=ap.add_subparsers(dest="cmd",required=True);x=sp.add_parser("issue");x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True);x.add_argument("--ttl",type=int,default=1200)
     for n in ("verify","postflight"):
         x=sp.add_parser(n);x.add_argument("--lease",required=True);x.add_argument("--token",required=True);x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True)
+    x=sp.add_parser("protected-paid-start");x.add_argument("--lease",required=True);x.add_argument("--token",required=True);x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True);x.add_argument("--launch-bundle",required=True);x.add_argument("--budget",required=True)
     ns=ap.parse_args()
     try:
         if ns.cmd=="issue":return issue(ns.packet,ns.workspace,ns.executor,ns.ttl)
         if ns.cmd=="verify":verify(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor);print(json.dumps({"ok":True}));return 0
+        if ns.cmd=="protected-paid-start":
+            a=consume_protected_paid_start(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor,ns.launch_bundle,ns.budget);print(json.dumps({"ok":True,"authority":a}));return 0
         return postflight(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor)
     except Exception as e:print(json.dumps({"ok":False,"error":f"{type(e).__name__}: {e}"}));return 13
 if __name__=="__main__":raise SystemExit(main())

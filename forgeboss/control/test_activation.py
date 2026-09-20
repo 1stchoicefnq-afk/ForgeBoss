@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -7,10 +8,64 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.control.activation import ActivationError, ActivationManager, _same_process, _terminate_posix_pidfd
+from forgeboss.control.activation import ActivationError, ActivationManager, _candidate_launch_command, _same_process, _terminate_posix_pidfd
+from forgeboss.control.activation_probe import ActivationProbeError,read_activation_ready,write_activation_ready
+from forgeboss.control.envelope import daemon_state_root
 
 
 class ActivationTests(unittest.TestCase):
+    def test_external_daemon_state_requires_self_build_and_must_be_outside_code_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);code=base/"code";code.mkdir();external=base/"external"
+            with patch.dict(os.environ,{"FORGEBOSS_DAEMON_STATE_ROOT":str(external)},clear=False):
+                os.environ.pop("FORGEBOSS_SELF_BUILD_MODE",None)
+                with self.assertRaisesRegex(RuntimeError,"only in self-build mode"):daemon_state_root(code)
+            with patch.dict(os.environ,{"FORGEBOSS_SELF_BUILD_MODE":"YES","FORGEBOSS_DAEMON_STATE_ROOT":str(external)},clear=False):
+                self.assertEqual(daemon_state_root(code),external.resolve(strict=False))
+            inside=code/"state-external"
+            with patch.dict(os.environ,{"FORGEBOSS_SELF_BUILD_MODE":"YES","FORGEBOSS_DAEMON_STATE_ROOT":str(inside)},clear=False):
+                with self.assertRaisesRegex(RuntimeError,"outside code root"):daemon_state_root(code)
+
+    def test_activation_ready_protocol_is_exact_exclusive_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"ready.json";identity={"revision":"a"*40,"manifestSha256":"b"*64,"treeSha256":"c"*64,"identitySha256":"d"*64}
+            written=write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity,state_root=str(Path(td)/"runtime"))
+            observed,digest=read_activation_ready(path,timeout=0.2)
+            self.assertEqual(observed,written);self.assertEqual(len(digest),64)
+            with self.assertRaises(ActivationProbeError):write_activation_ready(path,pid=123,nonce="n"*64,generation=7,host="127.0.0.1",port=32123,identity=identity,state_root=str(Path(td)/"runtime"))
+
+    def test_isolated_module_bootstrap_supports_relative_imports_and_ignores_hostile_pythonpath(self):
+        import subprocess,sys
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);root=base/"candidate";good=root/"forgeboss"/"control";good.mkdir(parents=True)
+            (good/"helper.py").write_text("VALUE='GOOD'\n",encoding="utf-8")
+            entry=good/"daemon.py"
+            entry.write_text(
+                "from pathlib import Path\nfrom .helper import VALUE\nimport sys\n"
+                "def main(): Path(sys.argv[1]).write_text(VALUE,encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            hostile=base/"hostile"/"forgeboss"/"control";hostile.mkdir(parents=True)
+            (hostile/"daemon.py").write_text(
+                "from pathlib import Path\nimport sys\n"
+                "def main(): Path(sys.argv[1]).write_text('EVIL',encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            marker=base/"marker.txt"
+            argv=_candidate_launch_command(root,entry,"forgeboss/control/daemon.py",[str(marker)])
+            env=dict(os.environ);env["PYTHONPATH"]=str(base/"hostile")
+            p=subprocess.run(argv,cwd=root,env=env,capture_output=True,text=True,timeout=20)
+            self.assertEqual(p.returncode,0,msg=p.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"),"GOOD")
+
+    def test_candidate_module_path_rejects_escape_and_nonmodule(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);entry=root/"x.py";entry.write_text("pass\n",encoding="utf-8")
+            with self.assertRaises(ActivationError):
+                _candidate_launch_command(root,entry,"../x.py",[])
+            with self.assertRaises(ActivationError):
+                _candidate_launch_command(root,entry,"forgeboss/control/__init__.py",[])
+
     def _identity(self, root, revision="1" * 40, verified=True):
         return {"verified": verified, "revision": revision if verified else None, "codeRoot": str(root.resolve()), "entrypoint": "forgeboss/daemon.py", "manifestPath": str(root / "manifest.json"), "manifestSha256": "2" * 64 if verified else None, "identitySha256": "3" * 64 if verified else None, "treeSha256": "4" * 64 if verified else None, "files": {}}
 
@@ -32,7 +87,53 @@ class ActivationTests(unittest.TestCase):
 
     def _probe(self, manager, state):
         manager.begin_probe(expected_generation=state["generation"])
-        return manager.record_probe({"startup": True, "health": True, "control": True, "selftests": True, "multiAgent": True, "identity": {"revision": state["candidate"]["revision"], "manifestSha256": state["candidate"]["manifestSha256"], "treeSha256": state["candidate"]["treeSha256"], "identitySha256": state["candidate"]["identitySha256"]}}, expected_generation=state["generation"])
+        identity={"revision": state["candidate"]["revision"], "manifestSha256": state["candidate"]["manifestSha256"], "treeSha256": state["candidate"]["treeSha256"], "identitySha256": state["candidate"]["identitySha256"]}
+        evidence={"schema":1,"fixture":True,"identity":identity}
+        digest=hashlib.sha256(json.dumps(evidence,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+        return manager.record_probe({"startup": True, "health": True, "control": True, "selftests": True, "multiAgent": True, "identity": identity, "evidence":evidence, "evidenceSha256":digest}, expected_generation=state["generation"], _authority=manager._probe_authority)
+
+    def test_caller_supplied_probe_and_health_are_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base)
+            with self.assertRaisesRegex(ActivationError,"caller-supplied activation probe denied"):
+                manager.record_probe({},expected_generation=state["generation"])
+            with self.assertRaisesRegex(ActivationError,"caller-supplied activation health denied"):
+                manager.activation_health(True,expected_generation=state["generation"],evidence={})
+
+    def test_authoritative_probe_binds_ready_process_control_tests_and_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base)
+            saved=manager.status();process={"pid":44,"startToken":"tok","exe":str(Path(__import__("sys").executable).resolve())}
+            saved.update({"phase":"STARTING","activationNonce":"n"*64,"readyPath":str(base/"ready.json"),"candidateStateRoot":str(base/"candidate-runtime"),"processIdentity":process,"pid":44})
+            manager.state_path.write_text(json.dumps(saved),encoding="utf-8")
+            candidate=saved["candidate"]
+            ready={"schema":1,"pid":44,"nonce":"n"*64,"generation":saved["generation"],"host":"127.0.0.1","port":32123,"identity":candidate,"stateRoot":str(base/"candidate-runtime")}
+            control={"connected":True,"healthy":True,"control":True,"multiAgentCapability":True,"capabilities":["smart-parallel"],"identity":candidate,"snapshotDigest":"a"*64}
+            tests={"rows":[{"label":"selftests"},{"label":"multiAgent"}],"selftests":True,"multiAgent":True}
+            with patch("forgeboss.control.activation.read_activation_ready",return_value=(ready,"b"*64)),patch("forgeboss.control.activation.probe_control_endpoint",return_value=control),patch("forgeboss.control.activation.run_activation_core_tests",return_value=tests),patch("forgeboss.control.activation.process_identity",return_value=process),patch("forgeboss.control.activation.verify_build_manifest",return_value=candidate):
+                out=manager.authoritative_probe(expected_generation=saved["generation"])
+            self.assertEqual(out["phase"],"PROBED")
+            self.assertEqual(out["probeEvidence"]["endpoint"],{"host":"127.0.0.1","port":32123})
+            self.assertEqual(out["probe"]["evidenceSha256"],hashlib.sha256(json.dumps(out["probeEvidence"],sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest())
+
+    def test_start_candidate_strips_secrets_disables_paid_and_keeps_checkout_byte_clean(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base)
+            captured={}
+            class Proc:pid=4321
+            def fake_popen(argv,**kw):captured["argv"]=list(argv);captured["env"]=dict(kw["env"]);return Proc()
+            identity={"pid":4321,"startToken":"tok","exe":str(Path(__import__("sys").executable).resolve())}
+            hostile={"OPENAI_API_KEY":"secret","GITHUB_TOKEN":"secret","GIT_DIR":"evil","PYTHONPATH":"evil","FORGEBOSS_AUTHORITY_PEER_KEY":"secret"}
+            with patch.dict(os.environ,hostile,clear=False),patch("forgeboss.control.activation.subprocess.Popen",side_effect=fake_popen),patch("forgeboss.control.activation.process_identity",return_value=identity):
+                manager.start_candidate(expected_generation=state["generation"])
+            env=captured["env"]
+            for key in hostile:self.assertNotIn(key,env)
+            self.assertEqual(env["FORGEBOSS_ALLOW_PAID_EXECUTOR"],"NO")
+            self.assertEqual(env["PYTHONDONTWRITEBYTECODE"],"1")
+            self.assertEqual(env["PYTHONUTF8"],"1")
+            self.assertIn("--host",captured["argv"]);self.assertIn("127.0.0.1",captured["argv"])
+            self.assertIn("--port",captured["argv"]);self.assertIn("0",captured["argv"])
+            self.assertIn("--activation-ready-file",captured["argv"])
 
     def test_unverified_running_controller_cannot_stage(self):
         with tempfile.TemporaryDirectory() as td:
@@ -95,10 +196,32 @@ class ActivationTests(unittest.TestCase):
             prior = manager.initialize_known_good()["current"]
             state = self._stage(manager, base)
             manager.begin_probe(expected_generation=state["generation"])
+            evidence={"schema":1,"fixture":"failed"}
+            digest=hashlib.sha256(json.dumps(evidence,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
             with self.assertRaisesRegex(ActivationError, "candidate probe failed"):
-                manager.record_probe({"startup": True, "health": False, "control": True, "selftests": True, "multiAgent": True, "identity": {}}, expected_generation=state["generation"])
+                manager.record_probe({"startup": True, "health": False, "control": True, "selftests": True, "multiAgent": True, "identity": {}, "evidence":evidence, "evidenceSha256":digest}, expected_generation=state["generation"], _authority=manager._probe_authority)
             self.assertEqual(manager.known_good_pointer()["current"]["revision"], prior["revision"])
             self.assertEqual(manager.status()["phase"], "ROLLED_BACK")
+
+    def test_successful_health_seals_ready_and_next_generation_carries_running_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base,revision="a"*40)
+            self._probe(manager,state);manager.promote(expected_generation=state["generation"])
+            current_proc={"pid":222,"startToken":"new","exe":"/python"}
+            prior_proc={"pid":111,"startToken":"old","exe":"/python"}
+            saved=manager.status();saved["processIdentity"]=current_proc;saved["priorProcessIdentity"]=prior_proc
+            manager.state_path.write_text(json.dumps(saved),encoding="utf-8")
+            with patch("forgeboss.control.activation.process_identity",return_value=current_proc),patch("forgeboss.control.activation.terminate_verified_process",return_value=True) as terminate:
+                manager.activation_health(True,expected_generation=state["generation"],_authority=manager._health_authority,evidence={"schema":1,"healthy":True})
+            terminate.assert_called_once_with(prior_proc,5.0)
+            ready=manager.status();self.assertEqual(ready["phase"],"READY")
+            self.assertEqual(ready["running"]["revision"],"a"*40);self.assertEqual(ready["runningProcessIdentity"],current_proc)
+            self.assertIsNone(ready["priorProcessIdentity"])
+            next_manager=ActivationManager(manager.state_dir,ready["running"])
+            with patch("forgeboss.control.activation.process_identity",return_value=current_proc):
+                next_state=self._stage(next_manager,base,revision="b"*40,expected_generation=ready["generation"])
+            self.assertEqual(next_state["generation"],ready["generation"]+1)
+            self.assertEqual(next_state["priorProcessIdentity"],current_proc)
 
     def test_forced_rollback_revokes_candidate_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
