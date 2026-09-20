@@ -256,6 +256,75 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.compose_successor({"runId":"fl1-reverify"})
         self.assertEqual(cm.exception.code,"SUCCESSOR_RECORD_MISMATCH")
 
+    def test_activate_successor_proves_promotes_health_and_persists_final_state(self):
+        from forgeboss.control.activation import ActivationError
+        run_id="fl1-activate";work=self.runtime.workspace_root/f"{run_id}-successor";work.mkdir()
+        manifest=self.runtime.run_root/f"{run_id}-successor-manifest.json";manifest.write_text("{}",encoding="utf-8")
+        successor={"schema":1,"run_id":run_id,"workspace":str(work.resolve()),"manifest_path":str(manifest.resolve()),
+                   "successor_sha":"b"*40,"manifest_sha256":"c"*64,"status":"COMPOSED_AWAITING_ACTIVATION","composition_digest":"d"*64}
+        record={"schema":1,"phase":"SUCCESSOR_COMPOSED","prepared":{"source_root":str(self.source)},"successor":successor}
+        self.runtime._run_path(run_id).write_text(json.dumps(record),encoding="utf-8")
+        self.runtime.verify_compose_fn=lambda **kw:({"verified":True})
+        running={"verified":True,"revision":"a"*40,"codeRoot":str(self.source.resolve()),"manifestPath":str(self.source/"manifest.json"),
+                 "manifestSha256":"1"*64,"identitySha256":"2"*64,"treeSha256":"3"*64}
+        self.runtime._verified_running_identity=lambda:dict(running)
+        self.runtime.identity_verifier=lambda *a,**kw:{"verified":True,"revision":"b"*40,"manifestSha256":"c"*64}
+        events=[]
+        class Manager:
+            def __init__(self,*args):self.state={"schema":2,"phase":"IDLE","generation":1};self.pointer={"schema":2,"generation":1,"current":running,"previous":None}
+            def initialize_known_good(self):events.append("init");return self.pointer
+            def status(self):return dict(self.state)
+            def stage(self,root,manifest_path,revision,manifest_sha,expected_generation=None):
+                events.append("stage");self.state={"schema":2,"phase":"STAGED","generation":2,"candidate":{"revision":revision,"manifestSha256":manifest_sha}};return dict(self.state)
+            def start_candidate(self,expected_generation=None):
+                events.append("start");self.state.update({"phase":"STARTING","candidateStateRoot":str(self.runtime_state if hasattr(self,"runtime_state") else Path(self_ref.runtime.activation_root)/"candidate-runtime-2")});return object()
+            def authoritative_probe(self,expected_generation=None,timeout=0):
+                events.append("probe");self.state.update({"phase":"PROBED","probe":{"evidenceSha256":"4"*64}});return dict(self.state)
+            def promote(self,expected_generation=None):
+                events.append("promote");self.state["phase"]="PROMOTED";self.pointer={"schema":2,"generation":2,"current":{"revision":"b"*40,"manifestSha256":"c"*64},"previous":running};return self.pointer
+            def authoritative_health_check(self,expected_generation=None,timeout=0):
+                events.append("health");self.state["activationHealth"]={"evidenceSha256":"5"*64};return self.pointer
+            def known_good_pointer(self):return self.pointer
+        self_ref=self
+        manager=Manager()
+        self.runtime.activation_manager_factory=lambda *_:manager
+        out=self.runtime.activate_successor({"runId":run_id})
+        self.assertEqual(out["status"],"ACTIVATED_KNOWN_GOOD")
+        self.assertEqual(events,["init","stage","start","probe","promote","health"])
+        saved=self.runtime.status({"runId":run_id})
+        self.assertEqual(saved["phase"],"SUCCESSOR_ACTIVATED")
+        self.assertEqual(saved["activation"]["probe_evidence_sha256"],"4"*64)
+        self.assertEqual(saved["activation"]["health_evidence_sha256"],"5"*64)
+
+    def test_activate_successor_health_failure_records_failure_and_does_not_mark_activated(self):
+        from forgeboss.control.activation import ActivationError
+        run_id="fl1-activate-fail";work=self.runtime.workspace_root/f"{run_id}-successor";work.mkdir()
+        manifest=self.runtime.run_root/f"{run_id}-successor-manifest.json";manifest.write_text("{}",encoding="utf-8")
+        successor={"schema":1,"run_id":run_id,"workspace":str(work.resolve()),"manifest_path":str(manifest.resolve()),
+                   "successor_sha":"b"*40,"manifest_sha256":"c"*64,"status":"COMPOSED_AWAITING_ACTIVATION","composition_digest":"d"*64}
+        self.runtime._run_path(run_id).write_text(json.dumps({"schema":1,"phase":"SUCCESSOR_COMPOSED","prepared":{"source_root":str(self.source)},"successor":successor}),encoding="utf-8")
+        self.runtime.verify_compose_fn=lambda **kw:({"verified":True})
+        running={"verified":True,"revision":"a"*40,"codeRoot":str(self.source.resolve()),"manifestPath":str(self.source/"manifest.json"),
+                 "manifestSha256":"1"*64,"identitySha256":"2"*64,"treeSha256":"3"*64}
+        self.runtime._verified_running_identity=lambda:dict(running)
+        class Manager:
+            def __init__(self):self.state={"schema":2,"phase":"IDLE","generation":1};self.pointer={"schema":2,"generation":1,"current":running}
+            def initialize_known_good(self):return self.pointer
+            def status(self):return dict(self.state)
+            def stage(self,*a,**kw):self.state={"schema":2,"phase":"STAGED","generation":2,"candidate":{"revision":"b"*40,"manifestSha256":"c"*64}};return dict(self.state)
+            def start_candidate(self,**kw):self.state.update({"phase":"STARTING","candidateStateRoot":str(self_ref.runtime.activation_root/"candidate-runtime-2")});return object()
+            def authoritative_probe(self,**kw):self.state.update({"phase":"PROBED","probe":{"evidenceSha256":"4"*64}});return dict(self.state)
+            def promote(self,**kw):self.state["phase"]="PROMOTED";self.pointer={"schema":2,"generation":2,"current":{"revision":"b"*40,"manifestSha256":"c"*64}};return self.pointer
+            def authoritative_health_check(self,**kw):self.state["phase"]="ROLLED_BACK";raise ActivationError("health failed")
+            def known_good_pointer(self):return self.pointer
+        self_ref=self;manager=Manager();self.runtime.activation_manager_factory=lambda *_:manager
+        with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.activate_successor({"runId":run_id})
+        self.assertEqual(cm.exception.code,"ACTIVATION_FAILED")
+        saved=self.runtime.status({"runId":run_id})
+        self.assertEqual(saved["phase"],"SUCCESSOR_COMPOSED")
+        self.assertEqual(saved["activation"]["status"],"ACTIVATION_FAILED")
+        self.assertEqual(saved["activation"]["activation_phase"],"ROLLED_BACK")
+
     def test_service_principal_revocation_denies_status(self):
         self.pointer()
         self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-deny"})

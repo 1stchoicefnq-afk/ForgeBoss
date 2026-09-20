@@ -151,6 +151,9 @@ class ProtectedAuthorityClient:
     def compose_self_build_successor(self,*,run_id:str)->dict:
         return self.call("compose_self_build_successor",{"runId":run_id})
 
+    def activate_self_build_successor(self,*,run_id:str)->dict:
+        return self.call("activate_self_build_successor",{"runId":run_id})
+
     def self_build_status(self,*,run_id:str)->dict:
         return self.call("self_build_status",{"runId":run_id})
 

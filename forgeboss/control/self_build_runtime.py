@@ -16,6 +16,8 @@ from forgeboss.security.executor_guard import _resolve_git_executable
 from forgeboss.control.receipts import CandidateHandoff,ReviewerReceipt,ControllerAcceptanceReference,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
 from forgeboss.control.self_build_review import SelfBuildReviewError,review_frozen_candidate
 from forgeboss.control.self_build_compose import SelfBuildComposeError,compose_successor as compose_reviewed_successor,verify_composed_successor
+from forgeboss.control.activation import ActivationError,ActivationManager
+from forgeboss.control.known_good import IdentityError,verify_build_manifest
 
 
 class SelfBuildRuntimeError(RuntimeError):
@@ -52,7 +54,9 @@ class SelfBuildRuntime:
     """
     def __init__(self,*,protected_root:Path,boundary,receipt_public_key_b64:str,
                  git_resolver=_resolve_git_executable,compose_fn=compose_reviewed_successor,
-                 verify_compose_fn=verify_composed_successor,review_fn=review_frozen_candidate):
+                 verify_compose_fn=verify_composed_successor,review_fn=review_frozen_candidate,
+                 activation_manager_factory=ActivationManager,identity_verifier=verify_build_manifest,
+                 runtime_code_root:Path|None=None):
         root=Path(protected_root)
         if not root.is_absolute():
             raise SelfBuildRuntimeError("PROTECTED_ROOT_INVALID","protected root must be absolute")
@@ -63,6 +67,10 @@ class SelfBuildRuntime:
         self.compose_fn=compose_fn
         self.verify_compose_fn=verify_compose_fn
         self.review_fn=review_fn
+        self.activation_manager_factory=activation_manager_factory
+        self.identity_verifier=identity_verifier
+        try:self.runtime_code_root=Path(runtime_code_root or Path(__file__).resolve().parents[2]).resolve(strict=True)
+        except Exception as ex:raise SelfBuildRuntimeError("RUNNING_CODE_ROOT_INVALID","running ForgeBoss code root unavailable") from ex
 
         self.workspace_root=self.root/"self-build-workspaces"
         self.run_root=self.root/"self-build-runs"
@@ -502,6 +510,44 @@ class SelfBuildRuntime:
             raise SelfBuildRuntimeError(code,str(ex)) from ex
         return self._finalize_acceptance(path,record,pending)
 
+    def _verified_running_identity(self)->dict:
+        pointer=self._pointer()
+        current=pointer.get("current") if isinstance(pointer,dict) else None
+        if pointer.get("schema")!=2 or not isinstance(current,dict) or current.get("verified") is not True:
+            raise SelfBuildRuntimeError("RUNNING_IDENTITY_INVALID","protected known-good pointer current identity invalid")
+        try:
+            root=Path(str(current.get("codeRoot") or "")).resolve(strict=True)
+            manifest=Path(str(current.get("manifestPath") or "")).resolve(strict=True)
+        except Exception as ex:raise SelfBuildRuntimeError("RUNNING_IDENTITY_INVALID","known-good code/manifest path invalid") from ex
+        if root!=self.runtime_code_root:
+            raise SelfBuildRuntimeError("RUNNING_IDENTITY_MISMATCH","protected service is not executing current known-good code root")
+        try:
+            observed=self.identity_verifier(
+                manifest,root,str(current.get("revision") or ""),
+                str(current.get("manifestSha256") or ""),
+            )
+        except Exception as ex:raise SelfBuildRuntimeError("RUNNING_IDENTITY_INVALID",str(ex)) from ex
+        for key in ("revision","codeRoot","manifestPath","manifestSha256","identitySha256","treeSha256"):
+            if observed.get(key)!=current.get(key):
+                raise SelfBuildRuntimeError("RUNNING_IDENTITY_MISMATCH","running known-good identity differs from protected pointer: "+key)
+        return observed
+
+    def _successor_verify_kwargs(self,record:dict,run_id:str)->tuple[dict,dict]:
+        prepared=record.get("prepared")
+        successor=record.get("successor")
+        if not isinstance(prepared,dict) or not isinstance(successor,dict):
+            raise SelfBuildRuntimeError("SUCCESSOR_RECORD_INVALID","composed successor evidence missing")
+        manifest=self.run_root/f"{run_id}-successor-manifest.json"
+        kwargs={
+            "record":record,"run_id":run_id,"source_root":prepared.get("source_root"),
+            "workspace_root":self.workspace_root,"git_executable":self.git_resolver(),
+            "manifest_path":manifest,
+        }
+        try:self.verify_compose_fn(**kwargs,expected=successor)
+        except SelfBuildComposeError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+        except Exception as ex:raise SelfBuildRuntimeError("SUCCESSOR_REVERIFY_FAILED",str(ex)) from ex
+        return successor,kwargs
+
     def compose_successor(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
         if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
@@ -543,6 +589,121 @@ class SelfBuildRuntime:
         self._assert_path(manifest_observed)
         record["successor"]=entry;record["phase"]="SUCCESSOR_COMPOSED";_atomic_json(path,record);self._assert_path(path)
         return entry
+
+    def activate_successor(self,payload:dict)->dict:
+        run_id=str(payload.get("runId") or "");path=self._run_path(run_id)
+        if not path.is_file():raise SelfBuildRuntimeError("RUN_NOT_FOUND","self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
+        if not isinstance(record,dict) or record.get("schema")!=1 or record.get("phase") not in {"SUCCESSOR_COMPOSED","SUCCESSOR_ACTIVATED"}:
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run is not activation-ready")
+        successor,verify_kwargs=self._successor_verify_kwargs(record,run_id)
+        try:
+            workspace=Path(str(successor.get("workspace") or "")).resolve(strict=True)
+            manifest=Path(str(successor.get("manifest_path") or "")).resolve(strict=True)
+            successor_sha=str(successor.get("successor_sha") or "").lower()
+            manifest_sha=str(successor.get("manifest_sha256") or "").lower()
+        except Exception as ex:raise SelfBuildRuntimeError("SUCCESSOR_RECORD_INVALID","successor activation paths invalid") from ex
+        if successor.get("status")!="COMPOSED_AWAITING_ACTIVATION":
+            raise SelfBuildRuntimeError("SUCCESSOR_RECORD_INVALID","successor activation status invalid")
+
+        if record.get("phase")=="SUCCESSOR_ACTIVATED":
+            activation=record.get("activation")
+            if not isinstance(activation,dict) or activation.get("status")!="ACTIVATED_KNOWN_GOOD":
+                raise SelfBuildRuntimeError("ACTIVATION_RECORD_INVALID","activated run lacks final activation evidence")
+            pointer=self._pointer();current=pointer.get("current") or {}
+            if current.get("revision")!=successor_sha or current.get("manifestSha256")!=manifest_sha:
+                raise SelfBuildRuntimeError("ACTIVATION_POINTER_MISMATCH","known-good pointer differs from activated successor")
+            try:self.identity_verifier(manifest,workspace,successor_sha,manifest_sha)
+            except Exception as ex:raise SelfBuildRuntimeError("ACTIVATION_IDENTITY_INVALID",str(ex)) from ex
+            return activation
+
+        running=self._verified_running_identity()
+        manager=self.activation_manager_factory(self.activation_root,running)
+        try:
+            manager.initialize_known_good()
+            state=manager.status()
+            phase=str(state.get("phase") or "IDLE")
+            candidate=state.get("candidate") or {}
+            active={"STAGED","STARTING","PROBING","PROBED","PROMOTING","PROMOTED","ROLLBACK_PENDING","QUARANTINED"}
+            if phase in active and candidate:
+                if candidate.get("revision")!=successor_sha or candidate.get("manifestSha256")!=manifest_sha:
+                    raise SelfBuildRuntimeError("ACTIVATION_CONFLICT","another activation candidate owns protected activation state")
+            if phase=="QUARANTINED":
+                raise SelfBuildRuntimeError("ACTIVATION_QUARANTINED","protected activation is quarantined")
+            if phase=="ROLLED_BACK":
+                raise SelfBuildRuntimeError("ACTIVATION_ROLLED_BACK","this activation generation already rolled back")
+
+            if phase=="IDLE":
+                state=manager.stage(workspace,manifest,successor_sha,manifest_sha,expected_generation=int(state.get("generation",0)))
+                phase=state["phase"]
+            if phase=="STAGED":
+                manager.start_candidate(expected_generation=int(state["generation"]))
+                state=manager.status();phase=state["phase"]
+
+            record["activation"]={
+                "status":"ACTIVATION_IN_PROGRESS","generation":int(state.get("generation",0)),
+                "successor_sha":successor_sha,"manifest_sha256":manifest_sha,
+                "activation_phase":phase,"prior_revision":running.get("revision"),
+            }
+            _atomic_json(path,record);self._assert_path(path)
+
+            if phase=="PROBING":
+                manager.recover()
+                raise SelfBuildRuntimeError("ACTIVATION_RECOVERED_ROLLBACK","interrupted activation probe was rolled back")
+            if phase in {"ROLLBACK_PENDING","PROMOTING"}:
+                manager.recover();state=manager.status();phase=state["phase"]
+                if phase!="PROMOTED":
+                    raise SelfBuildRuntimeError("ACTIVATION_RECOVERED_ROLLBACK","interrupted activation was rolled back")
+            if phase=="STARTING":
+                state=manager.authoritative_probe(expected_generation=int(state["generation"]),timeout=20.0);phase=state["phase"]
+            if phase=="PROBED":
+                manager.promote(expected_generation=int(state["generation"]))
+                state=manager.status();phase=state["phase"]
+            if phase=="PROMOTED" and not isinstance(state.get("activationHealth"),dict):
+                manager.authoritative_health_check(expected_generation=int(state["generation"]),timeout=5.0)
+                state=manager.status();phase=state["phase"]
+            if phase!="PROMOTED" or not isinstance(state.get("activationHealth"),dict):
+                raise SelfBuildRuntimeError("ACTIVATION_INCOMPLETE","successor did not reach proven promoted health")
+
+            self.verify_compose_fn(**verify_kwargs,expected=successor)
+            pointer=manager.known_good_pointer() or {}
+            current=pointer.get("current") or {}
+            if current.get("revision")!=successor_sha or current.get("manifestSha256")!=manifest_sha:
+                raise SelfBuildRuntimeError("ACTIVATION_POINTER_MISMATCH","promoted known-good pointer differs from successor")
+            try:identity=self.identity_verifier(manifest,workspace,successor_sha,manifest_sha)
+            except Exception as ex:raise SelfBuildRuntimeError("ACTIVATION_IDENTITY_INVALID",str(ex)) from ex
+            if identity.get("revision")!=successor_sha:
+                raise SelfBuildRuntimeError("ACTIVATION_IDENTITY_INVALID","post-promotion successor identity mismatch")
+            probe=state.get("probe") or {};health=state.get("activationHealth") or {}
+            entry={
+                "status":"ACTIVATED_KNOWN_GOOD","generation":int(state["generation"]),
+                "successor_sha":successor_sha,"manifest_sha256":manifest_sha,
+                "known_good_generation":int(pointer.get("generation",state["generation"])),
+                "prior_revision":running.get("revision"),
+                "probe_evidence_sha256":probe.get("evidenceSha256"),
+                "health_evidence_sha256":health.get("evidenceSha256"),
+                "candidate_state_root":state.get("candidateStateRoot"),
+            }
+            record["activation"]=entry;record["phase"]="SUCCESSOR_ACTIVATED"
+            _atomic_json(path,record);self._assert_path(path)
+            return entry
+        except SelfBuildRuntimeError:
+            raise
+        except ActivationError as ex:
+            try:state=manager.status()
+            except Exception:state={}
+            record["activation"]={
+                "status":"ACTIVATION_FAILED","generation":int(state.get("generation",0) or 0),
+                "successor_sha":successor_sha,"manifest_sha256":manifest_sha,
+                "activation_phase":state.get("phase"),"reason":str(ex),
+            }
+            try:_atomic_json(path,record);self._assert_path(path)
+            except Exception:pass
+            raise SelfBuildRuntimeError("ACTIVATION_FAILED",str(ex)) from ex
+        except Exception as ex:
+            raise SelfBuildRuntimeError("ACTIVATION_FAILED",str(ex)) from ex
 
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")

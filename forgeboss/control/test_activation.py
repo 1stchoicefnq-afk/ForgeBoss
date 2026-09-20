@@ -116,6 +116,25 @@ class ActivationTests(unittest.TestCase):
             self.assertEqual(out["probeEvidence"]["endpoint"],{"host":"127.0.0.1","port":32123})
             self.assertEqual(out["probe"]["evidenceSha256"],hashlib.sha256(json.dumps(out["probeEvidence"],sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest())
 
+    def test_start_candidate_strips_secrets_disables_paid_and_keeps_checkout_byte_clean(self):
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);manager=self._manager(base);manager.initialize_known_good();state=self._stage(manager,base)
+            captured={}
+            class Proc:pid=4321
+            def fake_popen(argv,**kw):captured["argv"]=list(argv);captured["env"]=dict(kw["env"]);return Proc()
+            identity={"pid":4321,"startToken":"tok","exe":str(Path(__import__("sys").executable).resolve())}
+            hostile={"OPENAI_API_KEY":"secret","GITHUB_TOKEN":"secret","GIT_DIR":"evil","PYTHONPATH":"evil","FORGEBOSS_AUTHORITY_PEER_KEY":"secret"}
+            with patch.dict(os.environ,hostile,clear=False),patch("forgeboss.control.activation.subprocess.Popen",side_effect=fake_popen),patch("forgeboss.control.activation.process_identity",return_value=identity):
+                manager.start_candidate(expected_generation=state["generation"])
+            env=captured["env"]
+            for key in hostile:self.assertNotIn(key,env)
+            self.assertEqual(env["FORGEBOSS_ALLOW_PAID_EXECUTOR"],"NO")
+            self.assertEqual(env["PYTHONDONTWRITEBYTECODE"],"1")
+            self.assertEqual(env["PYTHONUTF8"],"1")
+            self.assertIn("--host",captured["argv"]);self.assertIn("127.0.0.1",captured["argv"])
+            self.assertIn("--port",captured["argv"]);self.assertIn("0",captured["argv"])
+            self.assertIn("--activation-ready-file",captured["argv"])
+
     def test_unverified_running_controller_cannot_stage(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

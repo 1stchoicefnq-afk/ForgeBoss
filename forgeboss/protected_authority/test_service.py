@@ -52,6 +52,7 @@ class Runtime:
         return {'schema':1,'run_id':payload['runId'],'base_sha':payload['baseSha'],'builders':[]}
     def prepare_replacement(self,payload):self.calls.append(('replacement',dict(payload)));return {'schema':1,'replacement':True,'run_id':payload['runId']}
     def compose_successor(self,payload):self.calls.append(('compose',dict(payload)));return {'schema':1,'run_id':payload['runId'],'status':'COMPOSED_AWAITING_ACTIVATION'}
+    def activate_successor(self,payload):self.calls.append(('activate',dict(payload)));return {'status':'ACTIVATED_KNOWN_GOOD','successor_sha':'f'*40}
     def record_review(self,payload):self.calls.append(('review',dict(payload)));return {'schema':1,'status':'PASS','taskId':payload['taskId']}
     def status(self,payload):self.calls.append(('status',dict(payload)));return {'schema':1,'phase':'PREPARED','run_id':payload['runId']}
 
@@ -99,6 +100,17 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         self.assertEqual(runtime.calls,[('compose',{'runId':'fl1-compose'})])
         self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
         with self.assertRaises(AuthorityError) as cm:req('compose_self_build_successor',{'runId':'fl1-compose','extra':True})
+        self.assertEqual(cm.exception.code,'PAYLOAD_INVALID')
+
+    def test_self_build_activation_round_trip_stays_local_and_exact(self):
+        runtime=Runtime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        client=ProtectedAuthorityClient(peer_id='controller-a',repository='owner/repo',control_revision=129,peer_private_key=self.key,receipt_public_key_b64=self.public_b64,transport=lambda raw:svc.handle_json(raw,peer_context=CTX))
+        out=client.activate_self_build_successor(run_id='fl1-activate')
+        self.assertEqual(out['result']['status'],'ACTIVATED_KNOWN_GOOD')
+        self.assertEqual(runtime.calls,[('activate',{'runId':'fl1-activate'})])
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
+        with self.assertRaises(AuthorityError) as cm:req('activate_self_build_successor',{'runId':'fl1-activate','extra':True})
         self.assertEqual(cm.exception.code,'PAYLOAD_INVALID')
 
     def test_self_build_independent_review_round_trip_has_no_caller_review_payload(self):
