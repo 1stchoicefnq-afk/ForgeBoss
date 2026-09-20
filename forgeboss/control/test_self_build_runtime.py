@@ -85,20 +85,80 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(store.released)
         again=self.runtime.record_handoff({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,"evidence":evidence})
         self.assertEqual(again,out)
-        with self.assertRaises(SelfBuildRuntimeError) as self_review:
-            self.runtime.record_review({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
-                                        "review":{"reviewerId":"builder-a","verdict":"pass","evidenceSha256":"7"*64,
-                                                  "reviewerTestReceipts":[test_row["receipt_digest"]]}})
-        self.assertEqual(self_review.exception.code,"REVIEW_RECEIPT_INVALID")
-        review=self.runtime.record_review({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1,
-                                           "review":{"reviewerId":"reviewer-independent","verdict":"pass","evidenceSha256":"7"*64,
-                                                     "reviewerTestReceipts":[test_row["receipt_digest"]]}})
+        review_core={"schema":1,"reviewer_id":"reviewer-independent","task_id":"task-a","builder_id":"builder-a",
+                     "base_sha":base,"candidate_sha":candidate,"candidate_tree_sha":tree,
+                     "handoff_sha256":out["handoffDigest"],"changed_files":["candidate.txt"],
+                     "scope_diff_sha256":scope,"tests":[test_row],"verdict":"pass",
+                     "workspace_pristine":True,"workspace_cleanup_proven":True}
+        self.runtime.review_fn=lambda **kw:{**review_core,"evidence_digest":receipt_digest(review_core)}
+        review=self.runtime.record_review({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1})
         self.assertEqual(review["status"],"PASS")
         accepted=self.runtime.accept_candidate({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1},controller_id="controller-a")
         self.assertEqual(accepted["status"],"ACCEPTED")
         self.assertTrue(store.released)
         self.assertEqual(store.result_head,candidate)
         self.assertEqual(self.runtime.accept_candidate({"runId":"fl1-handoff","taskId":"task-a","workerRunId":"worker-a","ownerEpoch":1},controller_id="controller-a"),accepted)
+
+    @unittest.skipUnless(__import__("shutil").which("git"),"git required")
+    def test_real_independent_reviewer_retests_exact_candidate_and_cleans_workspace(self):
+        import hashlib,shutil,subprocess
+        from types import SimpleNamespace
+        from forgeboss.control.self_build_review import review_frozen_candidate
+        git=Path(shutil.which("git")).resolve();work=self.runtime.workspace_root/"review-source";work.mkdir()
+        def g(*args,binary=False):
+            p=subprocess.run([str(git),"-C",str(work),*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=not binary,check=False)
+            self.assertEqual(p.returncode,0,msg=(p.stderr if not binary else p.stderr.decode("utf-8","replace")))
+            return p.stdout if binary else p.stdout.strip()
+        g("init","-q");g("config","user.email","test@example.invalid");g("config","user.name","Review Test")
+        for rel,body in {"forgeboss/__init__.py":"","forgeboss/tests/__init__.py":""}.items():
+            p=work/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(body,encoding="utf-8")
+        g("add",".");g("commit","-qm","base");base=g("rev-parse","HEAD")
+        rel="forgeboss/tests/test_reviewed.py";p=work/rel
+        p.write_text("import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): self.assertEqual(2+2,4)\n",encoding="utf-8")
+        g("add","--",rel);g("commit","-qm","candidate");candidate=g("rev-parse","HEAD");tree=g("rev-parse",f"{candidate}^{{tree}}")
+        scope=hashlib.sha256(bytes(g("diff","--no-ext-diff","--binary",base,candidate,"--",binary=True))).hexdigest()
+        handoff=SimpleNamespace(
+            assignment=SimpleNamespace(base_sha=base,worktree_path=str(work.resolve()),task_id="task-review",builder_principal="builder-a"),
+            candidate_sha=candidate,candidate_tree_sha=tree,contributors=("builder-a",),
+            changed_paths=((rel,"unused"),),scope_diff_sha256=scope,digest="d"*64,
+        )
+        item={"task_id":"task-review","builder_id":"builder-a","worktree":str(work.resolve()),
+              "packet":{"required_tests":["python -m unittest forgeboss.tests.test_reviewed -v"]}}
+        evidence=review_frozen_candidate(item=item,handoff=handoff,workspace_root=self.runtime.workspace_root,
+                                         protected_state=self.runtime.workspace_state,git_executable=git)
+        self.assertEqual(evidence["verdict"],"pass");self.assertEqual(len(evidence["tests"]),1)
+        tag=hashlib.sha256(("task-review"+"\0"+candidate).encode("utf-8")).hexdigest()[:16]
+        self.assertFalse((self.runtime.workspace_root/f"review-{tag}").exists())
+
+    @unittest.skipUnless(__import__("shutil").which("git"),"git required")
+    def test_independent_reviewer_rejects_test_that_mutates_review_checkout(self):
+        import hashlib,shutil,subprocess
+        from types import SimpleNamespace
+        from forgeboss.control.self_build_review import SelfBuildReviewError,review_frozen_candidate
+        git=Path(shutil.which("git")).resolve();work=self.runtime.workspace_root/"review-mutator";work.mkdir()
+        def g(*args,binary=False):
+            p=subprocess.run([str(git),"-C",str(work),*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=not binary,check=False)
+            self.assertEqual(p.returncode,0,msg=(p.stderr if not binary else p.stderr.decode("utf-8","replace")))
+            return p.stdout if binary else p.stdout.strip()
+        g("init","-q");g("config","user.email","test@example.invalid");g("config","user.name","Review Test")
+        for rel,body in {"forgeboss/__init__.py":"","forgeboss/tests/__init__.py":""}.items():
+            p=work/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(body,encoding="utf-8")
+        g("add",".");g("commit","-qm","base");base=g("rev-parse","HEAD")
+        rel="forgeboss/tests/test_mutator.py";p=work/rel
+        p.write_text("import pathlib,unittest\nclass T(unittest.TestCase):\n    def test_mutates(self): pathlib.Path('review-mutation.txt').write_text('x'); self.assertTrue(True)\n",encoding="utf-8")
+        g("add","--",rel);g("commit","-qm","candidate");candidate=g("rev-parse","HEAD");tree=g("rev-parse",f"{candidate}^{{tree}}")
+        scope=hashlib.sha256(bytes(g("diff","--no-ext-diff","--binary",base,candidate,"--",binary=True))).hexdigest()
+        handoff=SimpleNamespace(
+            assignment=SimpleNamespace(base_sha=base,worktree_path=str(work.resolve()),task_id="task-mutator",builder_principal="builder-a"),
+            candidate_sha=candidate,candidate_tree_sha=tree,contributors=("builder-a",),
+            changed_paths=((rel,"unused"),),scope_diff_sha256=scope,digest="e"*64,
+        )
+        item={"task_id":"task-mutator","builder_id":"builder-a","worktree":str(work.resolve()),
+              "packet":{"required_tests":["python -m unittest forgeboss.tests.test_mutator -v"]}}
+        with self.assertRaises(SelfBuildReviewError) as cm:
+            review_frozen_candidate(item=item,handoff=handoff,workspace_root=self.runtime.workspace_root,
+                                    protected_state=self.runtime.workspace_state,git_executable=git)
+        self.assertEqual(cm.exception.code,"REVIEW_WORKSPACE_MUTATED")
 
     def setUp(self):
         self.td=tempfile.TemporaryDirectory()

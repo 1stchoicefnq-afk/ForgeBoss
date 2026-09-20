@@ -14,6 +14,7 @@ from forgeboss.control.store import ControlStore
 from forgeboss.control.workspace_state import ProtectedWorkspaceState
 from forgeboss.security.executor_guard import _resolve_git_executable
 from forgeboss.control.receipts import CandidateHandoff,ReviewerReceipt,ControllerAcceptanceReference,POLICY_PATH_KEY_VERSION,policy_path_key,receipt_digest
+from forgeboss.control.self_build_review import SelfBuildReviewError,review_frozen_candidate
 from forgeboss.control.self_build_compose import SelfBuildComposeError,compose_successor as compose_reviewed_successor,verify_composed_successor
 
 
@@ -51,7 +52,7 @@ class SelfBuildRuntime:
     """
     def __init__(self,*,protected_root:Path,boundary,receipt_public_key_b64:str,
                  git_resolver=_resolve_git_executable,compose_fn=compose_reviewed_successor,
-                 verify_compose_fn=verify_composed_successor):
+                 verify_compose_fn=verify_composed_successor,review_fn=review_frozen_candidate):
         root=Path(protected_root)
         if not root.is_absolute():
             raise SelfBuildRuntimeError("PROTECTED_ROOT_INVALID","protected root must be absolute")
@@ -61,6 +62,7 @@ class SelfBuildRuntime:
         self.git_resolver=git_resolver
         self.compose_fn=compose_fn
         self.verify_compose_fn=verify_compose_fn
+        self.review_fn=review_fn
 
         self.workspace_root=self.root/"self-build-workspaces"
         self.run_root=self.root/"self-build-runs"
@@ -346,39 +348,97 @@ class SelfBuildRuntime:
         self._assert_path(path)
         try:record=json.loads(path.read_text(encoding="utf-8"))
         except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","self-build run state unreadable") from ex
-        _prepared,_item,task_id,worker_run_id,owner_epoch=self._handoff_item(record,payload)
+        _prepared,item,task_id,worker_run_id,owner_epoch=self._handoff_item(record,payload)
         handoff_entry=self._entry_for_task(record,"handoffs",task_id)
         if handoff_entry is None:raise SelfBuildRuntimeError("HANDOFF_REQUIRED","candidate handoff must freeze before review")
         existing=self._entry_for_task(record,"reviews",task_id)
-        review_raw=payload.get("review")
-        if not isinstance(review_raw,dict) or set(review_raw)!={"reviewerId","verdict","evidenceSha256","reviewerTestReceipts"}:
-            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","review evidence fields invalid")
         if existing is not None:
-            if existing.get("sourceReviewDigest")!=receipt_digest(review_raw):
-                raise SelfBuildRuntimeError("REVIEW_CONFLICT","candidate review already recorded differently")
+            try:
+                handoff=CandidateHandoff.from_dict(handoff_entry["handoff"],store=self.store)
+                ReviewerReceipt.from_dict(existing["review"],store=self.store,handoff=handoff)
+            except Exception as ex:raise SelfBuildRuntimeError("REVIEW_RECEIPT_INVALID",str(ex)) from ex
+            evidence=existing.get("reviewEvidence")
+            evidence_digest=existing.get("reviewEvidenceDigest")
+            if not isinstance(evidence,dict) or receipt_digest(evidence)!=evidence_digest:
+                raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","persisted independent review evidence digest mismatch")
+            stored_review=existing.get("review") or {}
+            if stored_review.get("evidenceSha256")!=evidence_digest:
+                raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","persisted review receipt is not bound to stored evidence")
+            evidence_tests=evidence.get("tests") or []
+            expected_test_receipts=[x.get("receipt_digest") for x in evidence_tests if isinstance(x,dict)]
+            if stored_review.get("reviewerTestReceipts")!=expected_test_receipts:
+                raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","persisted review receipt test bindings mismatch")
             return existing
         try:
             handoff=CandidateHandoff.from_dict(handoff_entry["handoff"],store=self.store)
         except Exception as ex:raise SelfBuildRuntimeError("HANDOFF_RECEIPT_INVALID",str(ex)) from ex
-        verdict=str(review_raw.get("verdict") or "").lower()
-        reviewer_tests=review_raw.get("reviewerTestReceipts")
-        if verdict=="pass" and (not isinstance(reviewer_tests,list) or not reviewer_tests):
-            raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_REQUIRED","PASS review requires independent test receipt")
+        try:
+            evidence=self.review_fn(
+                item=item,handoff=handoff,workspace_root=self.workspace_root,
+                protected_state=self.workspace_state,git_executable=self.git_resolver(),
+                reviewer_id="reviewer-independent",
+            )
+        except SelfBuildReviewError as ex:raise SelfBuildRuntimeError(ex.code,str(ex)) from ex
+        except Exception as ex:raise SelfBuildRuntimeError("INDEPENDENT_REVIEW_FAILED",str(ex)) from ex
+        if not isinstance(evidence,dict) or set(evidence)!={
+            "schema","reviewer_id","task_id","builder_id","base_sha","candidate_sha","candidate_tree_sha",
+            "handoff_sha256","changed_files","scope_diff_sha256","tests","verdict",
+            "workspace_pristine","workspace_cleanup_proven","evidence_digest",
+        }:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review evidence shape invalid")
+        core={k:v for k,v in evidence.items() if k!="evidence_digest"}
+        if evidence.get("schema")!=1 or evidence.get("evidence_digest")!=receipt_digest(core):
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review evidence digest invalid")
+        if evidence.get("reviewer_id")!="reviewer-independent":
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","unexpected independent reviewer identity")
+        if evidence.get("task_id")!=task_id or evidence.get("builder_id")!=item.get("builder_id"):
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review task/builder mismatch")
+        if str(evidence.get("base_sha") or "").lower()!=handoff.assignment.base_sha:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review base mismatch")
+        if str(evidence.get("candidate_sha") or "").lower()!=handoff.candidate_sha or str(evidence.get("candidate_tree_sha") or "").lower()!=handoff.candidate_tree_sha:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review candidate identity mismatch")
+        if str(evidence.get("handoff_sha256") or "").lower()!=handoff.digest or str(evidence.get("scope_diff_sha256") or "").lower()!=handoff.scope_diff_sha256:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review handoff/diff binding mismatch")
+        expected_paths=[p for p,_ in handoff.changed_paths]
+        if sorted(str(x).casefold() for x in (evidence.get("changed_files") or []))!=sorted(x.casefold() for x in expected_paths):
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review changed-file set mismatch")
+        if evidence.get("workspace_pristine") is not True or evidence.get("workspace_cleanup_proven") is not True:
+            raise SelfBuildRuntimeError("REVIEW_EVIDENCE_INVALID","independent review workspace proof missing")
+        tests=evidence.get("tests")
+        if not isinstance(tests,list) or not tests:
+            raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_REQUIRED","independent review test receipts missing")
+        reviewer_tests=[]
+        any_failed=False
+        for row in tests:
+            if not isinstance(row,dict) or set(row)!={"command","exit_code","output_sha256","receipt_digest"}:
+                raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_INVALID","independent review test receipt shape invalid")
+            supplied=str(row.get("receipt_digest") or "").lower()
+            tcore={k:v for k,v in row.items() if k!="receipt_digest"}
+            if supplied!=receipt_digest(tcore):
+                raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_INVALID","independent review test receipt digest mismatch")
+            if isinstance(row.get("exit_code"),bool) or not isinstance(row.get("exit_code"),int):
+                raise SelfBuildRuntimeError("REVIEW_TEST_EVIDENCE_INVALID","independent review test exit code invalid")
+            any_failed=any_failed or row["exit_code"]!=0
+            reviewer_tests.append(supplied)
+        verdict=str(evidence.get("verdict") or "").lower()
+        if verdict not in {"pass","fail"} or (verdict=="pass" and any_failed) or (verdict=="fail" and not any_failed):
+            raise SelfBuildRuntimeError("REVIEW_VERDICT_INVALID","independent review verdict does not match rerun tests")
         raw={
             "assignment":handoff.assignment.to_store_packet(),
             "handoffSha256":handoff.digest,
             "candidateSha":handoff.candidate_sha,
             "candidateTreeSha":handoff.candidate_tree_sha,
-            "reviewerId":review_raw.get("reviewerId"),
-            "verdict":review_raw.get("verdict"),
-            "evidenceSha256":review_raw.get("evidenceSha256"),
+            "reviewerId":evidence["reviewer_id"],
+            "verdict":verdict,
+            "evidenceSha256":receipt_digest(evidence),
             "reviewerTestReceipts":reviewer_tests,
         }
         try:review=ReviewerReceipt.from_dict(raw,store=self.store,handoff=handoff)
         except Exception as ex:raise SelfBuildRuntimeError("REVIEW_RECEIPT_INVALID",str(ex)) from ex
         entry={"taskId":task_id,"workerRunId":worker_run_id,"ownerEpoch":owner_epoch,
                "review":review.to_dict(),"reviewDigest":review.digest,
-               "sourceReviewDigest":receipt_digest(review_raw),"status":review.verdict.upper()}
+               "reviewEvidence":evidence,"reviewEvidenceDigest":receipt_digest(evidence),
+               "status":review.verdict.upper()}
         record.setdefault("reviews",[]).append(entry)
         _atomic_json(path,record);self._assert_path(path)
         return entry

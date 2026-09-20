@@ -310,13 +310,13 @@ class SelfBuildLauncher:
         _atomic_json(paths["handoff"],handoff)
         return handoff
 
-    def record_review(self,*,prepared_run:dict,launched_run:dict,builder_id:str,review:dict)->dict:
+    def review_candidate(self,*,prepared_run:dict,launched_run:dict,builder_id:str)->dict:
         item=self._prepared_item(prepared_run,builder_id)
         if item is None:raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared run")
         run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or "")
-        response=self.client.record_self_build_review(
+        response=self.client.review_self_build_candidate(
             run_id=run_id,task_id=item["task_id"],worker_run_id=item["authority"]["run_id"],
-            owner_epoch=item["owner_epoch"],review=review,
+            owner_epoch=item["owner_epoch"],
         )
         _atomic_json(self._paths(run_id,builder_id)["review"],response)
         return response

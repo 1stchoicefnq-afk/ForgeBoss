@@ -42,8 +42,8 @@ class Client(ProtectedAuthorityClient):
         self.revoked.append(dict(kw));return {"result":{"revoked":True}}
     def record_self_build_handoff(self,**kw):
         self.handoffs.append(dict(kw));return {"result":{"status":"FROZEN_AWAITING_INDEPENDENT_REVIEW"},"receipt":{"operation":"record_self_build_handoff"}}
-    def record_self_build_review(self,**kw):
-        self.reviews.append(dict(kw));return {"result":{"status":"PASS"},"receipt":{"operation":"record_self_build_review"}}
+    def review_self_build_candidate(self,**kw):
+        self.reviews.append(dict(kw));return {"result":{"status":"PASS"},"receipt":{"operation":"review_self_build_candidate"}}
     def accept_self_build_candidate(self,**kw):
         self.accepted.append(dict(kw));return {"result":{"status":"ACCEPTED"},"receipt":{"operation":"accept_self_build_candidate"}}
 
@@ -228,10 +228,10 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.client.handoffs[-1]["evidence"]["candidate_sha"],"c"*40)
         self.assertEqual(self.client.handoffs[-1]["evidence"]["measured_cost_usd"],"0.20")
         self.assertTrue(Path(first["result_file"]).parent.joinpath("candidate-evidence.json").is_file())
-        review={"reviewerId":"reviewer-independent","verdict":"pass","evidenceSha256":"9"*64,"reviewerTestReceipts":["8"*64]}
-        review_response=handoff.record_review(prepared_run=self.prepared,launched_run=out,builder_id="builder-a",review=review)
+        review_response=handoff.review_candidate(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
         self.assertEqual(review_response["result"]["status"],"PASS")
-        self.assertEqual(self.client.reviews[-1]["review"],review)
+        self.assertEqual(self.client.reviews[-1]["task_id"],"task-a")
+        self.assertNotIn("review",self.client.reviews[-1])
         accepted=handoff.accept_reviewed_candidate(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
         self.assertEqual(accepted["result"]["status"],"ACCEPTED")
         self.assertEqual(self.client.accepted[-1]["task_id"],"task-a")

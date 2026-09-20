@@ -166,10 +166,10 @@ class ProtectedAuthorityClient:
             "ownerEpoch":int(owner_epoch),"evidence":dict(evidence),
         })
 
-    def record_self_build_review(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int,review:Mapping[str,Any])->dict:
-        return self.call("record_self_build_review",{
+    def review_self_build_candidate(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int)->dict:
+        return self.call("review_self_build_candidate",{
             "runId":run_id,"taskId":task_id,"workerRunId":worker_run_id,
-            "ownerEpoch":int(owner_epoch),"review":dict(review),
+            "ownerEpoch":int(owner_epoch),
         })
 
     def accept_self_build_candidate(self,*,run_id:str,task_id:str,worker_run_id:str,owner_epoch:int)->dict:
