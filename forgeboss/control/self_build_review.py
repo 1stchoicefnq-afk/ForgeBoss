@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .self_build_freeze import _TEST_RE,_canonical_digest,_clean_test_env,_git,_git_bytes,_inside,_is_linklike,_rel,_run
 from .workspace import cleanup_workspace,provision_workspace
+from .workspace_state import ProtectedWorkspaceState
 
 
 class SelfBuildReviewError(RuntimeError):
@@ -100,8 +101,12 @@ def review_frozen_candidate(*,item:dict,handoff,workspace_root,protected_state,g
     tests=[]
     provisioned=False
     try:
+        review_state=ProtectedWorkspaceState(protected_root=protected_state.root,boundary=protected_state.boundary)
+    except Exception as ex:
+        raise SelfBuildReviewError(getattr(ex,"code","REVIEW_PROTECTED_STATE_INVALID"),str(ex)) from ex
+    try:
         try:
-            provision_workspace(source,review_path,root,candidate,branch,git,protected_state=protected_state)
+            provision_workspace(source,review_path,root,candidate,branch,git,protected_state=review_state)
             provisioned=True
         except Exception as ex:
             raise SelfBuildReviewError(getattr(ex,"code","REVIEW_WORKSPACE_PROVISION_FAILED"),str(ex)) from ex
@@ -129,11 +134,14 @@ def review_frozen_candidate(*,item:dict,handoff,workspace_root,protected_state,g
         if _git_text(git,review,"rev-parse","HEAD").lower()!=candidate:
             _fail("REVIEW_WORKSPACE_HEAD_CHANGED","review/test execution changed candidate HEAD")
     finally:
-        if provisioned:
-            try:
-                cleanup_workspace(review_path,root,protected_state=protected_state)
-            except Exception as ex:
-                raise SelfBuildReviewError(getattr(ex,"code","REVIEW_WORKSPACE_CLEANUP_FAILED"),str(ex)) from ex
+        try:
+            if provisioned:
+                try:
+                    cleanup_workspace(review_path,root,protected_state=review_state)
+                except Exception as ex:
+                    raise SelfBuildReviewError(getattr(ex,"code","REVIEW_WORKSPACE_CLEANUP_FAILED"),str(ex)) from ex
+        finally:
+            review_state.close()
     if review_path.exists() or review_path.is_symlink():
         _fail("REVIEW_WORKSPACE_CLEANUP_FAILED","independent review workspace remains after review")
     if _git_text(git,source,"rev-parse","HEAD").lower()!=candidate or _git_text(git,source,"status","--porcelain=v1","--untracked-files=all"):
