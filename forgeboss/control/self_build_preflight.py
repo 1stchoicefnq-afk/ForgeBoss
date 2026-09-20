@@ -24,7 +24,7 @@ def _git_head(root:Path,git:Path)->str:
     p=subprocess.run(
         [str(git),"-C",str(root),"rev-parse","HEAD"],
         capture_output=True,text=True,timeout=30,check=False,
-        env={**os.environ,"GIT_OPTIONAL_LOCKS":"0","GIT_TERMINAL_PROMPT":"0"},
+        env={**{k:v for k,v in os.environ.items() if not k.upper().startswith("GIT_")},"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":os.devnull,"GIT_OPTIONAL_LOCKS":"0","GIT_TERMINAL_PROMPT":"0","GIT_ASKPASS":""},
     )
     if p.returncode:
         raise RuntimeError((p.stderr or p.stdout or "git rev-parse failed").strip())
@@ -43,7 +43,7 @@ def _money(value)->float:
     return out
 
 
-def self_build_preflight(source_path,*,running_root,requested_budget_usd,env:Mapping[str,str]|None=None)->dict:
+def self_build_preflight(source_path,*,running_root,requested_budget_usd,env:Mapping[str,str]|None=None,authoritative_known_good:Mapping|None=None)->dict:
     env=dict(os.environ if env is None else env)
     checks=[];blockers=[]
 
@@ -81,25 +81,45 @@ def self_build_preflight(source_path,*,running_root,requested_budget_usd,env:Map
         check("source-head",False,"trusted Git checkout unavailable")
         check("running-head",False,"trusted Git checkout unavailable")
 
-    if source_head and running_head:
-        check("self-target",source_head==running_head,f"source={source_head} running={running_head}")
-    else:
-        check("self-target",False,"exact source/running identities unavailable")
-
-    manifest=env.get("FORGEBOSS_BUILD_MANIFEST")
-    expected=env.get("FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA")
-    manifest_sha=env.get("FORGEBOSS_EXPECTED_MANIFEST_SHA256")
-    if manifest and expected and manifest_sha:
+    authoritative=dict(authoritative_known_good or {}) if isinstance(authoritative_known_good,Mapping) else None
+    identity=None
+    if authoritative is not None:
         try:
-            identity=verify_build_manifest(manifest,running,expected,manifest_sha)
+            auth_root=Path(str(authoritative.get("code_root") or "")).resolve(strict=True)
+            auth_revision=str(authoritative.get("revision") or "").lower()
+            auth_manifest=Path(str(authoritative.get("manifest_path") or "")).resolve(strict=True)
+            auth_manifest_sha=str(authoritative.get("manifest_sha256") or "").lower()
+            check("protected-known-good-root",auth_root==source,f"protected={auth_root} source={source}")
+            check("self-target",bool(source_head and source_head==auth_revision),f"source={source_head} protected={auth_revision}")
+            identity=verify_build_manifest(auth_manifest,source,auth_revision,auth_manifest_sha)
             check("known-good-manifest",identity.get("verified") is True,identity.get("revision"))
+            if authoritative.get("identity_sha256") and identity.get("identitySha256")!=authoritative.get("identity_sha256"):
+                check("protected-known-good-identity",False,"protected identity digest mismatch")
+            else:
+                check("protected-known-good-identity",True,identity.get("identitySha256"))
         except Exception as ex:
-            identity=None;check("known-good-manifest",False,ex)
+            identity=None
+            check("protected-known-good-root",False,ex)
+            check("self-target",False,"protected known-good identity unavailable")
+            check("known-good-manifest",False,ex)
     else:
-        identity=None
-        check("known-good-manifest",False,"FORGEBOSS_BUILD_MANIFEST / EXPECTED_KNOWN_GOOD_SHA / EXPECTED_MANIFEST_SHA256 not fully configured")
+        if source_head and running_head:
+            check("self-target",source_head==running_head,f"source={source_head} running={running_head}")
+        else:
+            check("self-target",False,"exact source/running identities unavailable")
+        manifest=env.get("FORGEBOSS_BUILD_MANIFEST")
+        expected=env.get("FORGEBOSS_EXPECTED_KNOWN_GOOD_SHA")
+        manifest_sha=env.get("FORGEBOSS_EXPECTED_MANIFEST_SHA256")
+        if manifest and expected and manifest_sha:
+            try:
+                identity=verify_build_manifest(manifest,running,expected,manifest_sha)
+                check("known-good-manifest",identity.get("verified") is True,identity.get("revision"))
+            except Exception as ex:
+                identity=None;check("known-good-manifest",False,ex)
+        else:
+            check("known-good-manifest",False,"FORGEBOSS_BUILD_MANIFEST / EXPECTED_KNOWN_GOOD_SHA / EXPECTED_MANIFEST_SHA256 not fully configured")
 
-    kg=(identity or {}).get("revision") or running_head
+    kg=(identity or {}).get("revision") or (str((authoritative or {}).get("revision") or "") or running_head)
     if kg:
         try:
             plan=finish_line_one_plan(kg,"fl1-preflight")

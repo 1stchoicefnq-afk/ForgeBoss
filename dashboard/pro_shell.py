@@ -449,21 +449,27 @@ class Api:
             selected=load_selected_project()
             budget=float(settings.get("budget_usd",3.0))
             if selected and selected.get("project_id")=="forgeboss":
+                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
+                known_good_response=client.self_build_current_known_good()
+                known_good=known_good_response.get("result") or {}
+                source_root=known_good.get("code_root")
+                if not source_root:
+                    raise RuntimeError("protected current known-good source is unavailable")
                 preflight=self_build_preflight(
-                    selected.get("source_path"),
+                    source_root,
                     running_root=ROOT,
                     requested_budget_usd=budget,
                     env=os.environ,
+                    authoritative_known_good=known_good,
                 )
                 if not preflight.get("ready"):
                     message="ForgeBoss self-build preflight blocked: "+concise_blockers(preflight)
                     fb.log(message)
                     return {"ok":False,"blocked":True,"phase":"PREFLIGHT_BLOCKED","message":message,"preflight":preflight}
-                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
                 launcher=self._get_self_build_launcher(client)
                 run_id="fl1-"+uuid.uuid4().hex[:12]
                 response=client.prepare_self_build(
-                    source_root=selected.get("source_path"),
+                    source_root=source_root,
                     base_sha=preflight["known_good_sha"],
                     run_id=run_id,
                 )

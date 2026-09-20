@@ -710,6 +710,32 @@ class SelfBuildRuntime:
         except Exception as ex:
             raise SelfBuildRuntimeError("ACTIVATION_FAILED",str(ex)) from ex
 
+    def current_known_good(self,payload:dict)->dict:
+        if not isinstance(payload,dict) or payload:
+            raise SelfBuildRuntimeError("SELF_BUILD_PAYLOAD_INVALID","current known-good payload must be empty")
+        identity=self._verified_running_identity()
+        pointer=self._pointer()
+        generation=int(pointer.get("generation",0) or 0)
+        phase="INITIAL"
+        if generation>0:
+            manager=self.activation_manager_factory(self.activation_root,identity)
+            try:
+                manager.recover()
+                state=manager.status()
+            except ActivationError as ex:raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY",str(ex)) from ex
+            if state.get("phase")!="READY":
+                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","current known-good activation state is not READY")
+            running=state.get("running") or {}
+            if running.get("revision")!=identity.get("revision") or running.get("manifestSha256")!=identity.get("manifestSha256"):
+                raise SelfBuildRuntimeError("KNOWN_GOOD_NOT_READY","READY running identity differs from protected pointer")
+            phase="READY"
+        return {
+            "schema":1,"generation":generation,"phase":phase,
+            "revision":identity.get("revision"),"code_root":identity.get("codeRoot"),
+            "manifest_path":identity.get("manifestPath"),"manifest_sha256":identity.get("manifestSha256"),
+            "identity_sha256":identity.get("identitySha256"),"tree_sha256":identity.get("treeSha256"),
+        }
+
     def status(self,payload:dict)->dict:
         run_id=str(payload.get("runId") or "")
         path=self._run_path(run_id)

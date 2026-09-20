@@ -325,6 +325,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(saved["activation"]["status"],"ACTIVATION_FAILED")
         self.assertEqual(saved["activation"]["activation_phase"],"ROLLED_BACK")
 
+    def test_current_known_good_requires_ready_activation_and_returns_verified_source(self):
+        identity={"verified":True,"revision":"b"*40,"codeRoot":str(self.source.resolve()),
+                  "manifestPath":str((self.source/"manifest.json").resolve()),"manifestSha256":"c"*64,
+                  "identitySha256":"d"*64,"treeSha256":"e"*64}
+        (self.source/"manifest.json").write_text("{}",encoding="utf-8")
+        (self.runtime.activation_root/"known-good.json").write_text(json.dumps({"schema":2,"generation":2,"current":identity,"previous":None}),encoding="utf-8")
+        self.runtime._verified_running_identity=lambda:dict(identity)
+        class Manager:
+            def recover(self):return {"schema":2}
+            def status(self):return {"schema":2,"phase":"READY","generation":2,"running":{"revision":"b"*40,"manifestSha256":"c"*64}}
+        self.runtime.activation_manager_factory=lambda *_:Manager()
+        out=self.runtime.current_known_good({})
+        self.assertEqual(out["phase"],"READY");self.assertEqual(out["generation"],2)
+        self.assertEqual(out["revision"],"b"*40);self.assertEqual(out["code_root"],str(self.source.resolve()))
+        with self.assertRaises(SelfBuildRuntimeError) as cm:self.runtime.current_known_good({"extra":True})
+        self.assertEqual(cm.exception.code,"SELF_BUILD_PAYLOAD_INVALID")
+
     def test_service_principal_revocation_denies_status(self):
         self.pointer()
         self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-deny"})

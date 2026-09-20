@@ -53,6 +53,7 @@ class Runtime:
     def prepare_replacement(self,payload):self.calls.append(('replacement',dict(payload)));return {'schema':1,'replacement':True,'run_id':payload['runId']}
     def compose_successor(self,payload):self.calls.append(('compose',dict(payload)));return {'schema':1,'run_id':payload['runId'],'status':'COMPOSED_AWAITING_ACTIVATION'}
     def activate_successor(self,payload):self.calls.append(('activate',dict(payload)));return {'status':'ACTIVATED_KNOWN_GOOD','successor_sha':'f'*40}
+    def current_known_good(self,payload):self.calls.append(('current-known-good',dict(payload)));return {'schema':1,'generation':2,'phase':'READY','revision':'f'*40,'code_root':'/protected/successor'}
     def record_review(self,payload):self.calls.append(('review',dict(payload)));return {'schema':1,'status':'PASS','taskId':payload['taskId']}
     def status(self,payload):self.calls.append(('status',dict(payload)));return {'schema':1,'phase':'PREPARED','run_id':payload['runId']}
 
@@ -111,6 +112,17 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         self.assertEqual(runtime.calls,[('activate',{'runId':'fl1-activate'})])
         self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
         with self.assertRaises(AuthorityError) as cm:req('activate_self_build_successor',{'runId':'fl1-activate','extra':True})
+        self.assertEqual(cm.exception.code,'PAYLOAD_INVALID')
+
+    def test_self_build_current_known_good_round_trip_stays_local_and_empty_payload(self):
+        runtime=Runtime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        client=ProtectedAuthorityClient(peer_id='controller-a',repository='owner/repo',control_revision=129,peer_private_key=self.key,receipt_public_key_b64=self.public_b64,transport=lambda raw:svc.handle_json(raw,peer_context=CTX))
+        out=client.self_build_current_known_good()
+        self.assertEqual(out['result']['phase'],'READY')
+        self.assertEqual(runtime.calls,[('current-known-good',{})])
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
+        with self.assertRaises(AuthorityError) as cm:req('self_build_current_known_good',{'extra':True})
         self.assertEqual(cm.exception.code,'PAYLOAD_INVALID')
 
     def test_self_build_independent_review_round_trip_has_no_caller_review_payload(self):
