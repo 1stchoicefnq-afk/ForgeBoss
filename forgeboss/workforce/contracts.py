@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import re
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 
 class WorkforceContractError(ValueError):
@@ -38,6 +38,26 @@ RUN_STATES = frozenset({
 _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
+def _clean_text(value: object, label: str) -> str:
+    text = str(value).strip()
+    if not text:
+        raise WorkforceContractError(f"{label} is required")
+    return text
+
+
+def _clean_tuple(values: Iterable[object], label: str) -> tuple[str, ...]:
+    cleaned = tuple(_clean_text(value, label) for value in values)
+    if len(set(cleaned)) != len(cleaned):
+        raise WorkforceContractError(f"{label} values must be unique")
+    return cleaned
+
+
+def _utc(value: datetime, label: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise WorkforceContractError(f"{label} must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class RoutineContract:
     routine_id: str
@@ -47,25 +67,22 @@ class RoutineContract:
     outbound_actions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        routine_id = self.routine_id.strip()
-        period_kind = self.period_kind.strip()
-        if not routine_id:
-            raise WorkforceContractError("routine_id is required")
-        if not period_kind:
-            raise WorkforceContractError("period_kind is required")
-        if self.budget_seconds <= 0:
+        routine_id = _clean_text(self.routine_id, "routine_id")
+        period_kind = _clean_text(self.period_kind, "period_kind")
+        if isinstance(self.budget_seconds, bool) or int(self.budget_seconds) <= 0:
             raise WorkforceContractError("budget_seconds must be positive")
-        if not self.capabilities or any(not value.strip() for value in self.capabilities):
+        capabilities = _clean_tuple(tuple(self.capabilities), "capability")
+        if not capabilities:
             raise WorkforceContractError("at least one named capability is required")
-        if len(set(self.capabilities)) != len(self.capabilities):
-            raise WorkforceContractError("capabilities must be unique")
-        if len(set(self.outbound_actions)) != len(self.outbound_actions):
-            raise WorkforceContractError("outbound_actions must be unique")
-        unknown_outbound = set(self.outbound_actions) - OUTBOUND_ACTIONS
+        outbound_actions = _clean_tuple(tuple(self.outbound_actions), "outbound action")
+        unknown_outbound = set(outbound_actions) - OUTBOUND_ACTIONS
         if unknown_outbound:
             raise WorkforceContractError(f"unknown outbound actions: {sorted(unknown_outbound)}")
         object.__setattr__(self, "routine_id", routine_id)
         object.__setattr__(self, "period_kind", period_kind)
+        object.__setattr__(self, "budget_seconds", int(self.budget_seconds))
+        object.__setattr__(self, "capabilities", capabilities)
+        object.__setattr__(self, "outbound_actions", outbound_actions)
 
 
 @dataclass(frozen=True)
@@ -77,23 +94,25 @@ class WorkerContract:
     authority_grant: str = "NONE"
 
     def __post_init__(self) -> None:
-        worker_id = self.worker_id.strip()
-        role = self.role.strip()
-        version = self.version.strip()
-        if not worker_id or not role or not version:
-            raise WorkforceContractError("worker_id, role and version are required")
+        worker_id = _clean_text(self.worker_id, "worker_id")
+        role = _clean_text(self.role, "role")
+        version = _clean_text(self.version, "version")
+        routines = tuple(self.routines)
         if not _SEMVER.fullmatch(version):
             raise WorkforceContractError("version must be strict major.minor.patch semver")
         if self.authority_grant != "NONE":
             raise WorkforceContractError("worker contracts are descriptive and cannot grant runtime authority")
-        if not self.routines:
+        if not routines:
             raise WorkforceContractError("at least one routine is required")
-        ids = [routine.routine_id for routine in self.routines]
+        if any(not isinstance(routine, RoutineContract) for routine in routines):
+            raise WorkforceContractError("routines must contain RoutineContract values")
+        ids = [routine.routine_id for routine in routines]
         if len(set(ids)) != len(ids):
             raise WorkforceContractError("routine_id values must be unique within a worker")
         object.__setattr__(self, "worker_id", worker_id)
         object.__setattr__(self, "role", role)
         object.__setattr__(self, "version", version)
+        object.__setattr__(self, "routines", routines)
 
 
 @dataclass(frozen=True)
@@ -108,18 +127,26 @@ class RunRecord:
     blockers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        for label, value in (
-            ("worker_id", self.worker_id),
-            ("routine_id", self.routine_id),
-            ("period_key", self.period_key),
-            ("evidence_ref", self.evidence_ref),
-        ):
-            if not str(value).strip():
-                raise WorkforceContractError(f"{label} is required")
-        if self.state not in RUN_STATES:
-            raise WorkforceContractError(f"unknown run state: {self.state}")
-        if self.finished_at < self.started_at:
+        worker_id = _clean_text(self.worker_id, "worker_id")
+        routine_id = _clean_text(self.routine_id, "routine_id")
+        period_key = _clean_text(self.period_key, "period_key")
+        evidence_ref = _clean_text(self.evidence_ref, "evidence_ref")
+        state = _clean_text(self.state, "state")
+        if state not in RUN_STATES:
+            raise WorkforceContractError(f"unknown run state: {state}")
+        started_at = _utc(self.started_at, "started_at")
+        finished_at = _utc(self.finished_at, "finished_at")
+        if finished_at < started_at:
             raise WorkforceContractError("finished_at cannot be before started_at")
+        blockers = _clean_tuple(tuple(self.blockers), "blocker")
+        object.__setattr__(self, "worker_id", worker_id)
+        object.__setattr__(self, "routine_id", routine_id)
+        object.__setattr__(self, "period_key", period_key)
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "started_at", started_at)
+        object.__setattr__(self, "finished_at", finished_at)
+        object.__setattr__(self, "evidence_ref", evidence_ref)
+        object.__setattr__(self, "blockers", blockers)
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -128,7 +155,11 @@ class RunRecord:
 
 def should_run_period(records: Iterable[RunRecord], worker_id: str, routine_id: str, period_key: str) -> bool:
     """Return False once evidence exists for the exact worker/routine/period key."""
-    wanted = (worker_id, routine_id, period_key)
+    wanted = (
+        _clean_text(worker_id, "worker_id"),
+        _clean_text(routine_id, "routine_id"),
+        _clean_text(period_key, "period_key"),
+    )
     return not any(record.key == wanted for record in records)
 
 
@@ -136,17 +167,24 @@ def outbound_action_allowed(
     action: str,
     *,
     released_actions: Iterable[str] = (),
-    runtime_authority: bool = False,
+    authority_check: Callable[[str], bool] | None,
 ) -> bool:
-    """A release never grants authority by itself; both gates must explicitly allow the action."""
-    action = str(action).strip().lower()
+    """Require both an explicit release and a separate runtime authority verifier."""
+    action = _clean_text(action, "action").lower()
     if action not in OUTBOUND_ACTIONS:
         raise WorkforceContractError(f"unknown outbound action: {action}")
-    released = {str(value).strip().lower() for value in released_actions}
+    released = {_clean_text(value, "released action").lower() for value in released_actions}
     unknown = released - OUTBOUND_ACTIONS
     if unknown:
         raise WorkforceContractError(f"unknown released actions: {sorted(unknown)}")
-    return runtime_authority and action in released
+    if action not in released:
+        return False
+    if authority_check is None or not callable(authority_check):
+        raise WorkforceContractError("authoritative runtime verifier is required")
+    decision = authority_check(action)
+    if decision is not True and decision is not False:
+        raise WorkforceContractError("authoritative runtime verifier must return bool")
+    return decision is True
 
 
 def validate_capability_routes(
@@ -154,9 +192,12 @@ def validate_capability_routes(
     routes: Mapping[str, str | None],
 ) -> dict[str, str]:
     """Resolve named capabilities to concrete routes without letting routes redefine policy."""
+    capabilities = _clean_tuple(tuple(required_capabilities), "capability")
+    if not capabilities:
+        raise WorkforceContractError("at least one capability is required")
     resolved: dict[str, str] = {}
-    for capability in required_capabilities:
+    for capability in capabilities:
         if capability not in routes or not routes[capability]:
             raise WorkforceContractError(f"missing capability route: {capability}")
-        resolved[capability] = str(routes[capability])
+        resolved[capability] = _clean_text(routes[capability], f"route for {capability}")
     return resolved
