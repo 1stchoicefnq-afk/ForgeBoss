@@ -8,7 +8,7 @@ These rules describe the minimum project-engineering behavior ForgeBoss should a
 ## Rules
 
 1. Inspect before editing.
-2. Reuse proven components before rebuilding them.
+2. Reuse proven components before rebuilding them. This is a permanent, non-optional ForgeBoss rule.
 3. Plan before substantial implementation.
 4. Review the plan adversarially before execution.
 5. Split work into bounded, reviewable units.
@@ -37,6 +37,25 @@ These rules describe the minimum project-engineering behavior ForgeBoss should a
 28. Make risky authority explicit rather than implicit.
 29. If a requirement materially affects money, security, privacy, permissions, data, platform support or irreversible architecture, record and surface the decision.
 30. The final objective is not simply code generation. It is a product whose important behavior can be tested, reviewed and proven.
+
+## Permanent reuse-before-build rule
+
+Before designing or implementing any substantial subsystem, ForgeBoss must perform an upstream reuse review.
+
+The review must:
+
+1. search for existing maintained components, libraries, frameworks, SDKs, tools or reference implementations that already solve all or part of the problem;
+2. prefer permissively licensed, actively maintained components when they satisfy the engineering and safety requirements;
+3. verify the exact license, relevant enterprise carve-outs, provenance, maintenance state, platform fit, transitive dependencies and security implications before adoption;
+4. prefer a thin ForgeBoss-owned adapter around a proven component over reimplementing commodity functionality;
+5. preserve ForgeBoss ownership of authority, approvals, canonical project state, evidence binding, hostile-review gates and user-facing workflow;
+6. keep adopted components replaceable behind ForgeBoss-owned interfaces where practical;
+7. record the candidates considered, the selected component or the reason no suitable component exists;
+8. build from scratch only when the reuse review shows a real gap, unacceptable risk, incompatible license, excessive complexity or a requirement unique to ForgeBoss.
+
+For substantial work, the implementation plan must contain an explicit `UPSTREAM_REUSE_REVIEW` (or equivalent structured record). If that review is missing, ForgeBoss must not treat the work as ready to build.
+
+This rule applies to ForgeBoss itself and to software projects ForgeBoss builds.
 
 ## Required questions for every substantial feature
 
