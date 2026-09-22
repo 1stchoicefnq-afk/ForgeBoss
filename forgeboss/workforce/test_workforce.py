@@ -36,16 +36,35 @@ class WorkforceContractTests(unittest.TestCase):
         with self.assertRaises(WorkforceContractError):
             WorkerContract("reviewer", "Reviewer", "1.0.0", (routine,), authority_grant="WRITE")
 
+    def test_malformed_sequence_and_budget_inputs_fail_closed(self):
+        with self.assertRaises(WorkforceContractError):
+            RoutineContract("daily", "day", "repo.read", 300)
+        with self.assertRaises(WorkforceContractError):
+            RoutineContract("daily", "day", ("repo.read",), 1.5)
+        with self.assertRaises(WorkforceContractError):
+            RunRecord("cos", "daily", "p1", "blocked", START, START + timedelta(minutes=1), "e1", "one blocker")
+        with self.assertRaises(WorkforceContractError):
+            validate_capability_routes("repo.read", {"repo.read": "github"})
+
+    def test_control_characters_and_non_string_ids_fail_closed(self):
+        with self.assertRaises(WorkforceContractError):
+            RoutineContract("daily\npush", "day", ("repo.read",), 300)
+        with self.assertRaises(WorkforceContractError):
+            RunRecord(7, "daily", "p1", "ok", START, START + timedelta(minutes=1), "e1")
+
     def test_outbound_release_and_runtime_authority_are_both_required(self):
         calls = []
-        allow = lambda action: calls.append(action) is None or True
-        deny = lambda action: False
+        def allow(action):
+            calls.append(action)
+            return True
         self.assertFalse(outbound_action_allowed("deploy", released_actions=(), authority_check=allow))
         self.assertEqual(calls, [])
-        self.assertFalse(outbound_action_allowed("deploy", released_actions=("deploy",), authority_check=deny))
+        self.assertFalse(outbound_action_allowed("deploy", released_actions=("deploy",), authority_check=lambda action: False))
         self.assertTrue(outbound_action_allowed("deploy", released_actions=("deploy",), authority_check=lambda action: True))
         with self.assertRaises(WorkforceContractError):
             outbound_action_allowed("deploy", released_actions=("deploy",), authority_check=None)
+        with self.assertRaises(WorkforceContractError):
+            outbound_action_allowed("deploy", released_actions=("deploy",), authority_check=lambda action: "yes")
 
     def test_period_key_prevents_duplicate_routine_run(self):
         records = [run("cos", "daily-review", "2026-09-22")]
@@ -109,6 +128,11 @@ class ChiefOfStaffTests(unittest.TestCase):
         expected = [ExpectedRoutine("builder", "build", "p1")]
         with self.assertRaises(WorkforceContractError):
             reconcile_fleet(expected, [run("builder", "build", "p1", evidence="a"), run("builder", "build", "p1", evidence="b")])
+
+    def test_paused_is_visible_in_attention(self):
+        brief = build_brief([ExpectedRoutine("repair", "repair", "p1", paused=True)], [])
+        self.assertEqual(brief["counts"]["paused"], 1)
+        self.assertEqual(brief["attention"][0].status, "paused")
 
     def test_brief_is_derived_from_evidence_and_pending_approvals(self):
         expected = [ExpectedRoutine("builder", "build", "p1"), ExpectedRoutine("reviewer", "review", "p1")]
