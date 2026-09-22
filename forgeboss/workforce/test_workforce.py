@@ -134,6 +134,21 @@ class ChiefOfStaffTests(unittest.TestCase):
         self.assertEqual(brief["counts"]["paused"], 1)
         self.assertEqual(brief["attention"][0].status, "paused")
 
+    def test_pending_approval_payload_is_deeply_frozen(self):
+        source = {"id": "ap-1", "payload": {"paths": ["a.py"]}}
+        brief = build_brief([], [], pending_approvals=[source])
+        source["payload"]["paths"].append("b.py")
+        frozen = brief["pending_approvals"][0]
+        self.assertEqual(frozen["payload"]["paths"], ("a.py",))
+        with self.assertRaises(TypeError):
+            frozen["payload"]["new"] = True
+
+    def test_invalid_approval_payload_fails_closed(self):
+        with self.assertRaises(WorkforceContractError):
+            build_brief([], [], pending_approvals=[{"id": "ap-1", "value": float("nan")}])
+        with self.assertRaises(WorkforceContractError):
+            build_brief([], [], pending_approvals=["not-a-mapping"])
+
     def test_brief_is_derived_from_evidence_and_pending_approvals(self):
         expected = [ExpectedRoutine("builder", "build", "p1"), ExpectedRoutine("reviewer", "review", "p1")]
         brief = build_brief(expected, [run("builder", "build", "p1")], pending_approvals=[{"id": "ap-1", "action": "deploy"}])
