@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
@@ -59,6 +60,30 @@ class RoutineObservation:
 
 _HEALTHY = frozenset({"ok", "skipped-out-of-window", "skipped-already-ran"})
 _ATTENTION = frozenset({"partial", "blocked", "failed", "silent", "paused", "needs-approval", "unexpected-run"})
+
+
+def _freeze_brief_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        frozen: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise WorkforceContractError("approval brief mapping keys must be strings")
+            clean = key.strip()
+            if not clean or any(ord(ch) < 32 or ord(ch) == 127 for ch in clean):
+                raise WorkforceContractError("approval brief mapping keys are invalid")
+            if clean in frozen:
+                raise WorkforceContractError("approval brief mapping contains duplicate normalized keys")
+            frozen[clean] = _freeze_brief_value(item)
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_brief_value(item) for item in value)
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise WorkforceContractError("approval brief contains non-finite number")
+        return value
+    raise WorkforceContractError(f"unsupported approval brief value type: {type(value).__name__}")
 
 
 def _observation_from_record(item: ExpectedRoutine, record: RunRecord) -> RoutineObservation:
@@ -148,15 +173,22 @@ def build_brief(
     *,
     pending_approvals: Iterable[Mapping[str, object]] = (),
 ) -> Mapping[str, object]:
-    """Produce a read-only brief from supplied evidence. It owns no mutation path."""
+    """Produce a deeply read-only brief from supplied evidence. It owns no mutation path."""
     observations = reconcile_fleet(expected, records)
-    approvals = tuple(MappingProxyType(dict(item)) for item in pending_approvals)
+    approvals: list[Mapping[str, object]] = []
+    for item in pending_approvals:
+        if not isinstance(item, Mapping):
+            raise WorkforceContractError("pending approvals must contain mappings")
+        frozen = _freeze_brief_value(item)
+        if not isinstance(frozen, Mapping):
+            raise WorkforceContractError("pending approval normalization failed")
+        approvals.append(frozen)
     states = ("healthy", "partial", "blocked", "failed", "silent", "paused", "needs-approval", "unexpected-run")
     counts = {state: sum(1 for item in observations if item.status == state) for state in states}
     attention = tuple(item for item in observations if item.status in _ATTENTION)
     return MappingProxyType({
         "counts": MappingProxyType(counts),
         "attention": attention,
-        "pending_approvals": approvals,
+        "pending_approvals": tuple(approvals),
         "observations": observations,
     })
