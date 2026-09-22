@@ -39,14 +39,24 @@ _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 def _clean_text(value: object, label: str) -> str:
-    text = str(value).strip()
+    if not isinstance(value, str):
+        raise WorkforceContractError(f"{label} must be a string")
+    text = value.strip()
     if not text:
         raise WorkforceContractError(f"{label} is required")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise WorkforceContractError(f"{label} contains control characters")
     return text
 
 
 def _clean_tuple(values: Iterable[object], label: str) -> tuple[str, ...]:
-    cleaned = tuple(_clean_text(value, label) for value in values)
+    if isinstance(values, (str, bytes)):
+        raise WorkforceContractError(f"{label} values must be a sequence, not a string")
+    try:
+        raw = tuple(values)
+    except TypeError as ex:
+        raise WorkforceContractError(f"{label} values must be iterable") from ex
+    cleaned = tuple(_clean_text(value, label) for value in raw)
     if len(set(cleaned)) != len(cleaned):
         raise WorkforceContractError(f"{label} values must be unique")
     return cleaned
@@ -69,18 +79,17 @@ class RoutineContract:
     def __post_init__(self) -> None:
         routine_id = _clean_text(self.routine_id, "routine_id")
         period_kind = _clean_text(self.period_kind, "period_kind")
-        if isinstance(self.budget_seconds, bool) or int(self.budget_seconds) <= 0:
-            raise WorkforceContractError("budget_seconds must be positive")
-        capabilities = _clean_tuple(tuple(self.capabilities), "capability")
+        if isinstance(self.budget_seconds, bool) or not isinstance(self.budget_seconds, int) or self.budget_seconds <= 0:
+            raise WorkforceContractError("budget_seconds must be a positive integer")
+        capabilities = _clean_tuple(self.capabilities, "capability")
         if not capabilities:
             raise WorkforceContractError("at least one named capability is required")
-        outbound_actions = _clean_tuple(tuple(self.outbound_actions), "outbound action")
+        outbound_actions = _clean_tuple(self.outbound_actions, "outbound action")
         unknown_outbound = set(outbound_actions) - OUTBOUND_ACTIONS
         if unknown_outbound:
             raise WorkforceContractError(f"unknown outbound actions: {sorted(unknown_outbound)}")
         object.__setattr__(self, "routine_id", routine_id)
         object.__setattr__(self, "period_kind", period_kind)
-        object.__setattr__(self, "budget_seconds", int(self.budget_seconds))
         object.__setattr__(self, "capabilities", capabilities)
         object.__setattr__(self, "outbound_actions", outbound_actions)
 
@@ -97,7 +106,12 @@ class WorkerContract:
         worker_id = _clean_text(self.worker_id, "worker_id")
         role = _clean_text(self.role, "role")
         version = _clean_text(self.version, "version")
-        routines = tuple(self.routines)
+        if isinstance(self.routines, (str, bytes)):
+            raise WorkforceContractError("routines must be a sequence of RoutineContract values")
+        try:
+            routines = tuple(self.routines)
+        except TypeError as ex:
+            raise WorkforceContractError("routines must be iterable") from ex
         if not _SEMVER.fullmatch(version):
             raise WorkforceContractError("version must be strict major.minor.patch semver")
         if self.authority_grant != "NONE":
@@ -138,7 +152,7 @@ class RunRecord:
         finished_at = _utc(self.finished_at, "finished_at")
         if finished_at < started_at:
             raise WorkforceContractError("finished_at cannot be before started_at")
-        blockers = _clean_tuple(tuple(self.blockers), "blocker")
+        blockers = _clean_tuple(self.blockers, "blocker")
         object.__setattr__(self, "worker_id", worker_id)
         object.__setattr__(self, "routine_id", routine_id)
         object.__setattr__(self, "period_key", period_key)
@@ -173,7 +187,7 @@ def outbound_action_allowed(
     action = _clean_text(action, "action").lower()
     if action not in OUTBOUND_ACTIONS:
         raise WorkforceContractError(f"unknown outbound action: {action}")
-    released = {_clean_text(value, "released action").lower() for value in released_actions}
+    released = {value.lower() for value in _clean_tuple(released_actions, "released action")}
     unknown = released - OUTBOUND_ACTIONS
     if unknown:
         raise WorkforceContractError(f"unknown released actions: {sorted(unknown)}")
@@ -192,7 +206,7 @@ def validate_capability_routes(
     routes: Mapping[str, str | None],
 ) -> dict[str, str]:
     """Resolve named capabilities to concrete routes without letting routes redefine policy."""
-    capabilities = _clean_tuple(tuple(required_capabilities), "capability")
+    capabilities = _clean_tuple(required_capabilities, "capability")
     if not capabilities:
         raise WorkforceContractError("at least one capability is required")
     resolved: dict[str, str] = {}
