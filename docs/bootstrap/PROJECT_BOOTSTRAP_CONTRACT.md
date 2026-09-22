@@ -40,7 +40,7 @@ For a NEW project:
 8. identify permissions and authority boundaries;
 9. identify security/privacy constraints;
 10. identify supported platforms;
-11. search for proven components/dependencies before reinventing them;
+11. complete the permanent upstream reuse review before inventing a substantial subsystem;
 12. propose architecture;
 13. identify failure modes;
 14. create acceptance criteria and test strategy;
@@ -97,6 +97,26 @@ ForgeBoss should maintain authoritative records equivalent to:
 Exact filenames and storage formats may evolve.
 
 The runtime must know which records are authoritative and their current version/identity.
+
+## Permanent upstream reuse gate
+
+The reuse-before-build rule is mandatory for ForgeBoss itself and every substantial project it builds.
+
+Before substantial implementation, ForgeBoss must create an `UPSTREAM_REUSE_REVIEW` or equivalent structured record containing:
+
+- the capability/subsystem being considered;
+- repositories/packages/components searched;
+- exact candidate versions or commits where relevant;
+- license and carve-out checks;
+- maintenance/platform/security fit;
+- what can be reused unchanged;
+- what requires an adapter or modification;
+- what must remain ForgeBoss/project-owned;
+- the selected component(s), or the explicit reason custom implementation is required.
+
+A substantial subsystem is **not ready to build** if this review is absent.
+
+The reuse gate never grants runtime authority to an upstream component. External code remains subordinate to ForgeBoss/project permissions, canonical state, approval, evidence and review rules.
 
 ## Core engineering rules
 
@@ -192,7 +212,8 @@ Substantial implementation should not begin until the project has enough evidenc
 - test strategy;
 - recorded material assumptions;
 - unresolved owner decisions surfaced;
-- independent plan review completed.
+- independent plan review completed;
+- upstream reuse review completed for each substantial subsystem.
 
 If these are incomplete, status should say NOT YET PROVEN / NEEDS OWNER / BLOCKED as appropriate rather than pretending the project is ready.
 
