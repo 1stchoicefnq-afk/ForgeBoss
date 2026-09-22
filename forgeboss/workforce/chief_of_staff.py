@@ -28,9 +28,13 @@ class ExpectedRoutine:
     def __post_init__(self) -> None:
         values = []
         for label, value in (("worker_id", self.worker_id), ("routine_id", self.routine_id), ("period_key", self.period_key)):
-            text = str(value).strip()
+            if not isinstance(value, str):
+                raise WorkforceContractError(f"{label} must be a string")
+            text = value.strip()
             if not text:
                 raise WorkforceContractError(f"{label} is required")
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+                raise WorkforceContractError(f"{label} contains control characters")
             values.append(text)
         object.__setattr__(self, "worker_id", values[0])
         object.__setattr__(self, "routine_id", values[1])
@@ -54,7 +58,7 @@ class RoutineObservation:
 
 
 _HEALTHY = frozenset({"ok", "skipped-out-of-window", "skipped-already-ran"})
-_ATTENTION = frozenset({"partial", "blocked", "failed", "silent", "needs-approval", "unexpected-run"})
+_ATTENTION = frozenset({"partial", "blocked", "failed", "silent", "paused", "needs-approval", "unexpected-run"})
 
 
 def _observation_from_record(item: ExpectedRoutine, record: RunRecord) -> RoutineObservation:
