@@ -284,7 +284,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
                 "currentHead": "a" * 40,
                 "ttlSeconds": 60,
                 "runtimeId": runtime_id,
-                "budgetUsd": 0.0,
+                "budgetUsd": 0.25,
             },
         }
 
