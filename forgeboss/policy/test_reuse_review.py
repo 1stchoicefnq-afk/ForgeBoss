@@ -72,7 +72,9 @@ class ReuseReviewTests(unittest.TestCase):
             candidate(exact_identity=""),
             candidate(license_status="incompatible"),
             candidate(platform_fit="unfit"),
+            candidate(platform_fit="unknown"),
             candidate(security_fit="unfit"),
+            candidate(security_fit="unknown"),
         ):
             with self.subTest(bad=bad):
                 with self.assertRaises(ReuseReviewError):
