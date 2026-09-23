@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import time
 from types import MappingProxyType
 from typing import Mapping
 import uuid
@@ -37,6 +38,19 @@ from forgeboss.security.executor_guard import (
 
 class GovernedLauncherError(RuntimeError):
     """Raised when trusted governed launch preparation cannot fail safely."""
+
+
+def _reject_duplicate_pairs(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise GovernedLauncherError(f"duplicate JSON object key: {key!r}")
+        out[key] = value
+    return out
+
+
+def _reject_json_constant(value: str):
+    raise GovernedLauncherError(f"non-standard JSON constant is forbidden: {value}")
 
 
 def _freeze(value):
@@ -121,7 +135,11 @@ def _packet(path: str | Path, task: Mapping[str, object]) -> tuple[Path, dict[st
         raise GovernedLauncherError("packet must be a non-symlink regular file")
     try:
         raw = resolved.read_bytes()
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_json_constant,
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as ex:
         raise GovernedLauncherError("packet must be valid UTF-8 JSON") from ex
     if not isinstance(document, dict):
@@ -195,6 +213,83 @@ def _provider_env(provider: str, values: Mapping[str, object]) -> Mapping[str, s
     if not out:
         raise GovernedLauncherError("provider_env must contain an approved provider credential")
     return MappingProxyType(out)
+
+
+def _verify_executor_lease_artifact(
+    lease_obj: Mapping[str, object],
+    *,
+    repo_root: str | Path,
+    packet_sha256: str,
+    workspace: Path,
+    adapter: str,
+    allowed_paths: tuple[str, ...],
+) -> tuple[str, str]:
+    if lease_obj.get("ok") is not True:
+        raise GovernedLauncherError("executor lease issuer did not return ok=true")
+    lease_raw = _text(lease_obj.get("lease"), "executor lease path")
+    token = _text(lease_obj.get("token"), "executor lease token")
+    if len(token) < 32:
+        raise GovernedLauncherError("executor lease token is too short")
+    raw_path = Path(lease_raw)
+    try:
+        state = (Path(repo_root).resolve(strict=True) / "state" / "executor-security").resolve(strict=False)
+        if raw_path.is_symlink():
+            raise GovernedLauncherError("executor lease file must not be a symlink")
+        lease_path = raw_path.resolve(strict=True)
+    except GovernedLauncherError:
+        raise
+    except Exception as ex:
+        raise GovernedLauncherError("executor lease file is unavailable") from ex
+    try:
+        if os.path.commonpath((str(state), str(lease_path))) != str(state):
+            raise GovernedLauncherError("executor lease escaped ForgeBoss executor-security state")
+    except ValueError as ex:
+        raise GovernedLauncherError("executor lease path identity is invalid") from ex
+    if not lease_path.is_file():
+        raise GovernedLauncherError("executor lease must be a regular file")
+    try:
+        lease = json.loads(
+            lease_path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except GovernedLauncherError:
+        raise
+    except Exception as ex:
+        raise GovernedLauncherError("executor lease file is invalid JSON") from ex
+    if not isinstance(lease, dict):
+        raise GovernedLauncherError("executor lease root must be an object")
+    if lease.get("schema") != 3:
+        raise GovernedLauncherError("executor lease schema is unsupported")
+    if lease.get("executor") != adapter:
+        raise GovernedLauncherError("executor lease adapter mismatch")
+    try:
+        if Path(str(lease.get("workspace"))).resolve() != workspace:
+            raise GovernedLauncherError("executor lease workspace mismatch")
+    except GovernedLauncherError:
+        raise
+    except Exception as ex:
+        raise GovernedLauncherError("executor lease workspace is invalid") from ex
+    if str(lease.get("packet_sha256") or "").lower() != packet_sha256:
+        raise GovernedLauncherError("executor lease packet hash mismatch")
+    lease_scope = tuple(sorted(_scope_authorities(lease.get("allowed_files"))))
+    expected_scope = tuple(sorted(_scope_authorities(list(allowed_paths))))
+    if lease_scope != expected_scope:
+        raise GovernedLauncherError("executor lease writable scope mismatch")
+    supplied_token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(str(lease.get("token_sha256") or ""), supplied_token_hash):
+        raise GovernedLauncherError("executor lease token identity mismatch")
+    try:
+        expires_at = float(lease.get("expires_at"))
+    except Exception as ex:
+        raise GovernedLauncherError("executor lease expiry is invalid") from ex
+    if expires_at <= time.time():
+        raise GovernedLauncherError("executor lease is already expired")
+    if lease.get("isolation_verified") is not True:
+        raise GovernedLauncherError("executor lease isolation proof is missing")
+    if lease.get("paid_consumed") is True:
+        raise GovernedLauncherError("executor lease paid authority is already consumed")
+    return str(lease_path), token
 
 
 def _cleanup_executor_lease(lease_obj: Mapping[str, object] | None, repo_root: str | Path) -> None:
@@ -320,8 +415,14 @@ def prepare_governed_launch(
             raise GovernedLauncherError(f"executor lease preparation failed: {ex}") from ex
         if not isinstance(lease_obj, Mapping):
             raise GovernedLauncherError("executor lease issuer returned invalid result")
-        lease_path = _text(lease_obj.get("lease"), "executor lease path")
-        lease_token = _text(lease_obj.get("token"), "executor lease token")
+        lease_path, lease_token = _verify_executor_lease_artifact(
+            lease_obj,
+            repo_root=repo_root,
+            packet_sha256=packet_sha256,
+            workspace=workspace,
+            adapter=R0_ADAPTER,
+            allowed_paths=packet_allowed,
+        )
 
         attestation = issue_governed_launch_attestation(
             task_id=clean_task_id,
@@ -371,6 +472,8 @@ def prepare_governed_launch(
         if not isinstance(lease, Mapping) or not isinstance(envelope, dict):
             raise GovernedLauncherError("workspace claim response is incomplete")
 
+        if str(lease.get("task_id")) != clean_task_id:
+            raise GovernedLauncherError("workspace claim returned wrong task identity")
         if str(lease.get("owner_run_id")) != run_id:
             raise GovernedLauncherError("workspace claim returned wrong run identity")
         owner_epoch = int(lease.get("owner_epoch"))
@@ -380,6 +483,17 @@ def prepare_governed_launch(
             raise GovernedLauncherError("workspace claim returned different workspace")
         if Decimal(str(lease.get("budget_reserved"))) != requested_budget:
             raise GovernedLauncherError("workspace claim returned different budget reservation")
+        if str(lease.get("current_head")) != current_head:
+            raise GovernedLauncherError("workspace claim returned different head")
+        if lease.get("released_at") is not None:
+            raise GovernedLauncherError("workspace claim returned an already released lease")
+        try:
+            if float(lease.get("expires_at")) <= time.time():
+                raise GovernedLauncherError("workspace claim returned an expired lease")
+        except GovernedLauncherError:
+            raise
+        except Exception as ex:
+            raise GovernedLauncherError("workspace claim returned invalid expiry") from ex
 
         try:
             verified = verify_envelope(envelope, bytes(daemon_secret))
@@ -427,6 +541,8 @@ def prepare_governed_launch(
             raise GovernedLauncherError("worker admission was not confirmed")
         if admitted.get("taskId") != clean_task_id or admitted.get("runId") != run_id:
             raise GovernedLauncherError("worker admission identity mismatch")
+        if int(admitted.get("ownerEpoch")) != owner_epoch:
+            raise GovernedLauncherError("worker admission owner epoch mismatch")
 
         authority_env = dict(credentials)
         authority_env.update({
