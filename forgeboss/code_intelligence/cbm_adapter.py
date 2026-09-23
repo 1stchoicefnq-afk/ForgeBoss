@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
+import tempfile
 from types import MappingProxyType
 from typing import Mapping
 
@@ -29,6 +31,7 @@ ALLOWED_TOOLS = frozenset({
 })
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_STDERR = 16_000
+_MAX_STDOUT = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,50 @@ def _outside_workspace(workspace: Path, candidate: Path, label: str) -> Path:
             f"{label} must be disjoint from the project workspace, not inside it or an ancestor"
         )
     return resolved
+
+
+def _read_tail(path: Path, limit: int) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        if size > limit:
+            handle.seek(size - limit)
+        data = handle.read(limit)
+    return data.decode("utf-8", errors="replace")
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/pid", str(process.pid), "/t", "/f"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                shell=False,
+                creationflags=flags,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _freeze_json(value: object) -> object:
@@ -233,42 +280,69 @@ class CodebaseMemoryAdapter:
         )
         argv = [str(self.staged_binary), "cli", clean_tool, encoded]
 
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=str(self.workspace),
-                env=self._environment(),
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as ex:
-            raise CodeIntelligenceError(
-                f"code-intelligence tool timed out after {self.timeout_seconds}s"
-            ) from ex
-        except OSError as ex:
-            raise CodeIntelligenceError(
-                f"code-intelligence process could not start: {type(ex).__name__}: {ex}"
-            ) from ex
-
-        stderr = completed.stderr[-_MAX_STDERR:]
-        if completed.returncode != 0:
-            raise CodeIntelligenceError(
-                f"code-intelligence tool failed with exit {completed.returncode}: {stderr}"
+        flags = 0
+        if os.name == "nt":
+            flags = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
 
-        try:
-            payload = json.loads(completed.stdout)
-        except json.JSONDecodeError as ex:
-            raise CodeIntelligenceError(
-                "code-intelligence tool returned non-JSON stdout"
-            ) from ex
+        with tempfile.TemporaryDirectory(
+            prefix="cbm-call-",
+            dir=str(self.runtime_dir),
+        ) as temp_dir:
+            out_path = Path(temp_dir) / "stdout.bin"
+            err_path = Path(temp_dir) / "stderr.bin"
+            try:
+                with out_path.open("wb") as out_handle, err_path.open("wb") as err_handle:
+                    process = subprocess.Popen(
+                        argv,
+                        cwd=str(self.workspace),
+                        env=self._environment(),
+                        shell=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out_handle,
+                        stderr=err_handle,
+                        start_new_session=(os.name != "nt"),
+                        creationflags=flags,
+                    )
+                    try:
+                        returncode = process.wait(timeout=self.timeout_seconds)
+                    except subprocess.TimeoutExpired as ex:
+                        _terminate_process_tree(process)
+                        raise CodeIntelligenceError(
+                            f"code-intelligence tool timed out after {self.timeout_seconds}s"
+                        ) from ex
+            except CodeIntelligenceError:
+                raise
+            except OSError as ex:
+                raise CodeIntelligenceError(
+                    f"code-intelligence process could not start: {type(ex).__name__}: {ex}"
+                ) from ex
+
+            stderr = _read_tail(err_path, _MAX_STDERR)
+            stdout_size = out_path.stat().st_size
+            if stdout_size > _MAX_STDOUT:
+                raise CodeIntelligenceError(
+                    f"code-intelligence stdout exceeded {_MAX_STDOUT} bytes"
+                )
+            if returncode != 0:
+                raise CodeIntelligenceError(
+                    f"code-intelligence tool failed with exit {returncode}: {stderr}"
+                )
+
+            try:
+                stdout_text = out_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as ex:
+                raise CodeIntelligenceError(
+                    "code-intelligence tool returned non-UTF-8 stdout"
+                ) from ex
+            try:
+                payload = json.loads(stdout_text)
+            except json.JSONDecodeError as ex:
+                raise CodeIntelligenceError(
+                    "code-intelligence tool returned non-JSON stdout"
+                ) from ex
 
         self._verify_binary()
 
