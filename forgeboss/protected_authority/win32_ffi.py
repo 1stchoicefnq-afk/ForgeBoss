@@ -21,6 +21,7 @@ def load_win32()->Win32API:
     ker.ConnectNamedPipe.argtypes=[wintypes.HANDLE,wintypes.LPVOID];ker.ConnectNamedPipe.restype=wintypes.BOOL
     ker.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];ker.ReadFile.restype=wintypes.BOOL
     ker.WriteFile.argtypes=[wintypes.HANDLE,wintypes.LPCVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];ker.WriteFile.restype=wintypes.BOOL
+    ker.FlushFileBuffers.argtypes=[wintypes.HANDLE];ker.FlushFileBuffers.restype=wintypes.BOOL
     ker.DisconnectNamedPipe.argtypes=[wintypes.HANDLE];ker.DisconnectNamedPipe.restype=wintypes.BOOL
     ker.SetNamedPipeHandleState.argtypes=[wintypes.HANDLE,ctypes.POINTER(wintypes.DWORD),ctypes.POINTER(wintypes.DWORD),ctypes.POINTER(wintypes.DWORD)];ker.SetNamedPipeHandleState.restype=wintypes.BOOL
     ker.WaitNamedPipeW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD];ker.WaitNamedPipeW.restype=wintypes.BOOL
