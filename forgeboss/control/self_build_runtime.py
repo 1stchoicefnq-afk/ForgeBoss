@@ -76,7 +76,13 @@ class SelfBuildRuntime:
         self.run_root=self.root/"self-build-runs"
         self.activation_root=self.root/"activation"
         for p in (self.workspace_root,self.run_root,self.activation_root):
-            p.mkdir(mode=0o700,exist_ok=True)
+            if os.name=="nt":
+                # CPython 3.13 gives mkdir(mode=0o700) a special Windows ACL that
+                # can introduce OWNER RIGHTS. The protected parent is already
+                # hardened, so create normally and inherit that trusted ACL.
+                p.mkdir(exist_ok=True)
+            else:
+                p.mkdir(mode=0o700,exist_ok=True)
             boundary.assert_protected_path(p,protected_root=self.root)
 
         self.workspace_state=ProtectedWorkspaceState(protected_root=self.root,boundary=boundary)

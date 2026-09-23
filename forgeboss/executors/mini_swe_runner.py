@@ -77,19 +77,39 @@ def main() -> int:
     try:
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
-        from minisweagent.models.litellm_model import LitellmModel
+        from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
+
+        class ForgeBossDockerEnvironment(DockerEnvironment):
+            """Windows-safe, synchronous container cleanup for protected self-build."""
+            def cleanup(self):
+                cid=getattr(self,"container_id",None)
+                if not cid:return
+                exe=self.config.executable
+                subprocess.run([exe,"stop","--time","10",cid],capture_output=True,text=True,timeout=20,check=False)
+                subprocess.run([exe,"rm","-f",cid],capture_output=True,text=True,timeout=20,check=False)
+                probe=subprocess.run([exe,"inspect",cid],capture_output=True,text=True,timeout=10,check=False)
+                self.container_id=None
+                if probe.returncode==0:
+                    raise RuntimeError("ForgeBoss Docker containment cleanup failed")
 
         # Model runs on host; shell runs in a network-disabled container.
         # The container receives the disposable repo only, not API/GitHub credentials.
         mount=f"type=bind,src={workspace},dst=/workspace"
-        env_obj=DockerEnvironment(
+        run_id=str(packet.get("run_id") or "")
+        builder_id=str(packet.get("builder_id") or "")
+        env_obj=ForgeBossDockerEnvironment(
             image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
-            run_args=["--rm","--network","none","--mount",mount],
+            env={"PYTHONDONTWRITEBYTECODE":"1","PYTHONUTF8":"1"},
+            run_args=[
+                "--rm","--network","none","--mount",mount,
+                "--label",f"forgeboss.stage1.run={run_id}",
+                "--label",f"forgeboss.stage1.worker={builder_id}",
+            ],
             timeout=180,
             container_timeout="45m",
         )
-        model=LitellmModel(model_name=model_name)
+        model=LitellmTextbasedModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.
 Your response must contain exactly ONE bash command block in this format:
 

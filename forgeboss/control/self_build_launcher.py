@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -50,6 +52,35 @@ def _packet_sha(path:Path)->str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _cleanup_labeled_container(*,run_id:str,builder_id:str)->dict:
+    docker=shutil.which("docker.exe") or shutil.which("docker")
+    if not docker:
+        raise SelfBuildLaunchError("DOCKER_CLI_MISSING","Docker executable disappeared during worker containment proof")
+    filters=[
+        "--filter",f"label=forgeboss.stage1.run={run_id}",
+        "--filter",f"label=forgeboss.stage1.worker={builder_id}",
+    ]
+    empty_streak=0
+    observed=[]
+    for _ in range(12):
+        q=subprocess.run([docker,"ps","-aq",*filters],capture_output=True,text=True,timeout=15,check=False)
+        if q.returncode:
+            raise SelfBuildLaunchError("DOCKER_CONTAINMENT_QUERY_FAILED",(q.stderr or q.stdout or "")[-1000:])
+        ids=[x.strip() for x in (q.stdout or "").splitlines() if x.strip()]
+        observed.extend(x for x in ids if x not in observed)
+        if ids:
+            empty_streak=0
+            rm=subprocess.run([docker,"rm","-f",*ids],capture_output=True,text=True,timeout=30,check=False)
+            if rm.returncode:
+                raise SelfBuildLaunchError("DOCKER_CONTAINMENT_CLEANUP_FAILED",(rm.stderr or rm.stdout or "")[-1000:])
+        else:
+            empty_streak+=1
+            if empty_streak>=2:
+                return {"container_empty":True,"observed_container_ids":observed}
+        time.sleep(0.2)
+    raise SelfBuildLaunchError("DOCKER_CONTAINMENT_NOT_EMPTY","Docker worker container remained after bounded cleanup")
+
+
 class SelfBuildLauncher:
     """Launches already-prepared ForgeBoss workers.
 
@@ -59,12 +90,13 @@ class SelfBuildLauncher:
     """
     def __init__(self,*,client:ProtectedAuthorityClient,supervisor:ProcessSupervisor,
                  state_root,python_executable=None,runner_path=None,
-                 issue_lease_fn:Callable=issue_lease,freeze_fn:Callable=freeze_candidate,clock:Callable=time.time):
+                 issue_lease_fn:Callable=issue_lease,freeze_fn:Callable=freeze_candidate,
+                 container_cleanup_fn:Callable=_cleanup_labeled_container,clock:Callable=time.time):
         if not isinstance(client,ProtectedAuthorityClient):
             raise SelfBuildLaunchError("AUTHORITY_CLIENT_REQUIRED","protected authority client required")
         if not isinstance(supervisor,ProcessSupervisor):
             raise SelfBuildLaunchError("SUPERVISOR_REQUIRED","ProcessSupervisor required")
-        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.freeze_fn=freeze_fn;self.clock=clock
+        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.freeze_fn=freeze_fn;self.container_cleanup_fn=container_cleanup_fn;self.clock=clock
         self.state_root=Path(state_root).expanduser().resolve()
         source_root=Path(__file__).resolve().parents[2]
         if _inside(self.state_root,source_root):
@@ -120,6 +152,7 @@ class SelfBuildLauncher:
             "FORGEBOSS_PROTECTED_LAUNCH_BUNDLE":str(bundle_path),
             "FORGEBOSS_RESULT_FILE":str(result_path),
             "FORGEBOSS_STATE_ROOT":str(self.state_root),
+            "PYTHONDONTWRITEBYTECODE":"1",
             "PYTHONUTF8":"1",
         })
         return env
@@ -191,7 +224,9 @@ class SelfBuildLauncher:
             }
         except BaseException:
             for public,item in zip(reversed(launched),reversed(builders[:len(launched)])):
-                try:self.supervisor.stop(public["builder_id"],public["generation"],timeout=5.0)
+                try:
+                    self.supervisor.stop(public["builder_id"],public["generation"],timeout=5.0)
+                    self.container_cleanup_fn(run_id=prepared_run["run_id"],builder_id=public["builder_id"])
                 except Exception:pass
                 try:self.client.revoke_self_build_worker(
                     run_id=prepared_run["run_id"],task_id=item["task_id"],
@@ -276,6 +311,11 @@ class SelfBuildLauncher:
         except SupervisorError as ex:
             raise SelfBuildLaunchError(ex.code,str(ex)) from ex
         process_evidence=process.as_dict()
+        docker_evidence=self.container_cleanup_fn(
+            run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
+            builder_id=builder_id,
+        )
+        process_evidence["dockerContainmentEmpty"]=docker_evidence.get("container_empty") is True
         candidate=self._load_candidate_evidence(paths["candidate"],item=item)
         if candidate is None:
             try:
@@ -434,10 +474,16 @@ class SelfBuildLauncher:
             raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
         evidence=self.supervisor.stop(builder_id,int(public["generation"]),timeout=10.0)
         if evidence.state!="STOPPED" or not evidence.containment_empty:
-            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","ProcessSupervisor could not prove worker containment empty")
+            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","ProcessSupervisor could not prove host-process containment empty")
+        docker_evidence=self.container_cleanup_fn(
+            run_id=str(prepared_run.get("run_id") or ""),
+            builder_id=builder_id,
+        )
+        if docker_evidence.get("container_empty") is not True:
+            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","Docker worker containment is not empty")
         response=self.client.revoke_self_build_worker(
             run_id=prepared_run["run_id"],task_id=item["task_id"],
             worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
             reason=reason,
         )
-        return {"stopped":True,"builder_id":builder_id,"process_evidence":evidence.as_dict(),"authority_receipt":response}
+        return {"stopped":True,"builder_id":builder_id,"process_evidence":evidence.as_dict(),"docker_evidence":docker_evidence,"authority_receipt":response}

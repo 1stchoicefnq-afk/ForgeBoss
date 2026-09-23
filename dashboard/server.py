@@ -19,7 +19,14 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DASH = Path(__file__).resolve().parent
-STATE = ROOT / "state" / "dashboard"
+_state_env = os.environ.get("FORGEBOSS_STATE_ROOT")
+if _state_env:
+    _STATE_ROOT = Path(_state_env).expanduser().resolve()
+    if _STATE_ROOT == ROOT or ROOT in _STATE_ROOT.parents:
+        raise RuntimeError("FORGEBOSS_STATE_ROOT must be outside the frozen ForgeBoss source")
+else:
+    _STATE_ROOT = ROOT / "state"
+STATE = _STATE_ROOT / "dashboard"
 STATE.mkdir(parents=True, exist_ok=True)
 STATUS = STATE / "status.json"
 LOG = STATE / "dashboard.log"

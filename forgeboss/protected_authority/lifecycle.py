@@ -128,14 +128,19 @@ def assert_windows_scm_registration(*,service_name:str=FIXED_SERVICE_NAME,expect
         if scm and not is_invalid_handle(scm):api.advapi32.CloseServiceHandle(scm)
 class SA(ctypes.Structure):_fields_=[('nLength',wintypes.DWORD),('lpSecurityDescriptor',wintypes.LPVOID),('bInheritHandle',wintypes.BOOL)]
 class WindowsNamedPipeServer:
-    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str],max_instances:int=4,preauth_timeout_ms:int=1000,poll_interval:float=0.01):
+    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str],max_instances:int=4,preauth_timeout_ms:int=1000,handler_timeout_ms:int=300000,poll_interval:float=0.01):
         if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
         if not isinstance(max_instances,int) or not 2<=max_instances<=16:raise AuthorityError('IPC_CONCURRENCY_INVALID')
         if not isinstance(preauth_timeout_ms,int) or not 100<=preauth_timeout_ms<=30000:raise AuthorityError('IPC_TIMEOUT_INVALID')
+        if not isinstance(handler_timeout_ms,int) or not 1000<=handler_timeout_ms<=600000:raise AuthorityError('IPC_TIMEOUT_INVALID')
         if not isinstance(poll_interval,(int,float)) or not 0.001<=float(poll_interval)<=0.1:raise AuthorityError('IPC_TIMEOUT_INVALID')
-        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.max_instances=max_instances;self.preauth_timeout_ms=preauth_timeout_ms;self.poll_interval=float(poll_interval);self.handles=[];self.handle=None;self._sd=None;self._stop=threading.Event()
+        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.max_instances=max_instances;self.preauth_timeout_ms=preauth_timeout_ms;self.handler_timeout_ms=handler_timeout_ms;self.poll_interval=float(poll_interval);self.handles=[];self.handle=None;self._sd=None;self._stop=threading.Event();self._stuck=[];self._quarantined=set();self._worker_lock=threading.Lock()
     def start(self):
         if self.handles:raise AuthorityError('SERVICE_ALREADY_STARTED')
+        with self._worker_lock:
+            self._stuck=[row for row in self._stuck if row[0].is_alive()]
+            if self._stuck:raise AuthorityError('IPC_WORKER_STUCK')
+            self._quarantined.clear()
         api=load_win32();sd=wintypes.LPVOID();sddl=_windows_sddl(self.allowed_peer_sids)
         if not api.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,ctypes.byref(sd),None):raise AuthorityError('IPC_ACL_INVALID')
         created=[]
@@ -192,16 +197,34 @@ class WindowsNamedPipeServer:
         return self._serve_handle(self.handles[0])
     def serve_batch(self):
         if not self.handles:raise AuthorityError('SERVICE_NOT_STARTED')
-        results=[None]*len(self.handles);threads=[]
+        snapshot=tuple(self.handles);results=[None]*len(snapshot);threads=[]
         def run(i,h):
             try:results[i]=self._serve_handle(h)
             except AuthorityError as e:results[i]=e
             except Exception:results[i]=AuthorityError('IPC_INTERNAL_FAILED')
-        for i,h in enumerate(tuple(self.handles)):
-            t=threading.Thread(target=run,args=(i,h),daemon=True);threads.append(t);t.start()
-        deadline=time.monotonic()+self.preauth_timeout_ms/1000.0+1.0
-        for t in threads:t.join(max(0.0,deadline-time.monotonic()))
-        if any(t.is_alive() for t in threads):raise AuthorityError('IPC_WORKER_STUCK')
+            finally:
+                hv=handle_value(h)
+                with self._worker_lock:quarantined=hv in self._quarantined
+                if quarantined:
+                    try:load_win32().kernel32.CloseHandle(h)
+                    except Exception:pass
+                    with self._worker_lock:self._quarantined.discard(hv)
+        for i,h in enumerate(snapshot):
+            t=threading.Thread(target=run,args=(i,h),daemon=True);threads.append((t,h));t.start()
+        deadline=time.monotonic()+(self.preauth_timeout_ms+self.handler_timeout_ms)/1000.0
+        for t,_h in threads:t.join(max(0.0,deadline-time.monotonic()))
+        survivors=[(t,h) for t,h in threads if t.is_alive()]
+        if survivors:
+            survivor_values={handle_value(h) for _t,h in survivors}
+            with self._worker_lock:
+                self._quarantined.update(survivor_values);self._stuck.extend(survivors)
+            self.handles=[h for h in self.handles if handle_value(h) not in survivor_values]
+            self.handle=self.handles[0] if self.handles else None
+            for i,(_t,h) in enumerate(threads):
+                if handle_value(h) in survivor_values:results[i]=AuthorityError('IPC_HANDLER_QUARANTINED')
+            if not self.handles:raise AuthorityError('IPC_WORKER_STUCK')
+        if results and all(isinstance(x,AuthorityError) and x.code=='IPC_PREAUTH_TIMEOUT' for x in results):
+            self._stop.wait(min(0.1,max(self.poll_interval,0.01)))
         return results
     def close(self):
         if os.name!='nt':return
@@ -211,7 +234,17 @@ class WindowsNamedPipeServer:
             except Exception:pass
             try:api.kernel32.CloseHandle(h)
             except Exception:pass
+        with self._worker_lock:stuck=list(self._stuck)
+        for _t,h in stuck:
+            try:api.kernel32.DisconnectNamedPipe(h)
+            except Exception:pass
+            try:api.kernel32.CloseHandle(h)
+            except Exception:pass
+        for t,_h in stuck:t.join(2.0)
+        survivors=[row for row in stuck if row[0].is_alive()]
+        with self._worker_lock:self._stuck=survivors
         if self._sd:api.kernel32.LocalFree(self._sd);self._sd=None
+        if survivors:raise AuthorityError('IPC_WORKER_STUCK')
 
 def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory):
     if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')

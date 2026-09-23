@@ -127,7 +127,8 @@ class LauncherTests(unittest.TestCase):
     def launcher(self,supervisor=None,freeze_fn=freeze_candidate):
         return SelfBuildLauncher(
             client=self.client,supervisor=supervisor or self.supervisor,state_root=self.state,
-            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,freeze_fn=freeze_fn,clock=lambda:1000.0,
+            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,freeze_fn=freeze_fn,
+            container_cleanup_fn=lambda **kw:{"container_empty":True,"observed_container_ids":[]},clock=lambda:1000.0,
         )
 
     def test_launch_initial_binds_two_workers_to_exact_packet_and_service_attestation(self):
@@ -203,6 +204,7 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertTrue(result["stopped"])
         self.assertEqual(self.client.revoked[-1]["task_id"],"task-b")
+        self.assertTrue(result["docker_evidence"]["container_empty"])
 
     def test_complete_worker_freezes_then_records_protected_handoff(self):
         out=self.launcher(freeze_fn=lambda **kw:{

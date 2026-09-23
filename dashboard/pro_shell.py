@@ -712,7 +712,7 @@ class Api:
                     active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
                     if active:
                         return {"ok":False,"blocked":True,"phase":"SELF_BUILD_SESSION_ACTIVE","message":"A ForgeBoss self-build session is already active. Stop it safely or let it finish before starting another."}
-                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
+                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=300.0)
                 launcher=self._get_self_build_launcher(client)
                 session_id="fl1s-"+uuid.uuid4().hex[:12]
                 with self._self_build_lock:
