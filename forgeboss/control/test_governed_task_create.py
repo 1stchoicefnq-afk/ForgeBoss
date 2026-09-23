@@ -15,6 +15,7 @@ import forgeboss.control.envelope as envelope_module
 import forgeboss.control.store as store_module
 from forgeboss.policy.reuse_review_authority import issue_reuse_review_receipt
 from forgeboss.policy.small_repair_authority import issue_small_repair_exemption
+from forgeboss.control.governed_launch import issue_governed_launch_attestation
 
 
 class BootstrapStore:
@@ -31,10 +32,12 @@ class GovernedTaskCreateTests(unittest.TestCase):
         cls.worktrees.mkdir()
         fake_secret = lambda root: (cls.root / "secret.bin", b"s" * 32)
         fake_policy_secret = lambda root: (cls.root / "policy-secret.bin", b"p" * 32)
+        fake_launch_secret = lambda root: (cls.root / "launch-secret.bin", b"l" * 32)
         with (
             mock.patch.object(store_module, "ControlStore", BootstrapStore),
             mock.patch.object(envelope_module, "secret_file", fake_secret),
             mock.patch.object(envelope_module, "policy_secret_file", fake_policy_secret),
+            mock.patch.object(envelope_module, "launch_secret_file", fake_launch_secret),
             mock.patch.dict(os.environ, {"FORGEBOSS_WORKTREE_ROOT": str(cls.worktrees)}),
         ):
             sys.modules.pop("forgeboss.control.daemon", None)
@@ -54,6 +57,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.store = self.store
         self.daemon.secret = b"k" * 32
         self.daemon.policy_secret = b"p" * 32
+        self.daemon.launch_secret = b"l" * 32
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -284,14 +288,73 @@ class GovernedTaskCreateTests(unittest.TestCase):
             },
         }
 
-    def test_governed_task_claim_fails_closed_until_attested_launch_exists(self):
+    def test_governed_task_claim_requires_attestation(self):
         p, _ = self._create_governed_substantial("T-GOV")
-        for runtime_id in ("mini-swe", "openhands", "opencode", "", "unknown"):
-            with self.subTest(runtime_id=runtime_id):
-                with self.assertRaises(self.mod.ProtocolError) as ctx:
-                    self.daemon.dispatch(self._claim_request(p["taskId"], runtime_id), True)
-                self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_REQUIRED")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_REQUIRED")
         self.assertIsNone(self.store.get_lease("T-GOV"))
+
+    def test_valid_governed_launch_attestation_allows_exact_claim(self):
+        p, _ = self._create_governed_substantial("T-GOV-OK")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        q = req["params"]
+        q["governedLaunchAttestation"] = issue_governed_launch_attestation(
+            task_id=q["taskId"],
+            repository=q["repository"],
+            base_sha=q["baseSha"],
+            run_id=q["runId"],
+            adapter=q["runtimeId"],
+            repo_root=self.mod.ROOT,
+            workspace_path=q["worktreePath"],
+            worktree_root=self.mod.WORKTREE_ROOT,
+            allowed_paths=q["allowedPaths"],
+            allowed_tools=q["allowedTools"],
+            budget_usd=q["budgetUsd"],
+            secret=self.daemon.launch_secret,
+            ttl_seconds=300,
+        )
+        out = self.daemon.dispatch(req, True)
+        self.assertEqual(out["lease"]["owner_run_id"], q["runId"])
+        runtime = self.mod.verify_envelope(
+            out["launchEnvelope"], self.daemon.secret, now=time.time()
+        )["runtime"]
+        self.assertEqual(runtime["adapter"], "mini-swe")
+        self.assertRegex(runtime["runnerSha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(runtime["interpreterSha256"], r"^[0-9a-f]{64}$")
+
+    def test_governed_launch_token_cannot_rebind_runtime_or_run(self):
+        p, _ = self._create_governed_substantial("T-GOV-BIND")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        q = req["params"]
+        token = issue_governed_launch_attestation(
+            task_id=q["taskId"],
+            repository=q["repository"],
+            base_sha=q["baseSha"],
+            run_id=q["runId"],
+            adapter=q["runtimeId"],
+            repo_root=self.mod.ROOT,
+            workspace_path=q["worktreePath"],
+            worktree_root=self.mod.WORKTREE_ROOT,
+            allowed_paths=q["allowedPaths"],
+            allowed_tools=q["allowedTools"],
+            budget_usd=q["budgetUsd"],
+            secret=self.daemon.launch_secret,
+            ttl_seconds=300,
+        )
+        q["governedLaunchAttestation"] = token
+        q["runId"] = "DIFFERENT"
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_INVALID")
+        self.assertIsNone(self.store.get_lease("T-GOV-BIND"))
+
+        req2 = self._claim_request(p["taskId"], "opencode")
+        req2["params"]["governedLaunchAttestation"] = token
+        with self.assertRaises(self.mod.ProtocolError) as ctx2:
+            self.daemon.dispatch(req2, True)
+        self.assertEqual(ctx2.exception.code, "GOVERNED_LAUNCH_ATTESTATION_INVALID")
 
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
