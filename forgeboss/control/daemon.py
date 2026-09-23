@@ -113,6 +113,11 @@ class ForgeBossDaemon:
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
                 verified_launch=None
+                if task.get("governance_mode")=="reuse-v1":
+                    if str(task.get("status") or "")!="queued":
+                        raise ProtocolError("GOVERNED_TASK_STATE_INVALID","governed task must be queued at workspace claim")
+                    if task.get("cancel_requested_at") is not None:
+                        raise ProtocolError("GOVERNED_TASK_CANCELLED","governed task cancellation has been requested")
                 if str(p.get("repository") or "")!=str(task["repository"]):raise ProtocolError("TASK_BINDING_MISMATCH","repository differs from task")
                 if str(p.get("baseSha") or "")!=str(task["base_sha"]):raise ProtocolError("TASK_BINDING_MISMATCH","baseSha differs from task")
                 try:allowed,_=validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
