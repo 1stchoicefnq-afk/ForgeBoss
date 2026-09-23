@@ -200,8 +200,15 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
             time.sleep(0.02)
         self.assertTrue(pid_file.exists())
         pid = int(pid_file.read_text(encoding="utf-8"))
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        gone = False
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                gone = True
+                break
+            time.sleep(0.02)
+        self.assertTrue(gone, f"descendant PID {pid} survived process-group cleanup")
 
     def test_overlapping_cache_and_runtime_are_rejected(self):
         with self.assertRaises(CodeIntelligenceError):
