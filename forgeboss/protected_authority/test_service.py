@@ -39,8 +39,9 @@ def req(op,payload,request_id=None,repo='owner/repo'):
 CTX=PeerContext('test','principal-a')
 
 class TestService(ProtectedAuthorityService):
-    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer,self_build_runtime=None):
-        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'};self.self_build_runtime=self_build_runtime
+    def __init__(self,*,protected_root,boundary,secrets_provider,backend,receipt_signer,self_build_runtime=None,policy_approver_peer_ids=()):
+        self.root=Path(protected_root);self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.service_principal=boundary.assert_service_principal(self.root);self.allowed_repositories={'owner/repo':'owner/repo'};self.self_build_runtime=self_build_runtime;self.github_enabled=True
+        self.policy_approver_peer_ids=frozenset(policy_approver_peer_ids)
         from forgeboss.protected_authority.service import ReplayJournal
         self.journal=ReplayJournal(self.root)
 
@@ -170,6 +171,67 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         with self.assertRaises(AuthorityError) as cm:
             self.service.handle(req('prepare_self_build',payload),peer_context=CTX)
         self.assertEqual(cm.exception.code,'SELF_BUILD_RUNTIME_UNAVAILABLE')
+
+    def _policy_payload(self,reuse=False):
+        out={
+            'taskId':'task-a',
+            'baseSha':'A'*40,
+            'objectiveSha256':'B'*64,
+            'allowedPaths':['SRC/A.py.','tests\\A.test.py'],
+            'ttlSeconds':300,
+        }
+        if reuse:
+            out['subsystem']='terminal-execution';out['reviewSha256']='C'*64
+        return out
+
+    def test_policy_approval_requires_explicit_approver_peer(self):
+        with self.assertRaises(AuthorityError) as cm:
+            self.service.handle(req('approve_small_repair',self._policy_payload()),peer_context=CTX)
+        self.assertEqual(cm.exception.code,'POLICY_APPROVER_DENIED')
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.secrets.launch_reads,0);self.assertEqual(self.backend.calls,[])
+
+    def test_small_repair_policy_receipt_is_local_signed_and_exact(self):
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,policy_approver_peer_ids={'controller-a'})
+        before=__import__('time').time()
+        out=svc.handle(req('approve_small_repair',self._policy_payload()),peer_context=CTX)
+        self.assertTrue(verify_signed_receipt(out,self.public_b64))
+        self.assertEqual(out['receipt']['operation'],'approve_small_repair')
+        self.assertEqual(out['result']['policy'],'small-repair-v1')
+        self.assertEqual(out['result']['repository'],'owner/repo')
+        self.assertEqual(out['result']['baseSha'],'a'*40)
+        self.assertEqual(out['result']['objectiveSha256'],'b'*64)
+        self.assertEqual(out['result']['allowedPaths'],['src/a.py','tests/a.test.py'])
+        self.assertGreaterEqual(out['result']['issuedAt'],int(before)-1)
+        self.assertEqual(out['result']['expiresAt']-out['result']['issuedAt'],300)
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.secrets.launch_reads,0);self.assertEqual(self.backend.calls,[])
+
+    def test_reuse_review_policy_receipt_binds_review_digest_and_subsystem(self):
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,policy_approver_peer_ids={'controller-a'})
+        out=svc.handle(req('approve_reuse_review',self._policy_payload(reuse=True)),peer_context=CTX)
+        self.assertTrue(verify_signed_receipt(out,self.public_b64))
+        self.assertEqual(out['receipt']['operation'],'approve_reuse_review')
+        self.assertEqual(out['result']['policy'],'reuse-review-v1')
+        self.assertEqual(out['result']['subsystem'],'terminal-execution')
+        self.assertEqual(out['result']['reviewSha256'],'c'*64)
+        self.assertEqual(self.secrets.github_reads,0);self.assertEqual(self.backend.calls,[])
+
+    def test_policy_payload_escape_duplicate_and_ttl_fail_closed(self):
+        bad=self._policy_payload();bad['allowedPaths']=['../escape.py']
+        with self.assertRaises(AuthorityError) as cm:req('approve_small_repair',bad)
+        self.assertEqual(cm.exception.code,'POLICY_PATH_INVALID')
+        bad=self._policy_payload();bad['allowedPaths']=['SRC/A.py','src/a.py.']
+        with self.assertRaises(AuthorityError) as cm:req('approve_small_repair',bad)
+        self.assertEqual(cm.exception.code,'POLICY_PATH_DUPLICATE')
+        bad=self._policy_payload();bad['ttlSeconds']=3601
+        with self.assertRaises(AuthorityError) as cm:req('approve_small_repair',bad)
+        self.assertEqual(cm.exception.code,'POLICY_TTL_INVALID')
+
+    def test_policy_request_replay_is_denied_before_second_approval(self):
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,policy_approver_peer_ids={'controller-a'})
+        rid=str(uuid.uuid4());r=req('approve_reuse_review',self._policy_payload(reuse=True),rid)
+        svc.handle(r,peer_context=CTX)
+        with self.assertRaises(AuthorityError) as cm:svc.handle(r,peer_context=CTX)
+        self.assertEqual(cm.exception.code,'REQUEST_REPLAYED')
 
     def test_strict_json(self):
         for raw in ('{"x":1,"x":2}','{"x":NaN}','{"x":Infinity}',''):
