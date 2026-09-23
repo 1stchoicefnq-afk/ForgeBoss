@@ -111,6 +111,19 @@ class GovernedLaunchTests(unittest.TestCase):
         with self.assertRaisesRegex(GovernedLaunchError, "binding mismatch"):
             self.verify(token)
 
+    def test_symlinked_runner_path_is_rejected(self):
+        if not hasattr(Path, "symlink_to"):
+            self.skipTest("symlink API unavailable")
+        target = self.root / "real-runner.py"
+        target.write_text("#!/usr/bin/env python3\nprint('real')\n", encoding="utf-8")
+        try:
+            self.runner.unlink()
+            self.runner.symlink_to(target)
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+        with self.assertRaisesRegex(GovernedLaunchError, "symlink"):
+            self.issue()
+
     def test_signature_tamper_wrong_secret_and_expiry_fail_closed(self):
         token = self.issue()
         token["budgetUsd"] = "0.6"
