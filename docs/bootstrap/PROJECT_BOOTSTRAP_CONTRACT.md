@@ -216,7 +216,7 @@ Authority/security-critical dependencies must be pinned.
 
 Upgrades require a reviewed identity/version change and relevant regression/security tests.
 
-Executable extension distribution should verify hashes/signatures where supported. Installation is not an authority grant.
+Executable extension distribution must pin an exact identity/version and verify a cryptographic hash at minimum; signatures are additionally verified where supported. Installation is not an authority grant.
 
 ## Backup/recovery/update contract
 
