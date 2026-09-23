@@ -2,6 +2,8 @@ from __future__ import annotations
 import hashlib, json, os, sys, traceback, subprocess
 from pathlib import Path
 
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 def _persist_result(result:dict)->None:
     raw=os.environ.get("FORGEBOSS_RESULT_FILE")
     if not raw:return
@@ -55,6 +57,23 @@ def _persist_early_failure(result:dict,message:str,code:int)->int:
     print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
     return code
 
+def _exception_detail(ex: BaseException) -> str:
+    parts=[f"{type(ex).__name__}: {ex}"]
+    for name in ("stderr","stdout","output"):
+        value=getattr(ex,name,None)
+        if value is None:
+            continue
+        if isinstance(value,bytes):
+            value=value.decode("utf-8","replace")
+        text=str(value).strip()
+        if text and text not in parts:
+            parts.append(f"{name}: {text}")
+    return " | ".join(parts)[-6000:]
+
+def _hidden_run(args:list[str], **kwargs):
+    kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
+    return subprocess.run(args, **kwargs)
+
 def _guard_subprocess(args:list[str]):
     engine_root=Path(__file__).resolve().parents[2]
     env=dict(os.environ)
@@ -62,11 +81,9 @@ def _guard_subprocess(args:list[str]):
     env["PYTHONNOUSERSITE"]="1"
     env["PYTHONDONTWRITEBYTECODE"]="1"
     env.pop("PYTHONHOME",None)
-    flags=getattr(subprocess,"CREATE_NO_WINDOW",0)
-    return subprocess.run(
+    return _hidden_run(
         [sys.executable,"-m","forgeboss.security.executor_guard",*args],
         cwd=str(engine_root),env=env,capture_output=True,text=True,
-        creationflags=flags,
     )
 
 def main() -> int:
@@ -113,9 +130,9 @@ def main() -> int:
                 cid=getattr(self,"container_id",None)
                 if not cid:return
                 exe=self.config.executable
-                subprocess.run([exe,"stop","--time","10",cid],capture_output=True,text=True,timeout=20,check=False)
-                subprocess.run([exe,"rm","-f",cid],capture_output=True,text=True,timeout=20,check=False)
-                probe=subprocess.run([exe,"inspect",cid],capture_output=True,text=True,timeout=10,check=False)
+                _hidden_run([exe,"stop","--time","10",cid],capture_output=True,text=True,timeout=20,check=False)
+                _hidden_run([exe,"rm","-f",cid],capture_output=True,text=True,timeout=20,check=False)
+                probe=_hidden_run([exe,"inspect",cid],capture_output=True,text=True,timeout=10,check=False)
                 self.container_id=None
                 if probe.returncode==0:
                     raise RuntimeError("ForgeBoss Docker containment cleanup failed")
@@ -207,7 +224,7 @@ Required acceptance intent:
                 result["cost_usd"]=float(getattr(agent,"cost",0.0) or 0.0)
                 result["calls"]=int(getattr(agent,"n_calls",0) or 0)
         except Exception: pass
-        result["error"]=f"{type(e).__name__}: {e}"
+        result["error"]=_exception_detail(e)
         print(result["error"],file=sys.stderr)
         return 10
     finally:

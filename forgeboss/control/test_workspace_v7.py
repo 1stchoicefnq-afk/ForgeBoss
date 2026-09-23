@@ -60,6 +60,25 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
             ws._create_state_dir(fake)
         fake.mkdir.assert_called_once_with()
 
+    def test_windows_builder_stage_creation_inherits_parent_acl(self):
+        fake=mock.Mock()
+        with mock.patch.object(w.os,"name","nt"):
+            w._create_stage_dir(fake)
+        fake.mkdir.assert_called_once_with()
+
+    def test_posix_builder_stage_creation_remains_private(self):
+        fake=mock.Mock()
+        with mock.patch.object(w.os,"name","posix"):
+            w._create_stage_dir(fake)
+        fake.mkdir.assert_called_once_with(mode=0o700)
+
+    def test_git_child_is_hidden_on_windows_capable_python(self):
+        cp=mock.Mock(returncode=0,stdout="",stderr="")
+        with mock.patch.object(w.subprocess,"run",return_value=cp) as run:
+            w._run_git(Path("/git"),["status"],check=False)
+        self.assertIn("creationflags",run.call_args.kwargs)
+        self.assertEqual(run.call_args.kwargs["creationflags"],w.CREATE_NO_WINDOW)
+
     def test_workspace_operations_require_protected_state(self):
         with self.assertRaises(w.WorkspaceProvisionError) as cm:
             w.quarantine_status(self.target, self.workspaces)

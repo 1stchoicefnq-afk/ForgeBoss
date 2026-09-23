@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, subprocess, shutil, time
 from pathlib import Path
 
+CREATE_NO_WINDOW=getattr(subprocess,"CREATE_NO_WINDOW",0)
 ROOT=Path(__file__).resolve().parents[2]
 MIRROR=Path.home()/".siteboss"/"autopilot"/"mirrors"/"siteboss-monster.git"
 CTRL=Path.home()/".siteboss"/"autopilot"/"controller-state"
@@ -10,7 +11,7 @@ CANON=".github/pull_request_template.md"
 LEGACY=".github/PULL_REQUEST_TEMPLATE.md"
 
 def run(a,cwd=None):
-    return subprocess.run(a,cwd=cwd,capture_output=True,text=True,timeout=180)
+    return subprocess.run(a,cwd=cwd,capture_output=True,text=True,timeout=180,creationflags=CREATE_NO_WINDOW)
 def git(w,*a):
     p=run(["git.exe",*a],w)
     if p.returncode:raise RuntimeError((p.stdout+p.stderr).strip())

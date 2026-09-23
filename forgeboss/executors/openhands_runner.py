@@ -2,6 +2,8 @@ from __future__ import annotations
 import json, os, sys, tempfile, shutil
 from pathlib import Path
 
+CREATE_NO_WINDOW=getattr(subprocess,"CREATE_NO_WINDOW",0)
+
 def main() -> int:
     if len(sys.argv)<4:
         print("usage: openhands_runner.py PACKET.json WORKSPACE BUDGET_USD",file=sys.stderr);return 2
@@ -17,7 +19,7 @@ def main() -> int:
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
-    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","openhands"],capture_output=True,text=True)
+    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","openhands"],capture_output=True,text=True,creationflags=CREATE_NO_WINDOW)
     if v.returncode:
         print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
 
@@ -78,7 +80,7 @@ Acceptance intent:
         conversation.run()
         cost=float(getattr(llm.metrics,"accumulated_cost",0.0) or 0.0)
         result["cost_usd"]=cost
-        post=subprocess.run([sys.executable,str(guard),"postflight","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","openhands"],capture_output=True,text=True)
+        post=subprocess.run([sys.executable,str(guard),"postflight","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","openhands"],capture_output=True,text=True,creationflags=CREATE_NO_WINDOW)
         if post.returncode:
             result["error"]="ForgeBoss postflight denied worker result: "+(post.stdout or post.stderr)[-1200:]
             return 13
