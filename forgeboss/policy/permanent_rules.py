@@ -15,7 +15,7 @@ class PermanentRulesError(RuntimeError):
 
 EXPECTED_SCHEMA = 1
 EXPECTED_RULESET_ID = "FORGEBOSS_PERMANENT_PRODUCT_RULES"
-EXPECTED_RULESET_VERSION = "1.0.0"
+EXPECTED_RULESET_VERSION = "1.1.0"
 EXPECTED_STATUS = "PERMANENT_PRODUCT_CONTRACT"
 EXPECTED_SCOPES = ("forgeboss", "projects_built_by_forgeboss")
 EXPECTED_PRECEDENCE = (
@@ -26,7 +26,7 @@ EXPECTED_PRECEDENCE = (
     "worker_contracts",
     "model_or_tool_output",
 )
-EXPECTED_RULE_IDS = tuple(f"FB-PERM-{i:03d}" for i in range(1, 26))
+EXPECTED_RULE_IDS = tuple(f"FB-PERM-{i:03d}" for i in range(1, 49))
 EXPECTED_STRUCTURED_RECORDS = (
     "PROJECT_IDEA",
     "REQUIREMENTS",
@@ -43,6 +43,11 @@ EXPECTED_STRUCTURED_RECORDS = (
     "KNOWN_ISSUES",
     "STATUS",
     "RELEASE_PROOF",
+    "DATA_POLICY",
+    "NETWORK_POLICY",
+    "BACKUP_MANIFEST",
+    "AUDIT_TRAIL",
+    "COMPATIBILITY_MATRIX",
 )
 EXPECTED_TOP_LEVEL_KEYS = frozenset({
     "schema",
@@ -56,7 +61,7 @@ EXPECTED_TOP_LEVEL_KEYS = frozenset({
     "note",
 })
 EXPECTED_RULE_KEYS = frozenset({"id", "name", "law"})
-PINNED_CANONICAL_SHA256 = "d7cf4789cfc780a6daef6279bd7390ba9591758328fad9ac55b36e90e180df0e"
+PINNED_CANONICAL_SHA256 = "ca18162a9a284d01ee3fe6c30839912f34de61c2ef2cc408bc8eec5e2ee0eebd"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
