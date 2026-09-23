@@ -16,6 +16,7 @@ HOST="127.0.0.1"
 PORT=18765
 WORKTREE_ROOT=Path(os.environ.get("FORGEBOSS_WORKTREE_ROOT") or (STATE/"worktrees")).resolve()
 SAFE_TOOL_IDS={"git","node","npm","python","pytest","docker"}
+GOVERNED_RUNTIME_IDS={"mini-swe"}
 
 class ForgeBossDaemon:
     def __init__(self):
@@ -106,6 +107,10 @@ class ForgeBossDaemon:
             def do():
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("governance_mode")=="reuse-v1":
+                    runtime_id=str(p.get("runtimeId") or "")
+                    if runtime_id not in GOVERNED_RUNTIME_IDS:
+                        raise ProtocolError("POLICY_KEY_ISOLATION_UNPROVEN",f"governed task runtime is not isolation-approved: {runtime_id or '<missing>'}")
                 if str(p.get("repository") or "")!=str(task["repository"]):raise ProtocolError("TASK_BINDING_MISMATCH","repository differs from task")
                 if str(p.get("baseSha") or "")!=str(task["base_sha"]):raise ProtocolError("TASK_BINDING_MISMATCH","baseSha differs from task")
                 try:allowed,_=validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
