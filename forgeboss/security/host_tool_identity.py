@@ -55,8 +55,11 @@ def resolve_trusted_host_executable(name: str) -> HostToolIdentity:
     if not found:
         raise HostToolIdentityError(f"host executable unavailable: {lookup}")
 
+    candidate = Path(found)
+    if is_linklike(candidate):
+        raise HostToolIdentityError("linklike host executable denied")
     try:
-        path = Path(found).resolve(strict=True)
+        path = candidate.resolve(strict=True)
     except OSError as ex:
         raise HostToolIdentityError(f"host executable unavailable: {lookup}") from ex
 
