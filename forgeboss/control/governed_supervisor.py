@@ -234,7 +234,7 @@ def supervise_governed_run(
         try:
             daemon.store.release(
                 task_id,run_id,int(lease["owner_epoch"]),
-                result_head=lease["current_head"],outcome="failed"
+                result_head=lease["current_head"],outcome="failed",respect_cancel=True
             )
         except Exception as release_ex:
             raise GovernedSupervisorError(
@@ -285,7 +285,7 @@ def supervise_governed_run(
         try:
             daemon.store.release(
                 task_id,run_id,int(lease["owner_epoch"]),
-                result_head=lease["current_head"],outcome="failed"
+                result_head=lease["current_head"],outcome="failed",respect_cancel=True
             )
         except Exception as release_ex:
             cleanup_errors.append("workspace release failed: "+str(release_ex))
@@ -348,11 +348,15 @@ def supervise_governed_run(
         finalization_errors.append(f"executor lease revoke failed: {type(ex).__name__}: {ex}")
 
     try:
-        daemon.store.release(
+        release_result=daemon.store.release(
             task_id,run_id,int(lease["owner_epoch"]),
             result_head=lease["current_head"],
             outcome="cancelled" if revoked else ("completed" if proc.returncode==0 else "failed"),
+            respect_cancel=True,
         )
+        if release_result and release_result.get("outcome")=="cancelled" and not revoked:
+            revoked=True
+            reason=reason or "task cancellation requested before finalization"
     except Exception as ex:
         finalization_errors.append(f"workspace release failed: {type(ex).__name__}: {ex}")
 
