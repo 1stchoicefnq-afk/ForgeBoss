@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import importlib
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import uuid
+from unittest import mock
+
+import forgeboss.control.envelope as envelope_module
+import forgeboss.control.store as store_module
+from forgeboss.policy.reuse_review_authority import issue_reuse_review_receipt
+from forgeboss.policy.small_repair_authority import issue_small_repair_exemption
+
+
+class BootstrapStore:
+    def __init__(self, path):
+        self.path = path
+
+
+class GovernedTaskCreateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temp.name)
+        cls.worktrees = cls.root / "worktrees"
+        cls.worktrees.mkdir()
+        fake_secret = lambda root: (cls.root / "secret.bin", b"s" * 32)
+        with (
+            mock.patch.object(store_module, "ControlStore", BootstrapStore),
+            mock.patch.object(envelope_module, "secret_file", fake_secret),
+            mock.patch.dict(os.environ, {"FORGEBOSS_WORKTREE_ROOT": str(cls.worktrees)}),
+        ):
+            sys.modules.pop("forgeboss.control.daemon", None)
+            cls.mod = importlib.import_module("forgeboss.control.daemon")
+
+    @classmethod
+    def tearDownClass(cls):
+        sys.modules.pop("forgeboss.control.daemon", None)
+        cls.temp.cleanup()
+
+    def setUp(self):
+        self.store = store_module.ControlStore(
+            self.root / f"{uuid.uuid4().hex}.sqlite"
+        )
+        self.addCleanup(self.store.db.close)
+        self.daemon = self.mod.ForgeBossDaemon.__new__(self.mod.ForgeBossDaemon)
+        self.daemon.store = self.store
+        self.daemon.secret = b"k" * 32
+        self.daemon.idempotency = {}
+        self.daemon.lock = threading.RLock()
+        self.daemon.started = time.time()
+
+    def params(self, task_id="T1"):
+        return {
+            "taskId": task_id,
+            "repository": "owner/repo",
+            "purpose": "Build the terminal execution subsystem.",
+            "baseSha": "a" * 40,
+            "allowedPaths": ["src/terminal.py", "tests/test_terminal.py"],
+            "requiredTests": ["python -m unittest"],
+            "budgetUsd": 1.0,
+            "subsystem": "terminal-execution",
+        }
+
+    def review(self):
+        return {
+            "schema": 1,
+            "subsystem": "terminal-execution",
+            "search_performed": [
+                "GitHub terminal process broker",
+                "existing ForgeBoss executors",
+            ],
+            "candidates": [
+                {
+                    "name": "example/process-broker",
+                    "source": "https://example.invalid/process-broker",
+                    "exact_identity": "commit-abc123",
+                    "license": "MIT",
+                    "license_status": "compatible",
+                    "maintenance_status": "active",
+                    "platform_fit": "fit",
+                    "security_fit": "partial",
+                    "disposition": "selected",
+                    "notes": "requires ForgeBoss wrapper",
+                }
+            ],
+            "decision": "adapt",
+            "custom_build_reason": "",
+        }
+
+    def request(self, params, method="task.create_governed"):
+        return {
+            "method": method,
+            "idempotencyKey": uuid.uuid4().hex,
+            "params": params,
+        }
+
+    def event_count(self, task_id):
+        return self.store.db.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=?",
+            (task_id,),
+        ).fetchone()[0]
+
+    def test_missing_reuse_review_blocks_atomically(self):
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self.request(self.params()), True)
+        self.assertEqual(ctx.exception.code, "REUSE_GATE_BLOCKED")
+        self.assertIsNone(self.store.get_task("T1"))
+        self.assertEqual(self.event_count("T1"), 0)
+
+    def test_structural_review_without_signed_receipt_blocks_atomically(self):
+        p = self.params()
+        p["reuseReview"] = self.review()
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self.request(p), True)
+        self.assertEqual(ctx.exception.code, "REUSE_GATE_BLOCKED")
+        self.assertIsNone(self.store.get_task("T1"))
+        self.assertEqual(self.event_count("T1"), 0)
+
+    def test_valid_substantial_review_and_receipt_persist_nonsecret_evidence(self):
+        p = self.params()
+        p["reuseReview"] = self.review()
+        p["reuseReviewReceipt"] = issue_reuse_review_receipt(
+            task_id=p["taskId"],
+            repository=p["repository"],
+            base_sha=p["baseSha"],
+            objective=p["purpose"],
+            allowed_paths=p["allowedPaths"],
+            subsystem=p["subsystem"],
+            reuse_review=p["reuseReview"],
+            secret=self.daemon.secret,
+            ttl_seconds=600,
+        )
+        created = self.daemon.dispatch(self.request(p), True)
+        self.assertEqual(created["governance_mode"], "reuse-v1")
+        self.assertEqual(created["work_kind"], "substantial-subsystem")
+        self.assertEqual(created["subsystem"], "terminal-execution")
+        self.assertRegex(created["reuse_review_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(created["reuse_review_receipt_sha256"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(created["small_repair_exemption_sha256"])
+        self.assertEqual(self.event_count("T1"), 1)
+
+    def test_valid_small_repair_exemption_needs_no_broad_review(self):
+        p = self.params()
+        p["purpose"] = "Fix exact null check."
+        p["smallRepairExemption"] = issue_small_repair_exemption(
+            task_id=p["taskId"],
+            repository=p["repository"],
+            base_sha=p["baseSha"],
+            objective=p["purpose"],
+            allowed_paths=p["allowedPaths"],
+            secret=self.daemon.secret,
+            ttl_seconds=600,
+        )
+        created = self.daemon.dispatch(self.request(p), True)
+        self.assertEqual(created["work_kind"], "small-repair")
+        self.assertRegex(created["small_repair_exemption_sha256"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(created["reuse_review_sha256"])
+        self.assertIsNone(created["reuse_review_receipt_sha256"])
+
+    def test_mismatched_small_repair_token_fails_before_store_mutation(self):
+        p = self.params()
+        p["smallRepairExemption"] = issue_small_repair_exemption(
+            task_id="OTHER",
+            repository=p["repository"],
+            base_sha=p["baseSha"],
+            objective=p["purpose"],
+            allowed_paths=p["allowedPaths"],
+            secret=self.daemon.secret,
+            ttl_seconds=600,
+        )
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self.request(p), True)
+        self.assertEqual(ctx.exception.code, "REUSE_AUTHORITY_INVALID")
+        self.assertIsNone(self.store.get_task("T1"))
+        self.assertEqual(self.event_count("T1"), 0)
+
+    def test_legacy_task_create_remains_legacy_in_this_packet(self):
+        p = self.params()
+        p.pop("subsystem")
+        created = self.daemon.dispatch(self.request(p, method="task.create"), True)
+        self.assertIsNone(created["governance_mode"])
+        self.assertIsNone(created["work_kind"])
+        self.assertIsNone(created["reuse_review_sha256"])
+
+    def test_store_rejects_impossible_governance_combinations(self):
+        p = self.params()
+        p.update({
+            "governanceMode": "reuse-v1",
+            "workKind": "small-repair",
+            "smallRepairExemptionSha256": None,
+        })
+        with self.assertRaisesRegex(ValueError, "small-repair governance evidence"):
+            self.store.create_task(p)
+        self.assertIsNone(self.store.get_task("T1"))
+
+        p = self.params(task_id="T2")
+        p.update({
+            "governanceMode": "reuse-v1",
+            "workKind": "substantial-subsystem",
+            "reuseReviewSha256": "1" * 64,
+            "reuseReviewReceiptSha256": None,
+        })
+        with self.assertRaisesRegex(ValueError, "substantial governance evidence"):
+            self.store.create_task(p)
+        self.assertIsNone(self.store.get_task("T2"))
+
+    def test_protocol_mutation_set_contains_governed_create(self):
+        self.assertIn("task.create_governed", self.mod.__dict__["parse_frame"].__globals__["MUTATIONS"])
+
+
+if __name__ == "__main__":
+    unittest.main()
