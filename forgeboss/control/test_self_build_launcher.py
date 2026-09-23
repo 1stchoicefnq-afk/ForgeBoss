@@ -159,6 +159,43 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(out["concurrent_proof"]["states"],["RUNNING","RUNNING"])
         self.assertEqual(out["concurrent_proof"]["builders"],["builder-a","builder-b"])
 
+    def test_initial_workers_are_fully_staged_before_either_process_starts(self):
+        launcher=self.launcher()
+        events=[]
+        original_prepare=launcher._prepare_worker_launch
+        original_start=launcher._start_prepared_worker
+        def prepare(prepared_run,item):
+            events.append("prepare-"+item["builder_id"])
+            return original_prepare(prepared_run,item)
+        def start(staged):
+            events.append("start-"+staged["builder_id"])
+            return original_start(staged)
+        with patch.object(launcher,"_prepare_worker_launch",side_effect=prepare), \
+             patch.object(launcher,"_start_prepared_worker",side_effect=start):
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(events,[
+            "prepare-builder-a","prepare-builder-b",
+            "start-builder-a","start-builder-b",
+        ])
+
+    def test_concurrency_failure_persists_worker_exit_diagnostic(self):
+        class FailedB(Supervisor):
+            def get(self,worker_id,*,refresh=False):
+                row=super().get(worker_id,refresh=refresh)
+                if worker_id=="builder-b":
+                    return A(row.worker_id,row.generation,"FAILED",row.pid,exit_code=13,started_at=row.started_at,containment_id=row.containment_id)
+                return row
+        launcher=self.launcher(FailedB())
+        with self.assertRaises(SelfBuildLaunchError) as cm:
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(cm.exception.code,"CONCURRENCY_NOT_PROVEN")
+        report=self.state/"self-build-launch"/"fl1-run"/"initial-launch-failure.json"
+        self.assertTrue(report.is_file())
+        data=json.loads(report.read_text(encoding="utf-8"))
+        rows={x["builder_id"]:x for x in data["workers"]}
+        self.assertEqual(rows["builder-b"]["state"],"FAILED")
+        self.assertEqual(rows["builder-b"]["exit_code"],13)
+
     def test_fresh_replacement_is_appended_without_erasing_initial_evidence(self):
         out=self.launcher().launch_initial(self.prepared)
         replacement=self._item("builder-b2","task-b2",self.root/"wb2","0.50")
