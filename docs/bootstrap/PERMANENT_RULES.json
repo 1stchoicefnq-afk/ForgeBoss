@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "ruleset_id": "FORGEBOSS_PERMANENT_PRODUCT_RULES",
-  "ruleset_version": "1.0.0",
+  "ruleset_version": "1.1.0",
   "status": "PERMANENT_PRODUCT_CONTRACT",
   "applies_to": [
     "forgeboss",
@@ -140,6 +140,121 @@
       "id": "FB-PERM-025",
       "name": "secrets_boundary",
       "law": "Secrets and credentials stay out of source control, prompts, ordinary logs and evidence exports unless an explicit secure mechanism owns them."
+    },
+    {
+      "id": "FB-PERM-026",
+      "name": "user_project_ownership",
+      "law": "User project/source belongs to the user and must have a practical export/import path that does not depend on continued use of one provider or ForgeBoss cloud."
+    },
+    {
+      "id": "FB-PERM-027",
+      "name": "safe_uninstall_and_delete",
+      "law": "Removing ForgeBoss or changing account state must not silently delete user projects/data; destructive deletion requires explicit owner intent."
+    },
+    {
+      "id": "FB-PERM-028",
+      "name": "backup_restore",
+      "law": "Authoritative project/runtime state must have a tested backup/restore and disaster-recovery strategy appropriate to its deployment mode."
+    },
+    {
+      "id": "FB-PERM-029",
+      "name": "explicit_data_policy",
+      "law": "Retention, deletion and telemetry behavior must be explicit; hidden collection of project/code data is forbidden."
+    },
+    {
+      "id": "FB-PERM-030",
+      "name": "controlled_network_egress",
+      "law": "Worker/tool network egress is policy-controlled and least-necessary; code execution does not imply unrestricted internet access."
+    },
+    {
+      "id": "FB-PERM-031",
+      "name": "secure_secret_store",
+      "law": "Secrets use an appropriate secure store, least-privilege scoping and masking from ordinary logs/evidence."
+    },
+    {
+      "id": "FB-PERM-032",
+      "name": "supply_chain_inventory",
+      "law": "ForgeBoss maintains sufficient third-party provenance to produce an SBOM or equivalent inventory of executable components and licenses."
+    },
+    {
+      "id": "FB-PERM-033",
+      "name": "critical_dependency_pinning",
+      "law": "Authority/security-critical dependencies are pinned to reviewed versions or exact identities."
+    },
+    {
+      "id": "FB-PERM-034",
+      "name": "dependency_upgrade_gate",
+      "law": "Dependency upgrades require reviewed identity/version changes and relevant tests; unreviewed latest-version drift is not accepted."
+    },
+    {
+      "id": "FB-PERM-035",
+      "name": "extension_identity_verification",
+      "law": "Executable Worker Packs/plugins/extensions are versioned and hash/signature verified where their distribution mechanism supports it."
+    },
+    {
+      "id": "FB-PERM-036",
+      "name": "extension_capability_boundary",
+      "law": "Installing a pack/plugin/extension grants no runtime authority; declared capabilities remain subject to ForgeBoss permissions and policy."
+    },
+    {
+      "id": "FB-PERM-037",
+      "name": "authenticated_updates",
+      "law": "ForgeBoss application updates are authenticated/versioned and preserve a safe known-good rollback or recovery path."
+    },
+    {
+      "id": "FB-PERM-038",
+      "name": "project_isolation",
+      "law": "Separate projects do not silently share private context, secrets, workspaces or evidence without explicit authorised sharing."
+    },
+    {
+      "id": "FB-PERM-039",
+      "name": "tenant_isolation",
+      "law": "Cloud/team deployments enforce tenant/account/team boundaries server-side rather than relying on client/UI filtering."
+    },
+    {
+      "id": "FB-PERM-040",
+      "name": "cost_transparency_and_ceiling",
+      "law": "Material spend is bounded/visible where practical and hard owner/project/run ceilings cannot be widened by models, workers, tools or providers."
+    },
+    {
+      "id": "FB-PERM-041",
+      "name": "canonical_audit_trail",
+      "law": "Material actions, approvals, authority changes, releases and destructive operations are recorded in a canonical attributable audit trail."
+    },
+    {
+      "id": "FB-PERM-042",
+      "name": "cancellation_revokes_authority",
+      "law": "Cancellation, pause or supersession invalidates stale future mutation authority; resumed work requires fresh authoritative validation."
+    },
+    {
+      "id": "FB-PERM-043",
+      "name": "migration_recovery",
+      "law": "Schema/state migrations require forward validation and a rollback/recovery strategy appropriate to the risk, with recovery points before destructive changes where practical."
+    },
+    {
+      "id": "FB-PERM-044",
+      "name": "accessibility_baseline",
+      "law": "ForgeBoss normal user workflows maintain an accessibility baseline including keyboard-operable material controls and readable status/approval information."
+    },
+    {
+      "id": "FB-PERM-045",
+      "name": "degraded_operation",
+      "law": "Local/degraded operation continues where practical when optional provider/cloud services are unavailable; canonical project truth is not lost with one service."
+    },
+    {
+      "id": "FB-PERM-046",
+      "name": "destructive_change_recovery_point",
+      "law": "Before destructive project-state transformations, ForgeBoss creates or verifies an appropriate backup/export/recovery point where practical."
+    },
+    {
+      "id": "FB-PERM-047",
+      "name": "compatibility_contract",
+      "law": "Rulesets, projects, Worker Packs, adapters and state schemas declare compatibility/version expectations rather than silently assuming compatibility."
+    },
+    {
+      "id": "FB-PERM-048",
+      "name": "no_single_service_lock_in",
+      "law": "Loss or replacement of one external model/provider/tool/service must not make user-owned project truth unrecoverable."
     }
   ],
   "required_structured_records": [
@@ -157,7 +272,12 @@
     "EVIDENCE_MANIFEST",
     "KNOWN_ISSUES",
     "STATUS",
-    "RELEASE_PROOF"
+    "RELEASE_PROOF",
+    "DATA_POLICY",
+    "NETWORK_POLICY",
+    "BACKUP_MANIFEST",
+    "AUDIT_TRAIL",
+    "COMPATIBILITY_MATRIX"
   ],
-  "note": "This file is a product contract. Runtime enforcement is tracked separately; models and workers must not treat this manifest itself as permission to mutate or execute."
+  "note": "Permanent product contract v1.1. Runtime enforcement is tracked separately; models, workers, plugins and dependencies must not treat this manifest as permission to mutate or execute."
 }
