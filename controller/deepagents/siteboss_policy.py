@@ -1,6 +1,7 @@
 from dataclasses import dataclass,field
 from pathlib import Path,PurePosixPath
 import os,re,subprocess
+CREATE_NO_WINDOW=getattr(subprocess,"CREATE_NO_WINDOW",0)
 class SecurityDenial(RuntimeError):pass
 class StalePacket(RuntimeError):pass
 class BudgetExceeded(RuntimeError):pass
@@ -47,7 +48,7 @@ class GuardedWorkspace:
   if not argv:raise SecurityDenial("empty command")
   if Path(argv[0]).name.lower() not in {"node","node.exe","npm","npm.cmd","npx","npx.cmd","python","python.exe","pytest","pytest.exe"}:raise SecurityDenial("command class denied")
   self.command_count+=1
-  r=subprocess.run(argv,cwd=self.root,text=True,capture_output=True,timeout=300,shell=False,env={"PATH":os.environ.get("PATH",""),"NODE_ENV":"test","SITEBOSS_SANDBOX":"1"})
+  r=subprocess.run(argv,cwd=self.root,text=True,capture_output=True,timeout=300,shell=False,env={"PATH":os.environ.get("PATH",""),"NODE_ENV":"test","SITEBOSS_SANDBOX":"1"},creationflags=CREATE_NO_WINDOW)
   rec={"argv":argv,"exit_code":r.returncode,"stdout":r.stdout[-20000:],"stderr":r.stderr[-20000:]};self.evidence.commands_run.append(rec)
   if test:self.evidence.tests.append(rec)
   return rec
