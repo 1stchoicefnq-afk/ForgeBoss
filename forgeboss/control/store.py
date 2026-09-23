@@ -10,6 +10,8 @@ class BudgetReservationError(RuntimeError):
     def __init__(self,code,message): super().__init__(message);self.code=code
 class WorkspaceCollisionError(RuntimeError):
     def __init__(self,code,message): super().__init__(message);self.code=code
+class TaskCancellationError(RuntimeError):
+    def __init__(self,code,message): super().__init__(message);self.code=code
 
 def canonical_worktree_path(path,root):
     raw=str(path or "")
@@ -191,6 +193,50 @@ class ControlStore:
     def get_task(self,task_id):
         row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
+    def cancel_task(self,task_id):
+        with self._lock:
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
+                task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not task_row:raise KeyError("task not found")
+                task=dict(task_row)
+                if task.get("cancel_requested_at") is not None:
+                    self.db.execute("COMMIT");begun=False
+                    return self.get_task(task_id)
+                lease=self.db.execute("""SELECT * FROM workspace_leases
+                  WHERE task_id=? AND released_at IS NULL""",(task_id,)).fetchone()
+                revoked_run_id=None;revoked_epoch=None
+                if lease is not None:
+                    revoked_run_id=str(lease["owner_run_id"]);revoked_epoch=int(lease["owner_epoch"])
+                    cur=self.db.execute("""UPDATE workspace_leases SET released_at=?
+                      WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
+                      (now,task_id,revoked_run_id,revoked_epoch))
+                    if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_RACE","workspace authority changed during cancellation")
+                    cur=self.db.execute("""UPDATE task_runs SET status='cancelled',finished_at=?
+                      WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'""",
+                      (now,revoked_run_id,task_id,revoked_epoch))
+                    if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_STATE_INVALID","active lease has no matching running task run")
+                self.db.execute("UPDATE worker_instances SET status='cancelled',last_seen_at=? WHERE task_id=?",(now,task_id))
+                cur=self.db.execute("""UPDATE tasks SET cancel_requested_at=?,status='cancelled',revision=revision+1,
+                  current_step='cancelled',terminal_outcome='cancelled',updated_at=?
+                  WHERE task_id=? AND revision=? AND cancel_requested_at IS NULL""",
+                  (now,now,task_id,int(task["revision"])))
+                if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_RACE","task authority changed during cancellation")
+                self._event_locked("task.cancelled",{
+                    "status":"cancelled",
+                    "revokedRunId":revoked_run_id,
+                    "revokedOwnerEpoch":revoked_epoch,
+                    "budgetSpent":float(task.get("budget_spent") or 0.0),
+                },task_id,revoked_run_id)
+                self.db.execute("COMMIT");begun=False
+                return self.get_task(task_id)
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
+
     def _live_cross_task_conflicts_locked(self,task_id,repository,base_sha,worktree,scope,now):
         worktree_id=_physical_worktree_identity(worktree);repository_id=_repository_identity(repository);base_id=_git_object_id(base_sha)
         rows=self.db.execute("""SELECT wl.task_id,wl.worktree_path,t.repository,t.base_sha,t.allowed_paths_json
@@ -211,7 +257,10 @@ class ControlStore:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row: raise KeyError("task not found")
-                task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
+                task=dict(task_row)
+                if task.get("cancel_requested_at") is not None:
+                    raise TaskCancellationError("TASK_CANCELLED","task is cancelled and cannot claim workspace authority")
+                scope=_scope_authorities(task["allowed_paths_json"])
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and float(row["expires_at"])>now: raise RuntimeError("workspace lease is already active")
@@ -242,7 +291,9 @@ class ControlStore:
 
     def assert_writer(self,task_id,run_id,owner_epoch,expected_head=None):
         with self._lock:
-            row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL",(task_id,run_id,int(owner_epoch))).fetchone()
+            row=self.db.execute("""SELECT wl.* FROM workspace_leases wl JOIN tasks t ON t.task_id=wl.task_id
+              WHERE wl.task_id=? AND wl.owner_run_id=? AND wl.owner_epoch=? AND wl.released_at IS NULL
+              AND t.cancel_requested_at IS NULL""",(task_id,run_id,int(owner_epoch))).fetchone()
             if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
             if float(row["expires_at"])<=time.time(): raise PermissionError("writer authority lost: lease expired")
             if expected_head and row["current_head"]!=expected_head: raise PermissionError("writer authority lost: expected head mismatch")
