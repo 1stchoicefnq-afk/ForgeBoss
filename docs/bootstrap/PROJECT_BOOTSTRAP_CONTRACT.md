@@ -15,16 +15,18 @@ A Markdown file may explain the contract to humans, but prompt text alone is not
 
 Before any substantial project action, ForgeBoss must:
 
-1. load the authoritative ForgeBoss bootstrap manifest/policy;
+1. load the authoritative ForgeBoss permanent-rules/bootstrap manifest;
 2. verify its version and identity;
 3. load required core engineering/safety/review rules;
 4. inspect the selected project/workspace;
 5. classify the project as NEW, EXISTING, or REPAIR_REVIEW;
 6. load or initialize authoritative project records;
-7. identify missing material decisions;
-8. create a reviewed plan before substantial implementation.
+7. load/reconcile any durable active task/run state;
+8. identify missing material decisions;
+9. complete required upstream reuse review;
+10. create a reviewed plan before substantial implementation.
 
-If required authority or project truth is missing, ambiguous or unverifiable, ForgeBoss must report the gap and fail closed for affected high-risk actions.
+If required authority, rules, identity, project truth or evidence is missing, ambiguous or unverifiable, ForgeBoss must report the gap and fail closed for affected actions.
 
 ## New project flow
 
@@ -42,7 +44,7 @@ For a NEW project:
 10. identify supported platforms;
 11. complete the permanent upstream reuse review before inventing a substantial subsystem;
 12. propose architecture;
-13. identify failure modes;
+13. identify failure/restart modes;
 14. create acceptance criteria and test strategy;
 15. record assumptions as explicit decisions;
 16. identify questions that genuinely require owner input;
@@ -62,8 +64,9 @@ For an EXISTING project:
 6. identify duplicate or historical execution paths;
 7. identify authority-bearing components;
 8. identify current tests and gaps;
-9. do not assume the repository documentation is complete or correct;
-10. record verified findings before planning changes.
+9. identify reusable existing/upstream components before adding a new subsystem;
+10. do not assume repository documentation is complete or correct;
+11. record verified findings before planning changes.
 
 ## Repair/review flow
 
@@ -71,14 +74,18 @@ For REPAIR_REVIEW work:
 
 1. reproduce the reported problem where practical;
 2. identify the exact affected path and authority boundary;
-3. create a bounded repair plan;
-4. add or identify a regression test;
-5. implement through an isolated builder;
-6. freeze the candidate;
-7. independently review the exact candidate;
-8. attack adjacent and alternate paths;
-9. prove the regression test protects the fix;
-10. accept only through controller/release authority.
+3. inspect prior proven/failed repair memory without treating it as authority;
+4. create a bounded repair plan;
+5. add or identify a regression test;
+6. implement through an isolated builder;
+7. freeze the candidate;
+8. independently review the exact candidate;
+9. attack adjacent and alternate paths;
+10. prove the regression test protects the fix;
+11. bind acceptance evidence to the exact repaired candidate;
+12. accept only through controller/release authority.
+
+A failed attempt must not trigger a blind paid/model retry. ForgeBoss must gather new evidence or select a materially different bounded strategy first.
 
 ## Required project truth
 
@@ -86,13 +93,19 @@ ForgeBoss should maintain authoritative records equivalent to:
 
 - PROJECT_IDEA
 - REQUIREMENTS
+- UPSTREAM_REUSE_REVIEW
 - ARCHITECTURE
 - AUTHORITY_MODEL
 - SAFETY_RULES
 - TEST_MATRIX
 - DECISIONS
+- COMPONENT_REGISTRY
+- WORKER_REGISTRY
+- ACTIVE_RUNS
+- EVIDENCE_MANIFEST
 - KNOWN_ISSUES
 - STATUS
+- RELEASE_PROOF
 
 Exact filenames and storage formats may evolve.
 
@@ -118,6 +131,54 @@ A substantial subsystem is **not ready to build** if this review is absent.
 
 The reuse gate never grants runtime authority to an upstream component. External code remains subordinate to ForgeBoss/project permissions, canonical state, approval, evidence and review rules.
 
+## Worker/run identity contract
+
+Every material task/run must carry durable identity sufficient to bind:
+
+- project;
+- task;
+- role;
+- worker identity;
+- provider/model/tool route;
+- authority/write scope;
+- input/context version;
+- source artifact/snapshot;
+- start/end/status;
+- output artifact/snapshot;
+- evidence references;
+- supersession/retry lineage.
+
+Duplicate/conflicting identity or evidence must fail closed rather than being silently reconciled by a model.
+
+## Durable resume contract
+
+ForgeBoss must persist enough authoritative state to resume/reconcile long-running work after ordinary interruption.
+
+On restart, ForgeBoss must not assume an in-flight action succeeded or failed solely from UI state or model narrative. It must reconcile persisted run state, process/tool state where available, artifacts and evidence.
+
+Unsafe ambiguity becomes BLOCKED/NEEDS_OWNER/PROOF_INCOMPLETE rather than guessed completion.
+
+## Chief of Staff contract
+
+Chief of Staff reads authoritative run/task/evidence/approval state and creates an owner brief.
+
+It must surface expected-vs-actual discrepancies, including SILENT and UNEXPECTED_RUN conditions.
+
+Chief of Staff has no independent mutation, approval, merge, deploy, spend or permission authority.
+
+## Worker Pack contract
+
+Versioned Worker Packs may describe reusable roles/capabilities/routines.
+
+A pack:
+
+- cannot grant itself authority;
+- cannot change permanent rules;
+- cannot widen its own write/tool/spend scope;
+- must preserve provenance/license/version identity;
+- should self-test before activation;
+- must preserve owner/project modifications during upgrade and surface conflicts.
+
 ## Core engineering rules
 
 ForgeBoss project work must preserve these principles:
@@ -135,7 +196,7 @@ ForgeBoss project work must preserve these principles:
 - use one clear authority path for important state mutation;
 - fail closed when important authority cannot be established;
 - validate at real trust boundaries, not only in the UI;
-- test concurrency, retries, stale state and partial failure where relevant;
+- test concurrency, retries, stale state, restart and partial failure where relevant;
 - never call source inspection runtime proof;
 - never call a green builder test independent verification;
 - record uncertainty instead of inventing certainty.
@@ -177,28 +238,55 @@ For an important fix:
 
 This distinguishes a real regression guard from a test that merely happens to pass.
 
-## AI provider rule
+## AI/provider/tool rule
 
 Model output is a proposal, not authority.
 
 The safe pattern is:
 
-MODEL PROPOSAL  
+MODEL/TOOL PROPOSAL  
 -> STRUCTURED VALIDATION  
 -> POLICY/AUTHORITY CHECK  
 -> HUMAN APPROVAL WHERE REQUIRED  
 -> ACTION  
 -> EVIDENCE
 
-No model should receive broader permission merely because it requested it.
+No model, worker engine, tool, plugin, pack, dependency or external service should receive broader permission merely because it requested it.
 
-## User question rule
+Model providers and commodity infrastructure should remain replaceable behind ForgeBoss-owned interfaces where practical.
+
+## User question and notification rule
 
 The user should not need to understand software engineering terminology to start a project.
 
 ForgeBoss should make safe ordinary defaults where appropriate and ask the owner only when a material decision cannot safely be inferred.
 
 Questions should be plain-language and decision-oriented.
+
+Routine updates should be consolidated into the owner/Chief-of-Staff brief where practical. Urgent authority/safety failures may interrupt immediately.
+
+## Status/UI rule
+
+A UI label such as PASS, COMPLETE, FIXED, READY or SECURE must be derived from authoritative stored state/evidence.
+
+A model-generated sentence is not status authority.
+
+Desktop, mobile and web surfaces must show the same canonical project/run state, subject only to presentation differences.
+
+## Release proof rule
+
+The final release prover must operate on the exact final artifact/snapshot and exact evidence set.
+
+Earlier proof does not automatically roll forward after a candidate changes.
+
+Allowed high-level outcomes include:
+
+- READY
+- NEEDS_REPAIR
+- BLOCKED
+- PROOF_INCOMPLETE
+
+Missing/unverifiable evidence cannot become READY.
 
 ## Definition of ready-to-build
 
@@ -213,14 +301,16 @@ Substantial implementation should not begin until the project has enough evidenc
 - recorded material assumptions;
 - unresolved owner decisions surfaced;
 - independent plan review completed;
-- upstream reuse review completed for each substantial subsystem.
+- upstream reuse review completed for each substantial subsystem;
+- required worker/component identity/provenance defined;
+- durable run/resume expectations defined where relevant.
 
 If these are incomplete, status should say NOT YET PROVEN / NEEDS OWNER / BLOCKED as appropriate rather than pretending the project is ready.
 
 ## Future runtime requirement
 
-A future ForgeBoss runtime should enforce this contract through a machine-readable bootstrap manifest.
+ForgeBoss runtime must enforce this contract through a machine-readable permanent-rules/bootstrap manifest.
 
-The manifest should identify required records, schema/version, hashes or equivalent identity, precedence and fail-closed behavior.
+The manifest must identify required records, schema/version, identity/hash or equivalent, precedence and fail-closed behavior.
 
 Do not rely on a language model voluntarily reading every Markdown file.
