@@ -189,7 +189,7 @@
     {
       "id": "FB-PERM-035",
       "name": "extension_identity_verification",
-      "law": "Executable Worker Packs/plugins/extensions are versioned and hash/signature verified where their distribution mechanism supports it."
+      "law": "Executable Worker Packs/plugins/extensions are pinned to an exact version/identity and integrity-verified with a cryptographic hash at minimum; signatures are additionally verified where the distribution mechanism supports them."
     },
     {
       "id": "FB-PERM-036",
