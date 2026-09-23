@@ -220,6 +220,10 @@ def create_successor_workspace(
         raise SelfBuildWorkspaceError(
             f"successor receipt destination is link-like: {raw_receipt_path}"
         )
+    if raw_receipt_path.exists():
+        raise SelfBuildWorkspaceError(
+            f"successor receipt already exists: {raw_receipt_path}"
+        )
 
     workspace = _safe_external_path(raw_workspace, live)
     receipt_path = _safe_external_path(raw_receipt_path, live)
@@ -341,20 +345,30 @@ def create_successor_workspace(
     except Exception:
         # The mutating Git process may have timed out after creating state but
         # before returning success. Discover and clean actual state instead of
-        # trusting success flags that might never have been set.
-        if workspace.exists() and not is_linklike(workspace):
-            _git(live, "worktree", "remove", "--force", str(workspace), timeout=120)
-        branch_after = _git(
-            live,
-            "show-ref",
-            "--verify",
-            "--quiet",
-            f"refs/heads/{branch}",
-        )
-        if branch_after.returncode == 0:
-            _git(live, "branch", "-D", branch, timeout=60)
-        if workspace.exists() or is_linklike(workspace):
-            _safe_external_path(workspace, live)
-            if not is_linklike(workspace):
-                shutil.rmtree(workspace, ignore_errors=True)
+        # trusting success flags that might never have been set. Cleanup is
+        # best-effort and must not replace the original failure.
+        try:
+            if workspace.exists() and not is_linklike(workspace):
+                _git(live, "worktree", "remove", "--force", str(workspace), timeout=120)
+        except Exception:
+            pass
+        try:
+            branch_after = _git(
+                live,
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{branch}",
+            )
+            if branch_after.returncode == 0:
+                _git(live, "branch", "-D", branch, timeout=60)
+        except Exception:
+            pass
+        try:
+            if workspace.exists() or is_linklike(workspace):
+                _safe_external_path(workspace, live)
+                if not is_linklike(workspace):
+                    shutil.rmtree(workspace, ignore_errors=True)
+        except Exception:
+            pass
         raise
