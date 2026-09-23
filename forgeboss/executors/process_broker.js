@@ -19,6 +19,9 @@ const DEFAULT_OUTPUT_LIMIT = 50000;
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const KILL_ESCALATION_MS = 1500;
 const TRUNCATION_MARKER = "\n[...TRUNCATED DUE TO LENGTH...]\n";
+const PROCESS_EXIT_POLL_MS = 25;
+const liveChildren = new Set();
+let exitSweepInstalled = false;
 
 function stripAnsi(value) {
   return String(value).replace(
@@ -70,6 +73,43 @@ class BoundedOutputBuffer {
 function rewriteWindowsNulRedirects(command) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
   return command.replace(/([<>]\s*)nul(?![\w.])/gi, "$1/dev/null");
+}
+
+function isProcessTreeAlive(child) {
+  if (!child || !child.pid) return false;
+  if (os.platform() === "win32") {
+    return child.exitCode === null && child.signalCode === null;
+  }
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessTreeExit(child, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessTreeAlive(child) && Date.now() < deadline) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, PROCESS_EXIT_POLL_MS);
+      if (timer.unref) timer.unref();
+    });
+  }
+  return !isProcessTreeAlive(child);
+}
+
+function installExitSweep() {
+  if (exitSweepInstalled) return;
+  exitSweepInstalled = true;
+  process.on("exit", () => {
+    for (const child of liveChildren) {
+      try {
+        killProcessTree(child, "SIGKILL");
+      } catch {
+      }
+    }
+  });
 }
 
 function killProcessTree(child, signal = "SIGTERM") {
@@ -164,6 +204,9 @@ async function runProcess(request) {
     };
   }
 
+  installExitSweep();
+  liveChildren.add(child);
+
   child.stdout.on("data", (chunk) => stdout.append(chunk.toString("utf8")));
   child.stderr.on("data", (chunk) => stderr.append(chunk.toString("utf8")));
 
@@ -211,6 +254,18 @@ async function runProcess(request) {
     request.signal.removeEventListener("abort", abortHandler);
   }
 
+  // POSIX detached children own a process group. The shell/direct child can
+  // exit while one of its non-detached descendants is still alive, so close
+  // is not sufficient proof that the owned tree is gone.
+  if (os.platform() !== "win32" && isProcessTreeAlive(child)) {
+    killProcessTree(child, "SIGTERM");
+    if (!(await waitForProcessTreeExit(child, KILL_ESCALATION_MS))) {
+      killProcessTree(child, "SIGKILL");
+      await waitForProcessTreeExit(child, KILL_ESCALATION_MS);
+    }
+  }
+  liveChildren.delete(child);
+
   return {
     ...resultBase(),
     exitCode: Object.prototype.hasOwnProperty.call(completion, "code")
@@ -227,6 +282,7 @@ module.exports = {
   BoundedOutputBuffer,
   DEFAULT_OUTPUT_LIMIT,
   TRUNCATION_MARKER,
+  isProcessTreeAlive,
   killProcessTree,
   rewriteWindowsNulRedirects,
   runProcess,
