@@ -72,7 +72,7 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
                 runtime_dir=self.runtime,
             )
 
-    def test_state_dirs_must_be_outside_project(self):
+    def test_state_dirs_must_be_disjoint_from_project(self):
         with self.assertRaises(CodeIntelligenceError):
             CodebaseMemoryAdapter(
                 binary_path=self.binary,
@@ -80,6 +80,14 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
                 workspace=self.workspace,
                 cache_dir=self.workspace / "cache",
                 runtime_dir=self.runtime,
+            )
+        with self.assertRaises(CodeIntelligenceError):
+            CodebaseMemoryAdapter(
+                binary_path=self.binary,
+                expected_sha256=self.digest,
+                workspace=self.workspace,
+                cache_dir=self.root,
+                runtime_dir=self.root / "other-runtime",
             )
 
     @unittest.skipIf(os.name == "nt", "POSIX executable fixture")
@@ -129,6 +137,8 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
         adapter = self.adapter()
         self.assertTrue(adapter.staged_binary.is_file())
         self.assertFalse(str(adapter.staged_binary).startswith(str(self.workspace)))
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(adapter.staged_binary.stat().st_mode), 0o700)
 
     def test_payload_is_read_only_after_success(self):
         if os.name == "nt":
