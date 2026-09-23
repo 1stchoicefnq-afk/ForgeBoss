@@ -166,7 +166,7 @@ def check_engines(force=False):
         return engines
 
 def latest_repair_report_after(start_ts):
-    d=ROOT/"state"/"repair-rat"
+    d=_STATE_ROOT/"repair-rat"
     if not d.exists(): return None
     for p in sorted(d.glob("repair-rat-*.json"),key=lambda p:p.stat().st_mtime,reverse=True):
         if p.stat().st_mtime>=start_ts-2:
@@ -237,7 +237,7 @@ def run_paid_tournament(cap):
     assert p.stdout
     for line in p.stdout: log(line.rstrip())
     code=p.wait()
-    result_path=ROOT/"state"/"tournament"/"paid-tournament-last.json"
+    result_path=_STATE_ROOT/"tournament"/"paid-tournament-last.json"
     if result_path.exists():
         try:
             result=json.loads(result_path.read_text(encoding="utf-8"))
@@ -269,7 +269,7 @@ def run_category_league(cap):
     p=subprocess.Popen([runtime_python(),str(ROOT/"forgeboss"/"league"/"run_league.py"),str(cap)],cwd=str(ROOT),env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1,creationflags=CREATE_NO_WINDOW)
     assert p.stdout
     for line in p.stdout:log(line.rstrip())
-    code=p.wait();path=ROOT/"state"/"league"/"league-last.json"
+    code=p.wait();path=_STATE_ROOT/"league"/"league-last.json"
     if code==0 and path.exists():
         j=json.loads(path.read_text());w=", ".join(f"{k}={v or 'none'}" for k,v in j["winners"].items());save_status(stage="LEAGUE_COMPLETE",spent_usd=j.get("reported_measured_spend_usd",0),message="Category designations: "+w)
     else:save_status(stage="SAFE_STOP",message=f"Category league stopped exit={code}; nothing published.")
@@ -284,7 +284,7 @@ def retest_last_candidates():
     assert p.stdout
     for line in p.stdout: log(line.rstrip())
     code=p.wait()
-    rp=ROOT/"state"/"tournament"/"retest-last.json"
+    rp=_STATE_ROOT/"tournament"/"retest-last.json"
     if rp.exists():
         try:
             j=json.loads(rp.read_text(encoding="utf-8"));winner=j.get("winner")
@@ -301,21 +301,21 @@ def make_failure_feedback(source=None,bootstrap=False):
     if bootstrap: args.append("--bootstrap-retest")
     elif source: args += ["--source",str(source)]
     p=subprocess.run(args,cwd=str(ROOT),capture_output=True,text=True,timeout=90,creationflags=CREATE_NO_WINDOW)
-    path=ROOT/"state"/"autonomy"/"failure-feedback-last.json"
+    path=_STATE_ROOT/"autonomy"/"failure-feedback-last.json"
     if p.returncode==0 and path.exists():
         try:return path,json.loads(path.read_text(encoding="utf-8"))
         except Exception:return None,None
     return None,None
 
 def latest_repair_report_path_after(epoch):
-    d=ROOT/"state"/"repair-rat"
+    d=_STATE_ROOT/"repair-rat"
     if not d.exists():return None
     files=[p for p in d.glob("repair-rat-*.json") if p.stat().st_mtime>=epoch-2]
     return max(files,key=lambda p:p.stat().st_mtime) if files else None
 
 
 def build_overall_run_report(run_id,session,cycles):
-    d=ROOT/"state"/"run-reports";d.mkdir(parents=True,exist_ok=True)
+    d=_STATE_ROOT/"run-reports";d.mkdir(parents=True,exist_ok=True)
     inp=d/f"{run_id}-input.json"
     write_json(inp,{"run_id":run_id,"session":session,"cycles":cycles})
     p=subprocess.run([runtime_python(),str(ROOT/"forgeboss"/"reports"/"build_run_report.py"),"--input",str(inp)],
@@ -409,7 +409,7 @@ def build_remaining_failure_packet(report,retained_foundation_path=None):
             "allowed_files":files,"context_files":files+["tests/postgresTravisIntake.integration.test.js"],
             "acceptance_criteria":["Preserve the retained partial-win foundation.","Eliminate repeated PostgreSQL 40001/40P01 failures without weakening tests.","Keep exact-once/idempotency and transaction invariants intact."],
             "retained_foundation":retained_foundation_path,"evidence":evidence[:12]}
-    out=ROOT/"state"/"autonomy"/"debug-funnel-last.json";out.parent.mkdir(parents=True,exist_ok=True);write_json(out,packet)
+    out=_STATE_ROOT/"autonomy"/"debug-funnel-last.json";out.parent.mkdir(parents=True,exist_ok=True);write_json(out,packet)
     log("NEXT TARGET PACKET: built directly from remaining validation evidence; family="+family)
     return str(out)
 
@@ -441,7 +441,7 @@ def promote_verified_learning(report,project_id="siteboss"):
             "transaction_kind":"validated-partial" if report.get("partial_proven") else "validated-full"
         }
         evidence={"failure_lines":failures[:80],"fingerprint":latest.get("failure_fingerprint") or report.get("failure_fingerprint")}
-        db=ROOT/"state"/"learning"/"forgeboss-learning.db"
+        db=_STATE_ROOT/"learning"/"forgeboss-learning.db"
         st=LearningStore(db)
         lid=st.record_verified_lesson(project_id,family,summary,pattern,evidence,validation,confidence=1.0,reusable=True)
         log("REPAIR RAT LEARNED: verified lesson "+lid[:12]+" stored for "+family)
@@ -458,7 +458,7 @@ def prepare_cost_optimized_retry(feedback_path):
     # Build compact $0 debug packet.
     p=subprocess.run([runtime_python(),str(ROOT/"forgeboss"/"autonomy"/"debug_funnel.py"),"--feedback",str(feedback_path)],
                      cwd=str(ROOT),capture_output=True,text=True,timeout=90,creationflags=CREATE_NO_WINDOW)
-    funnel=ROOT/"state"/"autonomy"/"debug-funnel-last.json"
+    funnel=_STATE_ROOT/"autonomy"/"debug-funnel-last.json"
     if p.returncode or not funnel.exists():
         log("COST FUNNEL failed; refusing another large blind model call.")
         return None,None
@@ -470,7 +470,7 @@ def prepare_cost_optimized_retry(feedback_path):
     except Exception:
         return None,None
     # Query memory for matching failed/proven history.
-    memout=ROOT/"state"/"autonomy"/"repair-memory-context-last.json"
+    memout=_STATE_ROOT/"autonomy"/"repair-memory-context-last.json"
     q=subprocess.run([runtime_python(),str(ROOT/"forgeboss"/"autonomy"/"repair_memory.py"),"--query",str(funnel)],
                      cwd=str(ROOT),capture_output=True,text=True,timeout=30,creationflags=CREATE_NO_WINDOW)
     try:memout.write_text(q.stdout.strip() or "{}",encoding="utf-8")
