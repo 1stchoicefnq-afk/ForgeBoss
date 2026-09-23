@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, CREATE_NO_WINDOW
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
@@ -44,6 +44,19 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
             saved=json.loads(target.read_text(encoding="utf-8"))
             self.assertIn("protected paid-start guard denied",saved["error"])
             self.assertFalse(saved["completed"])
+
+    def test_docker_called_process_error_preserves_daemon_stderr(self):
+        import subprocess
+        ex=subprocess.CalledProcessError(125,["docker","run"],output="",stderr="docker: Error response from daemon: Access is denied.")
+        detail=_exception_detail(ex)
+        self.assertIn("CalledProcessError",detail)
+        self.assertIn("Access is denied",detail)
+
+    def test_hidden_run_applies_windows_no_console_flag(self):
+        with patch("forgeboss.executors.mini_swe_runner.subprocess.run") as run:
+            run.return_value=type("CP",(),{"returncode":0})()
+            _hidden_run(["docker","version"],capture_output=True,text=True)
+        self.assertEqual(run.call_args.kwargs["creationflags"],CREATE_NO_WINDOW)
 
     def test_guard_module_resolves_from_exact_engine_even_with_poisoned_pythonpath(self):
         with tempfile.TemporaryDirectory() as td:
