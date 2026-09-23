@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
@@ -44,6 +44,15 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
             saved=json.loads(target.read_text(encoding="utf-8"))
             self.assertIn("protected paid-start guard denied",saved["error"])
             self.assertFalse(saved["completed"])
+
+    def test_guard_module_resolves_from_exact_engine_even_with_poisoned_pythonpath(self):
+        with tempfile.TemporaryDirectory() as td:
+            poison=Path(td)/"not-the-engine"
+            poison.mkdir()
+            with patch.dict(os.environ,{"PYTHONPATH":str(poison)},clear=False):
+                cp=_guard_subprocess(["--help"])
+            self.assertEqual(cp.returncode,0,msg=(cp.stdout or "")+(cp.stderr or ""))
+            self.assertNotIn("ModuleNotFoundError",(cp.stdout or "")+(cp.stderr or ""))
 
     def test_result_is_written_atomically_under_external_state_root(self):
         with tempfile.TemporaryDirectory() as td:
