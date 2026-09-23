@@ -14,6 +14,10 @@ from forgeboss.control.governed_launch import (
 )
 from forgeboss.control.store import _scope_authorities
 from forgeboss.security.executor_guard import SecurityError, issue_lease, validate_packet
+from forgeboss.policy.task_governance_authority import (
+    TaskGovernanceAuthorityError,
+    verify_governed_task_authority_row,
+)
 
 
 class GovernedLauncherError(RuntimeError):
@@ -98,6 +102,10 @@ def prepare_governed_launch(
         raise GovernedLauncherError("task not found")
     if task.get("governance_mode") != "reuse-v1":
         raise GovernedLauncherError("task is not governed by reuse-v1")
+    try:
+        verify_governed_task_authority_row(task,daemon.policy_secret)
+    except TaskGovernanceAuthorityError as ex:
+        raise GovernedLauncherError(f"governed task authority is invalid: {ex}") from ex
 
     packet_file, packet = _packet(packet_path)
     objective = packet.get("objective")
