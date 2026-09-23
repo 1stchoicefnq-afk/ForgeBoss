@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -18,7 +19,11 @@ from forgeboss.security.executor_guard import (
     _resolve_git_executable,
     git_metadata_snapshot,
 )
-from forgeboss.security.local_acl import LocalAclError, harden_private_dir
+from forgeboss.security.local_acl import (
+    LocalAclError,
+    harden_private_dir,
+    harden_private_path,
+)
 
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 DEFAULT_WORKTREE_ROOT = Path.home() / ".forgeboss" / "worktrees" / "self-build"
@@ -98,9 +103,32 @@ def _git_ok(
 
 def _atomic_write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    data = json.dumps(value, indent=2, sort_keys=True).encode("utf-8")
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    fd = None
+    try:
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.close(fd)
+        fd = None
+        os.replace(tmp, path)
+        harden_private_path(path)
+    except (OSError, LocalAclError) as exc:
+        raise SelfBuildWorkspaceError(f"cannot persist successor receipt: {exc}") from exc
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            if tmp.exists() or tmp.is_symlink():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def _validate_base_sha(live_root: Path, base_sha: str) -> str:
@@ -188,8 +216,10 @@ def create_successor_workspace(
             "self-build state/receipt path must not be inside successor workspace"
         )
 
-    if workspace.exists():
-        raise SelfBuildWorkspaceError(f"successor workspace already exists: {workspace}")
+    if workspace.exists() or is_linklike(workspace):
+        raise SelfBuildWorkspaceError(
+            f"successor workspace already exists or is link-like: {workspace}"
+        )
 
     branch_check = _git(live, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
     if branch_check.returncode == 0:
@@ -299,7 +329,8 @@ def create_successor_workspace(
             _git(live, "worktree", "remove", "--force", str(workspace), timeout=120)
         if branch_created:
             _git(live, "branch", "-D", branch, timeout=60)
-        if workspace.exists():
+        if workspace.exists() or is_linklike(workspace):
             _safe_external_path(workspace, live)
-            shutil.rmtree(workspace, ignore_errors=True)
+            if not is_linklike(workspace):
+                shutil.rmtree(workspace, ignore_errors=True)
         raise
