@@ -1,9 +1,9 @@
 from __future__ import annotations
-import argparse, hashlib, json, os, socketserver, threading, time, uuid
+import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
 from pathlib import Path
-from .store import ControlStore,BudgetReservationError
+from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
-from .envelope import secret_file,sign_envelope,verify_envelope,canonical
+from .envelope import secret_file,policy_secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
@@ -22,6 +22,9 @@ class ForgeBossDaemon:
         WORKTREE_ROOT.mkdir(parents=True,exist_ok=True)
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
+        self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
+        if self.secret_path==self.policy_secret_path or hmac.compare_digest(self.secret,self.policy_secret):
+            raise RuntimeError("policy approval key must be distinct from daemon authentication key")
         self.connect_nonces={}
         self.started=time.time()
         self.idempotency={}
@@ -57,7 +60,7 @@ class ForgeBossDaemon:
                 self.connect_nonces={k:v for k,v in self.connect_nonces.items() if now-v<60}
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
-            return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":3,
+            return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
                     "capabilities":["tasks","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
@@ -75,7 +78,7 @@ class ForgeBossDaemon:
                         base_sha=p.get("baseSha"),
                         objective=p.get("purpose"),
                         allowed_paths=p.get("allowedPaths",[]),
-                        secret=self.secret,
+                        secret=self.policy_secret,
                         small_repair_exemption=p.get("smallRepairExemption"),
                         subsystem=p.get("subsystem"),
                         reuse_review=p.get("reuseReview"),
