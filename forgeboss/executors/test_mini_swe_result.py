@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, CREATE_NO_WINDOW
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, _windows_hidden_children, CREATE_NO_WINDOW
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
@@ -57,6 +57,28 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
             run.return_value=type("CP",(),{"returncode":0})()
             _hidden_run(["docker","version"],capture_output=True,text=True)
         self.assertEqual(run.call_args.kwargs["creationflags"],CREATE_NO_WINDOW)
+
+    def test_third_party_subprocess_policy_adds_no_window_flag(self):
+        calls=[]
+        def fake_popen(*args,**kwargs):
+            calls.append(kwargs.copy())
+            class P: pass
+            return P()
+        with patch("forgeboss.executors.mini_swe_runner.os.name","nt"), \
+             patch("forgeboss.executors.mini_swe_runner.subprocess.Popen",fake_popen):
+            with _windows_hidden_children():
+                import forgeboss.executors.mini_swe_runner as m
+                m.subprocess.Popen(["docker.exe","version"])
+        self.assertTrue(calls)
+        self.assertIn("creationflags",calls[-1])
+        self.assertEqual(calls[-1]["creationflags"] & CREATE_NO_WINDOW, CREATE_NO_WINDOW)
+
+    @unittest.skipUnless(os.name=="nt","native Windows console proof")
+    def test_hidden_child_has_no_console_window_on_windows(self):
+        code="import ctypes;print(int(bool(ctypes.windll.kernel32.GetConsoleWindow())))"
+        with _windows_hidden_children():
+            cp=__import__("subprocess").run([__import__("sys").executable,"-c",code],capture_output=True,text=True,check=True)
+        self.assertEqual(cp.stdout.strip(),"0")
 
     def test_guard_module_resolves_from_exact_engine_even_with_poisoned_pythonpath(self):
         with tempfile.TemporaryDirectory() as td:
