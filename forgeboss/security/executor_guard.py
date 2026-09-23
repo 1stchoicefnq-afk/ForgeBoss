@@ -512,6 +512,12 @@ def _control_authority(raw,lease,workspace,executor):
     }
     for name,value in expected_runtime.items():
         if runtime.get(name)!=value:raise SecurityError("control envelope governed runtime identity mismatch: "+name)
+    image=runtime.get("containerImage")
+    if executor=="mini-swe":
+        if not isinstance(image,str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}",image):
+            raise SecurityError("control envelope mini-swe container image is not digest-pinned")
+    elif image is not None:
+        raise SecurityError("control envelope container image is invalid for executor")
     packet_sha=str(env.get("packetSha256") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}",packet_sha):raise SecurityError("control envelope packet SHA-256 missing or invalid")
     if packet_sha!=str(lease.get("packet_sha256") or "").lower():raise SecurityError("control envelope packet differs from executor lease")
