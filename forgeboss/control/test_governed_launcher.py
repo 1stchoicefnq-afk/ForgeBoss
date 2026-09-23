@@ -36,6 +36,8 @@ class GovernedLauncherTests(unittest.TestCase):
         self.daemon.secret = b"d" * 32
         self.daemon.policy_secret = b"p" * 32
         self.daemon.launch_secret = b"l" * 32
+        self.daemon.repo_root = Path(__file__).resolve().parents[2]
+        self.daemon.worktree_root = self.root
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -114,8 +116,7 @@ class GovernedLauncherTests(unittest.TestCase):
         self.assertTrue(connected)
         p = request["params"]
         from forgeboss.control.governed_launch import resolve_runner_identity
-        from forgeboss.control import daemon as daemon_module
-        identity = resolve_runner_identity(p["runtimeId"], repo_root=daemon_module.ROOT)
+        identity = resolve_runner_identity(p["runtimeId"], repo_root=self.daemon.repo_root)
         return {
             "lease": {
                 "owner_run_id": p["runId"],
@@ -140,9 +141,7 @@ class GovernedLauncherTests(unittest.TestCase):
     def test_prepare_derives_exact_command_and_governed_environment(self, issue_mock):
         issue_mock.return_value = self.fake_lease()
         self.daemon.dispatch = self.fake_claim
-        from forgeboss.control import daemon as daemon_module
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            prepared = prepare_governed_launch(
+        prepared = prepare_governed_launch(
                 self.daemon,
                 task_id=self.task["taskId"],
                 packet_path=self.packet,
@@ -150,7 +149,7 @@ class GovernedLauncherTests(unittest.TestCase):
                 adapter="mini-swe",
                 allowed_tools=["python"],
                 budget_usd=0.25,
-            )
+        )
         self.assertEqual(prepared.task_id, self.task["taskId"])
         self.assertEqual(prepared.adapter, "mini-swe")
         self.assertEqual(prepared.authoritative_head, self.task["baseSha"])
@@ -161,52 +160,46 @@ class GovernedLauncherTests(unittest.TestCase):
         self.assertEqual(prepared.env["FORGEBOSS_EXECUTOR_LEASE_TOKEN"], "lease-token")
         with self.assertRaises(TypeError):
             prepared.env["X"] = "Y"
+        with self.assertRaises(TypeError):
+            prepared.launch_envelope["runtime"]["adapter"] = "changed"
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
     def test_packet_objective_and_head_are_canonical_authority(self, issue_mock):
         issue_mock.return_value = self.fake_lease()
         self.daemon.dispatch = self.fake_claim
-        from forgeboss.control import daemon as daemon_module
-
         self.write_packet(objective="Different objective")
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            with self.assertRaisesRegex(GovernedLauncherError, "objective differs"):
-                prepare_governed_launch(
+        with self.assertRaisesRegex(GovernedLauncherError, "objective differs"):
+            prepare_governed_launch(
                     self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
                     workspace_path=self.workspace, adapter="mini-swe",
                     allowed_tools=["python"], budget_usd=0.25,
-                )
+            )
 
         self.write_packet(expected_head_revision="b" * 40)
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            with self.assertRaisesRegex(GovernedLauncherError, "exact head differs"):
-                prepare_governed_launch(
+        with self.assertRaisesRegex(GovernedLauncherError, "exact head differs"):
+            prepare_governed_launch(
                     self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
                     workspace_path=self.workspace, adapter="mini-swe",
                     allowed_tools=["python"], budget_usd=0.25,
-                )
+            )
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
     def test_packet_scope_can_narrow_but_not_widen_task_scope(self, issue_mock):
         issue_mock.return_value = self.fake_lease()
         self.daemon.dispatch = self.fake_claim
-        from forgeboss.control import daemon as daemon_module
-
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            prepare_governed_launch(
+        prepare_governed_launch(
                 self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
                 workspace_path=self.workspace, adapter="mini-swe",
                 allowed_tools=["python"], budget_usd=0.25,
-            )
+        )
 
         self.write_packet(allowed_files=["src/other.py"])
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            with self.assertRaisesRegex(GovernedLauncherError, "exceeds canonical task scope"):
-                prepare_governed_launch(
+        with self.assertRaisesRegex(GovernedLauncherError, "exceeds canonical task scope"):
+            prepare_governed_launch(
                     self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
                     workspace_path=self.workspace, adapter="mini-swe",
                     allowed_tools=["python"], budget_usd=0.25,
-                )
+            )
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
     def test_executor_security_preflight_happens_before_workspace_claim(self, issue_mock):
@@ -216,14 +209,12 @@ class GovernedLauncherTests(unittest.TestCase):
             called["claim"] = True
             return {}
         self.daemon.dispatch = claim
-        from forgeboss.control import daemon as daemon_module
-        with mock.patch.object(daemon_module, "WORKTREE_ROOT", self.root):
-            with self.assertRaises(Exception):
-                prepare_governed_launch(
+        with self.assertRaises(Exception):
+            prepare_governed_launch(
                     self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
                     workspace_path=self.workspace, adapter="mini-swe",
                     allowed_tools=["python"], budget_usd=0.25,
-                )
+            )
         self.assertFalse(called["claim"])
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
