@@ -119,6 +119,17 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
         with self.assertRaises(CodeIntelligenceError):
             adapter.call("list_projects", {})
 
+    def test_staged_binary_change_is_blocked(self):
+        adapter = self.adapter()
+        adapter.staged_binary.write_bytes(adapter.staged_binary.read_bytes() + b"\n# tampered\n")
+        with self.assertRaises(CodeIntelligenceError):
+            adapter.call("list_projects", {})
+
+    def test_verified_binary_is_staged_outside_workspace(self):
+        adapter = self.adapter()
+        self.assertTrue(adapter.staged_binary.is_file())
+        self.assertFalse(str(adapter.staged_binary).startswith(str(self.workspace)))
+
     def test_payload_is_read_only_after_success(self):
         if os.name == "nt":
             self.skipTest("POSIX executable fixture")
