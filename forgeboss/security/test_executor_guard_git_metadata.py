@@ -635,4 +635,36 @@ class ExecutorGuardTrustedConfigOriginTests(unittest.TestCase):
         for entry in ({"scope":"global","origin":"file:/trusted/gitconfig"},{"scope":"system","origin":"command line"}):
             with self.subTest(entry=entry),self.assertRaises(guard.SecurityError):guard._assert_trusted_system_config_origin(entry)
 
+
+class ExecutorGuardPaidStartTests(unittest.TestCase):
+    def test_paid_start_consumes_authority_exactly_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);lease_path=root/"lease.json"
+            lease={"paid_consumed":False,"git_metadata":{"g":{"sha256":"a"}}}
+            written={}
+            authority={"budgetUsd":0.25,"taskId":"t","runId":"r","ownerEpoch":1}
+            with patch.object(guard,"_verify_unlocked",return_value=lease),patch.object(guard,"_control_authority",return_value=authority),patch.object(guard,"git_metadata_snapshot",return_value=lease["git_metadata"]),patch.object(guard,"_atomic_write_json",side_effect=lambda p,obj: written.update(obj)):
+                with guard.paid_start_authority(lease_path,"token","packet","workspace","mini-swe","envelope",0.25) as got:
+                    self.assertEqual(got,authority)
+            self.assertTrue(written["paid_consumed"])
+            self.assertEqual(written["paid_authority"],authority)
+
+            replay=dict(written)
+            with patch.object(guard,"_verify_unlocked",return_value=replay):
+                with self.assertRaisesRegex(guard.SecurityError,"already consumed"):
+                    with guard.paid_start_authority(lease_path,"token","packet","workspace","mini-swe","envelope",0.25):
+                        pass
+
+    def test_paid_start_rejects_runner_budget_mismatch_before_consumption(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);lease_path=root/"lease.json"
+            lease={"paid_consumed":False,"git_metadata":{}}
+            authority={"budgetUsd":0.25}
+            with patch.object(guard,"_verify_unlocked",return_value=lease),patch.object(guard,"_control_authority",return_value=authority),patch.object(guard,"_atomic_write_json") as write:
+                with self.assertRaisesRegex(guard.SecurityError,"runner budget differs"):
+                    with guard.paid_start_authority(lease_path,"token","packet","workspace","mini-swe","envelope",0.5):
+                        pass
+                write.assert_not_called()
+
+
 if __name__=="__main__":unittest.main()
