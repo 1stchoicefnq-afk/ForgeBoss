@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -16,6 +17,7 @@ from forgeboss.control.envelope import verify_envelope
 from forgeboss.control.governed_launch import issue_governed_launch_attestation, resolve_runner_identity
 from forgeboss.security.executor_guard import SecurityError, _assert_live_control_lease, _resolve_git_executable, issue_lease, revoke_lease
 from forgeboss.security.host_tool_identity import HostToolIdentityError, resolve_trusted_host_executable
+from forgeboss.security.local_acl import harden_private_dir
 
 
 class GovernedSupervisorError(RuntimeError):
@@ -261,8 +263,15 @@ def supervise_governed_run(
             ) from ex
         raise GovernedSupervisorError(f"executor lease creation failed: {ex}") from ex
 
+    runtime_state = Path(__file__).resolve().parents[2] / "state" / "governed-runtime"
+    harden_private_dir(runtime_state)
+    docker_config = runtime_state / ("docker-" + run_id)
+    harden_private_dir(docker_config)
+
     env = {
         "PATH": trusted_path,
+        "DOCKER_CONFIG": str(docker_config),
+        "DOCKER_CONTEXT": "default",
         "SYSTEMROOT": os.environ.get("SYSTEMROOT",""),
         "WINDIR": os.environ.get("WINDIR",""),
         "TEMP": os.environ.get("TEMP",""),
@@ -309,6 +318,10 @@ def supervise_governed_run(
             )
         except Exception as release_ex:
             cleanup_errors.append("workspace release failed: "+str(release_ex))
+        try:
+            shutil.rmtree(docker_config,ignore_errors=True)
+        except Exception:
+            pass
         if cleanup_errors:
             raise GovernedSupervisorError(
                 f"runner start failed ({ex}); cleanup errors: {'; '.join(cleanup_errors)}"
@@ -379,6 +392,15 @@ def supervise_governed_run(
             reason=reason or "task cancellation requested before finalization"
     except Exception as ex:
         finalization_errors.append(f"workspace release failed: {type(ex).__name__}: {ex}")
+
+    try:
+        shutil.rmtree(docker_config,ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    except Exception as ex:
+        finalization_errors.append(
+            f"Docker config cleanup failed: {type(ex).__name__}: {ex}"
+        )
 
     finalization_error="; ".join(finalization_errors) if finalization_errors else None
     if monitor_error is not None:
