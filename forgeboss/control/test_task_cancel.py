@@ -112,6 +112,38 @@ class TaskCancelTests(unittest.TestCase):
             )
         self.assertIsNone(self.store.get_lease("T1"))
 
+    def test_cancel_wins_if_requested_before_supervised_release(self):
+        work=self.worktrees/"cancel-wins"
+        work.mkdir()
+        lease=self.store.claim_workspace(
+            "T1","RUN-CANCEL",str(work),None,"a"*40,60,"mini-swe",
+            self.worktrees,budget_reserved=0.1
+        )
+        self.store.request_cancel("T1")
+        out=self.store.release(
+            "T1","RUN-CANCEL",int(lease["owner_epoch"]),
+            result_head=lease["current_head"],outcome="completed",respect_cancel=True
+        )
+        self.assertEqual(out["outcome"],"cancelled")
+        self.assertEqual(self.store.get_task("T1")["status"],"cancelled")
+
+    def test_completion_wins_if_committed_before_cancel_request(self):
+        work=self.worktrees/"complete-wins"
+        work.mkdir()
+        lease=self.store.claim_workspace(
+            "T1","RUN-DONE",str(work),None,"a"*40,60,"mini-swe",
+            self.worktrees,budget_reserved=0.1
+        )
+        out=self.store.release(
+            "T1","RUN-DONE",int(lease["owner_epoch"]),
+            result_head=lease["current_head"],outcome="completed",respect_cancel=True
+        )
+        self.assertEqual(out["outcome"],"completed")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self.req(),True)
+        self.assertEqual(ctx.exception.code,"TASK_TERMINAL")
+        self.assertIsNone(self.store.get_task("T1")["cancel_requested_at"])
+
     def test_client_uses_shared_mutation_set_for_cancel(self):
         from forgeboss.control.client import Client
         self.assertIn("task.cancel",Client.call.__globals__["MUTATIONS"])
