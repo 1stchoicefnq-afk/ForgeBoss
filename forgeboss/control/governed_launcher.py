@@ -474,7 +474,7 @@ def prepare_governed_launch(
             executor_lease_path=lease_path,
             launch_envelope=_freeze(envelope),
         )
-    except Exception:
+    except Exception as ex:
         if claim and isinstance(claim, Mapping) and isinstance(claim.get("lease"), Mapping):
             try:
                 epoch = int(claim["lease"].get("owner_epoch"))
@@ -482,7 +482,7 @@ def prepare_governed_launch(
             except Exception:
                 pass
         _cleanup_executor_lease(lease_obj, repo_root)
-        if isinstance(ex := __import__("sys").exc_info()[1], GovernedLauncherError):
+        if isinstance(ex, GovernedLauncherError):
             raise
         raise GovernedLauncherError(
             f"trusted launch preparation failed: {type(ex).__name__}: {ex}"
