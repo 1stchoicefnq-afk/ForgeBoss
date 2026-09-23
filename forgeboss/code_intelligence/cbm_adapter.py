@@ -34,6 +34,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_STDERR = 16_000
 _MAX_STDOUT = 2_000_000
 _MAX_STDERR_CAPTURE = 1_000_000
+_MAX_ARGUMENT_BYTES = 24_000
 _POLL_SECONDS = 0.05
 
 
@@ -312,13 +313,22 @@ class CodebaseMemoryAdapter:
 
         self._verify_binary()
 
-        encoded = json.dumps(
-            args_obj,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
+        try:
+            encoded = json.dumps(
+                args_obj,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as ex:
+            raise CodeIntelligenceError(
+                f"code-intelligence arguments are not valid JSON data: {ex}"
+            ) from ex
+        if len(encoded.encode("utf-8")) > _MAX_ARGUMENT_BYTES:
+            raise CodeIntelligenceError(
+                f"code-intelligence arguments exceed {_MAX_ARGUMENT_BYTES} UTF-8 bytes"
+            )
         argv = [str(self.staged_binary), "cli", clean_tool, encoded]
 
         flags = 0
@@ -360,6 +370,11 @@ class CodebaseMemoryAdapter:
                     f"code-intelligence process could not start: {type(ex).__name__}: {ex}"
                 ) from ex
 
+            stderr_size = err_path.stat().st_size
+            if stderr_size > _MAX_STDERR_CAPTURE:
+                raise CodeIntelligenceError(
+                    f"code-intelligence stderr exceeded {_MAX_STDERR_CAPTURE} bytes"
+                )
             stderr = _read_tail(err_path, _MAX_STDERR)
             stdout_size = out_path.stat().st_size
             if stdout_size > _MAX_STDOUT:
