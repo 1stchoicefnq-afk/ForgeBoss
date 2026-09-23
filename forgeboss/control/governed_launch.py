@@ -26,7 +26,7 @@ SCHEMA = 1
 TYPE = "governed-launch-attestation"
 MAX_TTL_SECONDS = 15 * 60
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_SAFE_ADAPTERS = frozenset({"mini-swe", "openhands", "opencode"})
+_SAFE_ADAPTERS = frozenset({"mini-swe", "openhands"})
 _SAFE_TOOLS = frozenset({"git", "node", "npm", "python", "pytest", "docker"})
 _TOKEN_KEYS = frozenset({
     "schema",
@@ -125,17 +125,10 @@ def resolve_runner_identity(adapter: object, *, repo_root: str | Path) -> Runner
     runners = {
         "mini-swe": root / "forgeboss" / "executors" / "mini_swe_runner.py",
         "openhands": root / "forgeboss" / "executors" / "openhands_runner.py",
-        "opencode": root / "forgeboss" / "executors" / "opencode_runner.js",
     }
     runner = _regular_executable(runners[clean], "runner")
 
-    if clean in {"mini-swe", "openhands"}:
-        interpreter = _regular_executable(Path(sys.executable), "python interpreter")
-    else:
-        found = shutil.which("node.exe" if os.name == "nt" else "node")
-        if not found:
-            raise GovernedLaunchError("node interpreter is unavailable")
-        interpreter = _regular_executable(Path(found), "node interpreter")
+    interpreter = _regular_executable(Path(sys.executable), "python interpreter")
 
     before_runner = _sha256_file(runner)
     before_interpreter = _sha256_file(interpreter)
