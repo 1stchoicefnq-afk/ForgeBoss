@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from types import MappingProxyType
 from typing import Mapping
 
@@ -32,6 +33,8 @@ ALLOWED_TOOLS = frozenset({
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_STDERR = 16_000
 _MAX_STDOUT = 2_000_000
+_MAX_STDERR_CAPTURE = 1_000_000
+_POLL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,7 @@ def _read_tail(path: Path, limit: int) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+def _terminate_process_tree(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
     if os.name == "nt":
@@ -122,6 +125,44 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _wait_bounded(
+    process: subprocess.Popen,
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: int,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        returncode = process.poll()
+        if returncode is not None:
+            return returncode
+        try:
+            stdout_size = stdout_path.stat().st_size
+            stderr_size = stderr_path.stat().st_size
+        except OSError as ex:
+            _terminate_process_tree(process)
+            raise CodeIntelligenceError(
+                f"cannot inspect code-intelligence output files: {ex}"
+            ) from ex
+        if stdout_size > _MAX_STDOUT:
+            _terminate_process_tree(process)
+            raise CodeIntelligenceError(
+                f"code-intelligence stdout exceeded {_MAX_STDOUT} bytes"
+            )
+        if stderr_size > _MAX_STDERR_CAPTURE:
+            _terminate_process_tree(process)
+            raise CodeIntelligenceError(
+                f"code-intelligence stderr exceeded {_MAX_STDERR_CAPTURE} bytes"
+            )
+        if time.monotonic() >= deadline:
+            _terminate_process_tree(process)
+            raise CodeIntelligenceError(
+                f"code-intelligence tool timed out after {timeout_seconds}s"
+            )
+        time.sleep(_POLL_SECONDS)
 
 
 def _freeze_json(value: object) -> object:
@@ -306,13 +347,12 @@ class CodebaseMemoryAdapter:
                         start_new_session=(os.name != "nt"),
                         creationflags=flags,
                     )
-                    try:
-                        returncode = process.wait(timeout=self.timeout_seconds)
-                    except subprocess.TimeoutExpired as ex:
-                        _terminate_process_tree(process)
-                        raise CodeIntelligenceError(
-                            f"code-intelligence tool timed out after {self.timeout_seconds}s"
-                        ) from ex
+                    returncode = _wait_bounded(
+                        process,
+                        stdout_path=out_path,
+                        stderr_path=err_path,
+                        timeout_seconds=self.timeout_seconds,
+                    )
             except CodeIntelligenceError:
                 raise
             except OSError as ex:
