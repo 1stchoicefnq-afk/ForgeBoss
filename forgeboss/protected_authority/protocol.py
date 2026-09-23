@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib,json,math,re,uuid
+from forgeboss.control.scheduler import _canonical_path as _control_canonical_path
 from typing import Any,Mapping
 
 MAX_REQUEST_BYTES=128*1024;MAX_TEXT=64*1024;SCHEMA=2
-OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','verify_launch_authority','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}
+OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','verify_launch_authority','approve_small_repair','approve_reuse_review','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}
 _REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_MONEY=re.compile(r'^[0-9]{1,6}(?:\\.[0-9]{1,6})?$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 class AuthorityError(RuntimeError):
     def __init__(self,code:str,message:str='protected authority request denied'):
@@ -67,6 +68,34 @@ def _ref(v,code):
     t=_text(v,code,200,_REF)
     if t.startswith('/') or t.endswith('/') or '..' in t.split('/') or '@{' in t or '\\' in t:raise AuthorityError(code)
     return t
+def _policy_paths(value):
+    if not isinstance(value,list) or not value or len(value)>256:raise AuthorityError('POLICY_PATHS_INVALID')
+    out=[];seen=set()
+    for item in value:
+        raw=_text(item,'POLICY_PATH_INVALID',1024)
+        normalized=raw.replace('\\','/')
+        if normalized.startswith('/') or re.match(r'^[A-Za-z]:/',normalized) or normalized.startswith('//') or any(part=='..' for part in normalized.split('/')):
+            raise AuthorityError('POLICY_PATH_INVALID')
+        key=_control_canonical_path(normalized)
+        if not key:raise AuthorityError('POLICY_PATH_INVALID')
+        if key in seen:raise AuthorityError('POLICY_PATH_DUPLICATE')
+        seen.add(key);out.append(key)
+    return sorted(out)
+
+def _policy_common(raw,*,reuse:bool):
+    keys=('taskId','baseSha','objectiveSha256','allowedPaths','ttlSeconds') if not reuse else ('taskId','baseSha','objectiveSha256','allowedPaths','subsystem','reviewSha256','ttlSeconds')
+    o=_exact(raw,keys,'PAYLOAD_INVALID')
+    o['taskId']=_text(o['taskId'],'TASK_ID_INVALID',128,_PEER)
+    o['baseSha']=_text(o['baseSha'],'BASE_SHA_INVALID',64,_OID,True)
+    o['objectiveSha256']=_text(o['objectiveSha256'],'OBJECTIVE_DIGEST_INVALID',64,_HEX64,True)
+    o['allowedPaths']=_policy_paths(o['allowedPaths'])
+    o['ttlSeconds']=_int(o['ttlSeconds'],'POLICY_TTL_INVALID')
+    if o['ttlSeconds']>3600:raise AuthorityError('POLICY_TTL_INVALID')
+    if reuse:
+        o['subsystem']=_text(o['subsystem'],'SUBSYSTEM_INVALID',128,_PEER)
+        o['reviewSha256']=_text(o['reviewSha256'],'REVIEW_DIGEST_INVALID',64,_HEX64,True)
+    return o
+
 def _payload(op,raw):
     if op=='read_github_control':
         o=_exact(raw,('rootPr','preferredRepairPr'),'PAYLOAD_INVALID');o['rootPr']=_int(o['rootPr'],'ROOT_PR_INVALID');o['preferredRepairPr']=_int(o['preferredRepairPr'],'REPAIR_PR_INVALID',True);return o
@@ -83,6 +112,8 @@ def _payload(op,raw):
         o=_exact(raw,('envelope','envelopeDigest'),'PAYLOAD_INVALID')
         if not isinstance(o['envelope'],Mapping):raise AuthorityError('LAUNCH_ENVELOPE_INVALID')
         o['envelope']=_jsonable(o['envelope']);o['envelopeDigest']=_text(o['envelopeDigest'],'ENVELOPE_DIGEST_INVALID',64,_HEX64,True);return o
+    if op=='approve_small_repair':return _policy_common(raw,reuse=False)
+    if op=='approve_reuse_review':return _policy_common(raw,reuse=True)
     if op=='prepare_self_build':
         o=_exact(raw,('sourceRoot','baseSha','runId'),'PAYLOAD_INVALID')
         o['sourceRoot']=_text(o['sourceRoot'],'SOURCE_ROOT_INVALID',4096)
