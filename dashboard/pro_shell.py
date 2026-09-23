@@ -317,7 +317,7 @@ class Api:
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
-            terminal={"COMPLETE","FAILED","SAFE_STOPPED","PREFLIGHT_BLOCKED"}
+            terminal={"COMPLETE","FAILED","SAFE_STOPPED","PREFLIGHT_BLOCKED","P0_PROOF_PASS","P0_PROOF_FAILED"}
             active=any(str(x.get("phase") or "") not in terminal for x in self._self_build_sessions.values())
             if self._self_build_launcher is None or not active:
                 self._self_build_launcher=SelfBuildLauncher(
@@ -708,7 +708,7 @@ class Api:
                 if proof_mode and int(plan["cycle_target"])!=3:
                     return {"ok":False,"blocked":True,"phase":"PROOF_BUDGET_BLOCKED","message":"P0 three-cycle proof mode requires at least $6.00 owner budget so all three $2.00 protected cycle caps are reserved."}
                 with self._self_build_lock:
-                    terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
+                    terminal={"COMPLETE","FAILED","SAFE_STOPPED","P0_PROOF_PASS","P0_PROOF_FAILED"}
                     active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
                     if active:
                         return {"ok":False,"blocked":True,"phase":"SELF_BUILD_SESSION_ACTIVE","message":"A ForgeBoss self-build session is already active. Stop it safely or let it finish before starting another."}
