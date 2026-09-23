@@ -13,7 +13,7 @@ CANONICAL_PR_TEMPLATE=".github/pull_request_template.md"
 LEGACY_PR_TEMPLATE=".github/PULL_REQUEST_TEMPLATE.md"
 
 def run(argv,cwd=None,env=None,timeout=3600):
-    return subprocess.run(argv,cwd=cwd,env=env,capture_output=True,text=True,timeout=timeout)
+    return subprocess.run(argv,cwd=cwd,env=env,capture_output=True,text=True,timeout=timeout,creationflags=CREATE_NO_WINDOW)
 
 def parse_result(text):
     for line in reversed(text.splitlines()):
@@ -34,7 +34,7 @@ def git(work,*args):
 
 def status_snapshot(work):
     p=subprocess.run(["git.exe","status","--porcelain=v1","-z","--untracked-files=all"],
-        cwd=work,capture_output=True,timeout=120)
+        cwd=work,capture_output=True,timeout=120,creationflags=CREATE_NO_WINDOW)
     if p.returncode:
         raise RuntimeError((p.stdout+p.stderr).decode("utf-8","replace"))
     raw=p.stdout
