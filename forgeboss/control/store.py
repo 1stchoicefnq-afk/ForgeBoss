@@ -191,6 +191,29 @@ class ControlStore:
     def get_task(self,task_id):
         row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
+    def request_cancel(self,task_id):
+        with self._lock:
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True
+                row=self.db.execute("SELECT cancel_requested_at FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not row: raise KeyError("task not found")
+                existing=row["cancel_requested_at"]
+                if existing is not None:
+                    self.db.execute("COMMIT");begun=False
+                    return {"taskId":task_id,"cancelRequestedAt":float(existing),"alreadyRequested":True}
+                now=time.time()
+                cur=self.db.execute("UPDATE tasks SET cancel_requested_at=?,updated_at=? WHERE task_id=? AND cancel_requested_at IS NULL",(now,now,task_id))
+                if cur.rowcount!=1: raise RuntimeError("task cancellation state changed during request")
+                self._event_locked("task.cancel_requested",{"cancelRequestedAt":now},task_id)
+                self.db.execute("COMMIT");begun=False
+                return {"taskId":task_id,"cancelRequestedAt":now,"alreadyRequested":False}
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
+
     def _live_cross_task_conflicts_locked(self,task_id,repository,base_sha,worktree,scope,now):
         worktree_id=_physical_worktree_identity(worktree);repository_id=_repository_identity(repository);base_id=_git_object_id(base_sha)
         rows=self.db.execute("""SELECT wl.task_id,wl.worktree_path,t.repository,t.base_sha,t.allowed_paths_json
@@ -212,6 +235,7 @@ class ControlStore:
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row: raise KeyError("task not found")
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
+                if task.get("cancel_requested_at") is not None: raise PermissionError("task cancellation requested")
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and float(row["expires_at"])>now: raise RuntimeError("workspace lease is already active")
