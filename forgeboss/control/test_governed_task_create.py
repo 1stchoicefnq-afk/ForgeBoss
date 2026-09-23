@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -54,6 +55,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.store = self.store
         self.daemon.secret = b"k" * 32
         self.daemon.policy_secret = b"p" * 32
+        self.daemon.permanent_rules = self.mod.load_default_rules(self.mod.ROOT)
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -108,6 +110,40 @@ class GovernedTaskCreateTests(unittest.TestCase):
             "SELECT COUNT(*) FROM task_events WHERE task_id=?",
             (task_id,),
         ).fetchone()[0]
+
+    def test_rules_status_exposes_identity_not_rule_content_or_path(self):
+        status = self.daemon._rules_status()
+        self.assertEqual(status["rulesetVersion"], "1.1.0")
+        self.assertRegex(status["canonicalSha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("sourcePath", status)
+        self.assertNotIn("rules", status)
+
+    def test_governed_create_fails_closed_if_manifest_is_tampered_after_startup(self):
+        tamper_root = self.root / ("tamper-" + uuid.uuid4().hex)
+        target = tamper_root / "docs" / "bootstrap" / "PERMANENT_RULES.json"
+        target.parent.mkdir(parents=True)
+        source = self.mod.ROOT / "docs" / "bootstrap" / "PERMANENT_RULES.json"
+        doc = json.loads(source.read_text(encoding="utf-8"))
+        doc["rules"][3]["law"] = "tampered reuse rule"
+        target.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        with mock.patch.object(self.mod, "ROOT", tamper_root):
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(self.request(self.params()), True)
+        self.assertEqual(ctx.exception.code, "PERMANENT_RULES_INVALID")
+        self.assertIsNone(self.store.get_task("T1"))
+        self.assertEqual(self.event_count("T1"), 0)
+
+    def test_governed_create_rejects_runtime_rules_identity_change(self):
+        altered = mock.Mock()
+        altered.canonical_sha256 = "0" * 64
+        for attr in ("ruleset_id", "ruleset_version"):
+            setattr(altered, attr, getattr(self.daemon.permanent_rules, attr))
+        altered.rules = self.daemon.permanent_rules.rules
+        with mock.patch.object(self.mod, "load_default_rules", return_value=altered):
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(self.request(self.params()), True)
+        self.assertEqual(ctx.exception.code, "PERMANENT_RULES_CHANGED")
+        self.assertIsNone(self.store.get_task("T1"))
 
     def test_missing_reuse_review_blocks_atomically(self):
         with self.assertRaises(self.mod.ProtocolError) as ctx:
