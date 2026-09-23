@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64,re,sqlite3
+import base64,re,sqlite3,time
 from pathlib import Path
 from typing import Any,Mapping
 from .boundary import FileSecretProvider,PeerContext,PlatformMachineBoundary
@@ -46,12 +46,15 @@ class ReplayJournal:
         finally:db.close()
 
 class ProtectedAuthorityService:
-    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner,allowed_repositories,self_build_runtime=None,github_enabled:bool=True):
+    def __init__(self,*,protected_root:Path,boundary:PlatformMachineBoundary,secrets_provider:FileSecretProvider,backend:GitHubAppBackend,receipt_signer:ReceiptSigner,allowed_repositories,self_build_runtime=None,github_enabled:bool=True,policy_approver_peer_ids=()):
         root=Path(protected_root)
         if not root.is_absolute():raise AuthorityError('PROTECTED_ROOT_INVALID')
         resolved=assert_machine_anchored_root(boundary,root)
         if receipt_signer is None:raise AuthorityError('RECEIPT_SIGNER_REQUIRED')
         self.root=resolved;self.boundary=boundary;self.secrets_provider=secrets_provider;self.backend=backend;self.receipt_signer=receipt_signer;self.allowed_repositories=_canonical_repository_map(allowed_repositories);self.service_principal=boundary.assert_service_principal(resolved);self.journal=ReplayJournal(resolved);self.self_build_runtime=self_build_runtime;self.github_enabled=bool(github_enabled)
+        if not isinstance(policy_approver_peer_ids,(set,frozenset,list,tuple)):raise AuthorityError('POLICY_APPROVER_SET_INVALID')
+        self.policy_approver_peer_ids=frozenset(str(x) for x in policy_approver_peer_ids if isinstance(x,str) and x)
+        if len(self.policy_approver_peer_ids)!=len(tuple(policy_approver_peer_ids)):raise AuthorityError('POLICY_APPROVER_SET_INVALID')
     def handle_json(self,raw:str|bytes,*,peer_context:PeerContext)->bytes:return canonical_json(self.handle(unsigned_request(strict_loads(raw)),peer_context=peer_context))
     def handle(self,raw_request:Mapping[str,Any],*,peer_context:PeerContext)->dict:
         r=unsigned_request(raw_request)
@@ -64,6 +67,23 @@ class ProtectedAuthorityService:
             op=r['operation']
             if op=='verify_launch_authority':
                 trust=self.secrets_provider.launch_trust_root();private.append(trust);result=self.backend.verify_launch_authority(repository=r['repository'],control_revision=r['controlRevision'],payload=r['payload'],trust_root=trust)
+            elif op in {'approve_small_repair','approve_reuse_review'}:
+                if r['peerId'] not in getattr(self,'policy_approver_peer_ids',frozenset()):raise AuthorityError('POLICY_APPROVER_DENIED')
+                now=int(time.time());payload=r['payload']
+                result={
+                    'schema':1,
+                    'approved':True,
+                    'policy':'small-repair-v1' if op=='approve_small_repair' else 'reuse-review-v1',
+                    'taskId':payload['taskId'],
+                    'repository':r['repository'],
+                    'baseSha':payload['baseSha'],
+                    'objectiveSha256':payload['objectiveSha256'],
+                    'allowedPaths':payload['allowedPaths'],
+                    'issuedAt':now,
+                    'expiresAt':now+int(payload['ttlSeconds']),
+                }
+                if op=='approve_reuse_review':
+                    result['subsystem']=payload['subsystem'];result['reviewSha256']=payload['reviewSha256']
             elif op in {'prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
                 if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
                 try:
@@ -93,10 +113,10 @@ class ProtectedAuthorityService:
         receipt={'schema':3,'operation':r['operation'],'requestId':r['requestId'],'peerId':r['peerId'],'peerPrincipal':peer_context.principal,'repository':r['repository'],'controlRevision':r['controlRevision'],'requestDigest':r['requestDigest'],'resultDigest':canonical_digest(public),'servicePrincipal':self.service_principal}
         signed=self.receipt_signer.sign(receipt);return {**signed,'result':public}
 
-def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,launch_trust_file:str,receipt_signing_key_file:str,allowed_repositories,trusted_storage_principals:set[str]|None=None,github_enabled:bool=True)->ProtectedAuthorityService:
+def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,launch_trust_file:str,receipt_signing_key_file:str,allowed_repositories,trusted_storage_principals:set[str]|None=None,github_enabled:bool=True,policy_approver_peer_ids=())->ProtectedAuthorityService:
     root=Path(protected_root);boundary=PlatformMachineBoundary(expected_service_principal=expected_service_principal,peer_principals=peer_principals,peer_public_keys=peer_public_keys,trusted_storage_principals=trusted_storage_principals);root=assert_machine_anchored_root(boundary,root)
     repos=_canonical_repository_map(allowed_repositories)
     secrets=FileSecretProvider(root=root,private_key_path=Path(github_private_key_file),launch_trust_path=Path(launch_trust_file),boundary=boundary);signer=ReceiptSigner.from_file(root=root,path=Path(receipt_signing_key_file),boundary=boundary);backend=GitHubAppBackend(app_id=github_app_id,installation_id=github_installation_id)
     receipt_pin=base64.b64encode(signer.public_raw).decode('ascii')
     runtime=SelfBuildRuntime(protected_root=root,boundary=boundary,receipt_public_key_b64=receipt_pin)
-    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values(),self_build_runtime=runtime,github_enabled=github_enabled)
+    return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values(),self_build_runtime=runtime,github_enabled=github_enabled,policy_approver_peer_ids=policy_approver_peer_ids)
