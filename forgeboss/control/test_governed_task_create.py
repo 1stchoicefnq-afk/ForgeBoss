@@ -13,6 +13,8 @@ from unittest import mock
 
 import forgeboss.control.envelope as envelope_module
 import forgeboss.control.store as store_module
+import forgeboss.control.governed_launch as governed_launch_module
+from forgeboss.security.host_tool_identity import HostToolIdentity
 from forgeboss.policy.reuse_review_authority import issue_reuse_review_receipt
 from forgeboss.policy.small_repair_authority import issue_small_repair_exemption
 from forgeboss.control.governed_launch import issue_governed_launch_attestation
@@ -61,6 +63,19 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
+        self.docker_identity = HostToolIdentity(
+            name="docker",
+            path=str(self.root / "trusted-docker"),
+            sha256="f" * 64,
+            size=123,
+        )
+        self.docker_patch = mock.patch.object(
+            governed_launch_module,
+            "resolve_trusted_host_executable",
+            return_value=self.docker_identity,
+        )
+        self.docker_patch.start()
+        self.addCleanup(self.docker_patch.stop)
 
     def params(self, task_id="T1"):
         return {
@@ -338,6 +353,9 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(env["runtime"]["provider"], q["provider"])
         self.assertEqual(env["runtime"]["model"], q["model"])
         self.assertEqual(env["runtime"]["containerImage"], q["containerImage"])
+        self.assertEqual(env["runtime"]["dockerPath"], self.docker_identity.path)
+        self.assertEqual(env["runtime"]["dockerSha256"], self.docker_identity.sha256)
+        self.assertEqual(env["runtime"]["dockerSize"], self.docker_identity.size)
 
     def test_governed_launch_token_cannot_rebind_runtime_or_run(self):
         p, _ = self._create_governed_substantial("T-GOV-BIND")

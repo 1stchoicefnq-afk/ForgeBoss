@@ -87,6 +87,15 @@ def _control_authority(raw,lease,workspace,executor):
     if executor=="mini-swe":
         if not isinstance(image,str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}",image):
             raise SecurityError("control envelope mini-swe container image is not digest-pinned")
+        try:
+            from forgeboss.security.host_tool_identity import resolve_trusted_host_executable
+            docker=resolve_trusted_host_executable("docker")
+        except Exception as e:
+            raise SecurityError("trusted Docker identity unavailable: "+str(e)) from e
+        expected_docker={"dockerPath":docker.path,"dockerSha256":docker.sha256,"dockerSize":docker.size}
+        for name,value in expected_docker.items():
+            if runtime.get(name)!=value:
+                raise SecurityError("control envelope Docker identity mismatch: "+name)
     elif image is not None:
         raise SecurityError("control envelope container image is invalid for executor")
     packet_sha=str(env.get("packetSha256") or "").lower()
