@@ -83,9 +83,9 @@ def resolve_repo(feedback,sha):
             c=c.resolve()
             if c in seen or not c.exists():continue
             seen.add(c)
-            p=subprocess.run(["git.exe","merge-base","--is-ancestor",sha,"HEAD"],cwd=str(c),capture_output=True,text=True,timeout=30)
+            p=subprocess.run(["git.exe","merge-base","--is-ancestor",sha,"HEAD"],cwd=str(c),capture_output=True,text=True,timeout=30,creationflags=CREATE_NO_WINDOW)
             if p.returncode==0:return c
-            p2=subprocess.run(["git.exe","rev-parse","HEAD"],cwd=str(c),capture_output=True,text=True,timeout=30)
+            p2=subprocess.run(["git.exe","rev-parse","HEAD"],cwd=str(c),capture_output=True,text=True,timeout=30,creationflags=CREATE_NO_WINDOW)
             if p2.returncode==0 and p2.stdout.strip()==sha:return c
         except Exception:
             continue
