@@ -257,7 +257,11 @@ class ProtectedAuthorityClient:
                     out.append(b.raw[:got.value])
                 if ok: break
                 if err==234: continue
-                raise AuthorityError("IPC_READ_FAILED")
+                # A peer that closed after a complete buffered response is an
+                # orderly end-of-message. A broken pipe before any response is
+                # still a hard transport failure.
+                if err==109 and out: break
+                raise AuthorityError(f"IPC_READ_FAILED_WIN32_{err}")
             if not out: raise AuthorityError("IPC_EMPTY_RESPONSE")
             return b"".join(out)
         finally:
