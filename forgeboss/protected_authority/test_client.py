@@ -73,6 +73,17 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
         self.peer.public_key().verify(base64.b64decode(bundle["envelope"]["signature"]),bytes.fromhex(digest))
         self.assertEqual(captured["req"]["payload"]["envelopeDigest"],digest)
 
+    def test_windows_exchange_source_has_bounded_listener_turnover_retry(self):
+        import inspect
+        from forgeboss.protected_authority import client as client_module
+        source=inspect.getsource(client_module.ProtectedAuthorityClient._exchange_windows)
+        self.assertIn("deadline=time.monotonic()+self.timeout",source)
+        self.assertIn("while True:",source)
+        self.assertIn("WaitNamedPipeW",source)
+        self.assertIn("CreateFileW",source)
+        self.assertIn("time.sleep",source)
+        self.assertIn('raise AuthorityError("IPC_CONNECT_FAILED")',source)
+
     def test_from_files_loads_raw_ed25519_key_and_pin(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);keyfile=root/"peer.key";pinfile=root/"receipt.pub"
