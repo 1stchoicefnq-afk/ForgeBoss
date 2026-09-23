@@ -222,7 +222,10 @@ class WindowsNamedPipeServer:
             self.handle=self.handles[0] if self.handles else None
             for i,(_t,h) in enumerate(threads):
                 if handle_value(h) in survivor_values:results[i]=AuthorityError('IPC_HANDLER_QUARANTINED')
-            if not self.handles:raise AuthorityError('IPC_WORKER_STUCK')
+            # A post-authenticated worker that exceeds its bounded handler budget
+            # is a fail-closed authority fault. Do not keep serving new requests
+            # concurrently with work whose completion is no longer proven.
+            raise AuthorityError('IPC_WORKER_STUCK')
         if results and all(isinstance(x,AuthorityError) and x.code=='IPC_PREAUTH_TIMEOUT' for x in results):
             self._stop.wait(min(0.1,max(self.poll_interval,0.01)))
         return results
