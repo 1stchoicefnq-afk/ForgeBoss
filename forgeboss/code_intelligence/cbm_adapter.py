@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from types import MappingProxyType
 from typing import Mapping
@@ -138,11 +139,40 @@ class CodebaseMemoryAdapter:
         self.home_dir = self.runtime_dir / "home"
         self.home_dir.mkdir(parents=True, exist_ok=True)
 
+        staged_dir = self.runtime_dir / "verified-bin"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        suffix = self.binary.suffix if self.binary.suffix else ""
+        self.staged_binary = staged_dir / f"codebase-memory-mcp-{actual}{suffix}"
+        if self.staged_binary.exists():
+            if not self.staged_binary.is_file() or _sha256_file(self.staged_binary) != actual:
+                raise CodeIntelligenceError("existing staged code-intelligence binary has wrong identity")
+        else:
+            temp = staged_dir / f".{self.staged_binary.name}.tmp"
+            try:
+                shutil.copyfile(self.binary, temp)
+                shutil.copymode(self.binary, temp)
+                if _sha256_file(temp) != actual:
+                    raise CodeIntelligenceError("staged code-intelligence binary failed SHA-256 verification")
+                os.replace(temp, self.staged_binary)
+            finally:
+                try:
+                    if temp.exists():
+                        temp.unlink()
+                except OSError:
+                    pass
+        if _sha256_file(self.staged_binary) != actual:
+            raise CodeIntelligenceError("staged code-intelligence binary identity mismatch")
+
     def _verify_binary(self) -> None:
-        actual = _sha256_file(self.binary)
-        if actual != self.binary_sha256:
+        source_actual = _sha256_file(self.binary)
+        if source_actual != self.binary_sha256:
             raise CodeIntelligenceError(
-                "codebase-memory-mcp binary changed after adapter initialization"
+                "codebase-memory-mcp source binary changed after adapter initialization"
+            )
+        staged_actual = _sha256_file(self.staged_binary)
+        if staged_actual != self.binary_sha256:
+            raise CodeIntelligenceError(
+                "staged codebase-memory-mcp binary changed after verification"
             )
 
     def _environment(self) -> dict[str, str]:
@@ -191,7 +221,7 @@ class CodebaseMemoryAdapter:
             ensure_ascii=False,
             allow_nan=False,
         )
-        argv = [str(self.binary), "cli", clean_tool, encoded]
+        argv = [str(self.staged_binary), "cli", clean_tool, encoded]
 
         try:
             completed = subprocess.run(
