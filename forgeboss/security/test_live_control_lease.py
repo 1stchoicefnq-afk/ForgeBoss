@@ -74,18 +74,43 @@ class LiveControlLeaseTests(unittest.TestCase):
 
     def test_released_expired_cancelled_or_nonrunning_fails_closed(self):
         cases = [
-            ("UPDATE workspace_leases SET released_at=? WHERE task_id='T1'", (1499.0,), "released"),
-            ("UPDATE workspace_leases SET expires_at=? WHERE task_id='T1'", (1499.0,), "expired"),
-            ("UPDATE tasks SET cancel_requested_at=? WHERE task_id='T1'", (1499.0,), "cancellation"),
-            ("UPDATE tasks SET status=? WHERE task_id='T1'", ("queued",), "not running"),
+            (
+                "UPDATE workspace_leases SET released_at=? WHERE task_id='T1'",
+                (1499.0,),
+                "released",
+                "UPDATE workspace_leases SET released_at=NULL WHERE task_id='T1'",
+                (),
+            ),
+            (
+                "UPDATE workspace_leases SET expires_at=? WHERE task_id='T1'",
+                (1499.0,),
+                "expired",
+                "UPDATE workspace_leases SET expires_at=? WHERE task_id='T1'",
+                (2000.0,),
+            ),
+            (
+                "UPDATE tasks SET cancel_requested_at=? WHERE task_id='T1'",
+                (1499.0,),
+                "cancellation",
+                "UPDATE tasks SET cancel_requested_at=NULL WHERE task_id='T1'",
+                (),
+            ),
+            (
+                "UPDATE tasks SET status=? WHERE task_id='T1'",
+                ("queued",),
+                "not running",
+                "UPDATE tasks SET status=? WHERE task_id='T1'",
+                ("running",),
+            ),
         ]
-        for sql, params, match in cases:
+        for sql, params, match, reset_sql, reset_params in cases:
             with self.subTest(match=match):
-                self.setUp()
                 self.mutate(sql, params)
-                with self.assertRaisesRegex(SecurityError, match):
-                    self.check()
-                self.tearDown()
+                try:
+                    with self.assertRaisesRegex(SecurityError, match):
+                        self.check()
+                finally:
+                    self.mutate(reset_sql, reset_params)
 
     def test_wrong_run_epoch_runtime_workspace_or_governance_fails_closed(self):
         with self.assertRaisesRegex(SecurityError, "run identity"):
