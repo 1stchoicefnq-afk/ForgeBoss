@@ -206,7 +206,7 @@ class ControlStore:
             if _repository_identity(row["repository"])!=repository_id or _git_object_id(row["base_sha"])!=base_id: continue
             if _scope_overlap(scope,_scope_authorities(row["allowed_paths_json"])): raise WorkspaceCollisionError("WRITABLE_SCOPE_COLLISION",f"writable scope overlaps live task {other_task}")
 
-    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0):
+    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0,require_queued=False):
         if worktree_root is None: raise ValueError("worktree_root required")
         worktree=canonical_worktree_path(worktree,worktree_root);ttl_seconds=_ttl(ttl_seconds)
         with self._lock:
@@ -216,6 +216,9 @@ class ControlStore:
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row: raise KeyError("task not found")
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
+                if require_queued:
+                    if task.get("status")!="queued": raise PermissionError("governed task is no longer queued")
+                    if task.get("cancel_requested_at") is not None: raise PermissionError("governed task was cancelled")
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and float(row["expires_at"])>now: raise RuntimeError("workspace lease is already active")
