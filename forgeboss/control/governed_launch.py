@@ -36,6 +36,9 @@ _TOKEN_KEYS = frozenset({
     "baseSha",
     "runId",
     "adapter",
+    "provider",
+    "model",
+    "packetSha256",
     "runnerPath",
     "runnerSha256",
     "interpreterPath",
@@ -65,6 +68,9 @@ class VerifiedGovernedLaunch:
     repository: str
     base_sha: str
     run_id: str
+    provider: str
+    model: str
+    packet_sha256: str
     identity: RunnerIdentity
     workspace_path: str
     allowed_paths: tuple[str, ...]
@@ -201,6 +207,13 @@ def _budget(value: object) -> str:
     return "0" if Decimal(text) == 0 else text
 
 
+def _sha256_text(value: object, label: str) -> str:
+    raw = _text(value, label).lower()
+    if not _SHA256.fullmatch(raw):
+        raise GovernedLaunchError(f"{label} must be 64 hexadecimal characters")
+    return raw
+
+
 def _timestamp(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GovernedLaunchError(f"{label} must be numeric")
@@ -217,6 +230,9 @@ def issue_governed_launch_attestation(
     base_sha: str,
     run_id: str,
     adapter: str,
+    provider: str,
+    model: str,
+    packet_sha256: str,
     repo_root: str | Path,
     workspace_path: str | Path,
     worktree_root: str | Path,
@@ -246,6 +262,9 @@ def issue_governed_launch_attestation(
         "baseSha": _git_object_id(base_sha),
         "runId": _text(run_id, "runId"),
         "adapter": identity.adapter,
+        "provider": _text(provider, "provider"),
+        "model": _text(model, "model"),
+        "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
         "runnerPath": identity.runner_path,
         "runnerSha256": identity.runner_sha256,
         "interpreterPath": identity.interpreter_path,
@@ -270,6 +289,9 @@ def verify_governed_launch_attestation(
     base_sha: str,
     run_id: str,
     adapter: str,
+    provider: str,
+    model: str,
+    packet_sha256: str,
     repo_root: str | Path,
     workspace_path: str | Path,
     worktree_root: str | Path,
@@ -302,6 +324,9 @@ def verify_governed_launch_attestation(
         "baseSha": _git_object_id(base_sha),
         "runId": _text(run_id, "runId"),
         "adapter": expected_identity.adapter,
+        "provider": _text(provider, "provider"),
+        "model": _text(model, "model"),
+        "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
         "runnerPath": expected_identity.runner_path,
         "runnerSha256": expected_identity.runner_sha256,
         "interpreterPath": expected_identity.interpreter_path,
@@ -362,6 +387,9 @@ def verify_governed_launch_attestation(
         repository=expected["repository"],
         base_sha=expected["baseSha"],
         run_id=expected["runId"],
+        provider=expected["provider"],
+        model=expected["model"],
+        packet_sha256=expected["packetSha256"],
         identity=identity,
         workspace_path=expected_workspace,
         allowed_paths=expected["allowedPaths"],
