@@ -37,6 +37,9 @@ class GovernedLaunchTests(unittest.TestCase):
             "base_sha": "a" * 40,
             "run_id": "RUN-1",
             "adapter": "mini-swe",
+            "provider": "openai",
+            "model": "openai/gpt-5.6-luna",
+            "packet_sha256": "b" * 64,
             "repo_root": self.repo,
             "workspace_path": self.workspace,
             "worktree_root": self.worktrees,
@@ -70,6 +73,9 @@ class GovernedLaunchTests(unittest.TestCase):
         verified = self.verify(token)
         self.assertEqual(verified.task_id, "T1")
         self.assertEqual(verified.identity.adapter, "mini-swe")
+        self.assertEqual(verified.provider, "openai")
+        self.assertEqual(verified.model, "openai/gpt-5.6-luna")
+        self.assertEqual(verified.packet_sha256, "b" * 64)
         self.assertEqual(
             verified.identity.runner_sha256,
             hashlib.sha256(self.runner.read_bytes()).hexdigest(),
@@ -89,6 +95,9 @@ class GovernedLaunchTests(unittest.TestCase):
             "allowed_paths": ["src/b.py"],
             "allowed_tools": ["python"],
             "budget_usd": "0.51",
+            "provider": "anthropic",
+            "model": "anthropic/claude-test",
+            "packet_sha256": "c" * 64,
         }
         (self.worktrees / "other").mkdir()
         for key, value in cases.items():
