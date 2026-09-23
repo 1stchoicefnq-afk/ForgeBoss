@@ -14,7 +14,7 @@ import uuid
 
 from forgeboss.control.envelope import verify_envelope
 from forgeboss.control.governed_launch import issue_governed_launch_attestation, resolve_runner_identity
-from forgeboss.security.executor_guard import SecurityError, _assert_live_control_lease, issue_lease
+from forgeboss.security.executor_guard import SecurityError, _assert_live_control_lease, issue_lease, revoke_lease
 
 
 class GovernedSupervisorError(RuntimeError):
@@ -65,11 +65,29 @@ def _reader(stream, sink: _BoundedText):
         except Exception: pass
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
+def _posix_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _tree_alive(proc: subprocess.Popen) -> bool:
     if os.name == "nt":
-        subprocess.run(
+        # Portable Python cannot prove descendant liveness after the direct parent exits.
+        # Native Windows job-object acceptance remains a separate gate.
+        return proc.poll() is None
+    return _posix_group_alive(proc.pid)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        if not proc.pid:
+            return
+        result = subprocess.run(
             ["taskkill.exe", "/pid", str(proc.pid), "/t", "/f"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -77,17 +95,50 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    else:
+        if proc.poll() is None and result.returncode != 0:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return
+
+    if not proc.pid:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.time() + 1.5
+    while _posix_group_alive(proc.pid) and time.time() < deadline:
+        time.sleep(0.05)
+    if _posix_group_alive(proc.pid):
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             return
         deadline = time.time() + 1.5
-        while proc.poll() is None and time.time() < deadline:
+        while _posix_group_alive(proc.pid) and time.time() < deadline:
             time.sleep(0.05)
-        if proc.poll() is None:
-            try: os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
+
+
+def _validated_openai_credentials(
+    provider: str,
+    model: str,
+    credential_env: dict[str, str] | None,
+) -> dict[str, str]:
+    if provider != "openai":
+        raise GovernedSupervisorError("R0 supervisor supports provider=openai only")
+    if not isinstance(model, str) or not model.startswith("openai/"):
+        raise GovernedSupervisorError("R0 mini-swe model must use the openai/ provider prefix")
+    supplied = dict(credential_env or {})
+    if set(supplied) != {"OPENAI_API_KEY"}:
+        raise GovernedSupervisorError(
+            "R0 governed launch requires exactly OPENAI_API_KEY and no other provider credentials"
+        )
+    value = supplied["OPENAI_API_KEY"]
+    if not isinstance(value, str) or not value.strip() or any(ch in value for ch in "\r\n\x00"):
+        raise GovernedSupervisorError("OPENAI_API_KEY is invalid")
+    return {"OPENAI_API_KEY": value}
 
 
 def supervise_governed_run(
@@ -108,6 +159,7 @@ def supervise_governed_run(
         raise GovernedSupervisorError("R0 supervisor supports mini-swe only")
     if poll_seconds <= 0 or poll_seconds > 5:
         raise GovernedSupervisorError("poll_seconds must be between 0 and 5 seconds")
+    provider_credentials = _validated_openai_credentials(provider, model, credential_env)
 
     task = daemon.store.get_task(task_id)
     if not task:
@@ -203,10 +255,7 @@ def supervise_governed_run(
         "FORGEBOSS_EXECUTOR_LEASE_TOKEN":executor_lease["token"],
         "FORGEBOSS_MINISWE_MODEL":model,
     }
-    for k,v in (credential_env or {}).items():
-        if k not in {"OPENAI_API_KEY","LLM_API_KEY","ANTHROPIC_API_KEY"}:
-            raise GovernedSupervisorError(f"credential key not allowlisted: {k}")
-        env[k]=v
+    env.update(provider_credentials)
 
     argv=[identity.interpreter_path, identity.runner_path, str(packet_path), str(workspace), str(budget_usd)]
     flags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0)|getattr(subprocess,"CREATE_NO_WINDOW",0) if os.name=="nt" else 0
@@ -224,14 +273,25 @@ def supervise_governed_run(
             start_new_session=(os.name!="nt"),
         )
     except Exception as ex:
+        cleanup_errors=[]
+        try:
+            revoked_lease=revoke_lease(
+                executor_lease["lease"],executor_lease["token"],workspace,adapter
+            )
+            if not revoked_lease.get("removed",False):
+                cleanup_errors.append("executor lease removal failed: "+str(revoked_lease.get("error")))
+        except Exception as lease_ex:
+            cleanup_errors.append("executor lease revoke failed: "+str(lease_ex))
         try:
             daemon.store.release(
                 task_id,run_id,int(lease["owner_epoch"]),
                 result_head=lease["current_head"],outcome="failed"
             )
         except Exception as release_ex:
+            cleanup_errors.append("workspace release failed: "+str(release_ex))
+        if cleanup_errors:
             raise GovernedSupervisorError(
-                f"runner start failed ({ex}); workspace release also failed ({release_ex})"
+                f"runner start failed ({ex}); cleanup errors: {'; '.join(cleanup_errors)}"
             ) from ex
         raise GovernedSupervisorError(f"runner start failed: {ex}") from ex
     out=_BoundedText(); err=_BoundedText()
@@ -243,6 +303,7 @@ def supervise_governed_run(
     started=time.time()
     revoked=False
     reason=None
+    monitor_error=None
     try:
         while proc.poll() is None:
             try:
@@ -250,13 +311,42 @@ def supervise_governed_run(
             except SecurityError as ex:
                 revoked=True; reason=str(ex); _kill_tree(proc); break
             time.sleep(poll_seconds)
-        try: proc.wait(timeout=10)
+
+        if os.name!="nt" and _tree_alive(proc):
+            revoked=True
+            reason=reason or "runner exited while descendant process group remained alive"
+            _kill_tree(proc)
+
+        try:
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            revoked=True; reason=reason or "runner did not terminate"; _kill_tree(proc); proc.wait(timeout=10)
+            revoked=True
+            reason=reason or "runner did not terminate"
+            _kill_tree(proc)
+            proc.wait(timeout=10)
+    except BaseException as ex:
+        monitor_error=ex
+        revoked=True
+        reason=reason or f"supervisor interrupted: {type(ex).__name__}"
+        try:
+            _kill_tree(proc)
+        except Exception:
+            pass
     finally:
         t1.join(timeout=2); t2.join(timeout=2)
 
-    finalization_error=None
+    finalization_errors=[]
+    try:
+        revoked_lease=revoke_lease(
+            executor_lease["lease"],executor_lease["token"],workspace,adapter
+        )
+        if not revoked_lease.get("removed",False):
+            finalization_errors.append(
+                "executor lease removal failed: "+str(revoked_lease.get("error"))
+            )
+    except Exception as ex:
+        finalization_errors.append(f"executor lease revoke failed: {type(ex).__name__}: {ex}")
+
     try:
         daemon.store.release(
             task_id,run_id,int(lease["owner_epoch"]),
@@ -264,7 +354,13 @@ def supervise_governed_run(
             outcome="cancelled" if revoked else ("completed" if proc.returncode==0 else "failed"),
         )
     except Exception as ex:
-        finalization_error=f"{type(ex).__name__}: {ex}"
+        finalization_errors.append(f"workspace release failed: {type(ex).__name__}: {ex}")
+
+    finalization_error="; ".join(finalization_errors) if finalization_errors else None
+    if monitor_error is not None:
+        if finalization_error and hasattr(monitor_error,"add_note"):
+            monitor_error.add_note(finalization_error)
+        raise monitor_error
 
     return GovernedRunResult(
         task_id=task_id,
