@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, sys, traceback, subprocess
+import json, os, re, sys, traceback, subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -18,8 +18,9 @@ def main() -> int:
     workspace=str(Path(sys.argv[2]).resolve())
     budget=float(sys.argv[3])
     model_name=os.environ.get("FORGEBOSS_MINISWE_MODEL","openai/gpt-5.6-luna")
+    image_name=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm")
 
-    result={"executor":"mini-swe","model":model_name,"cost_usd":0.0,"completed":False,"error":None}
+    result={"executor":"mini-swe","model":model_name,"container_image":image_name,"cost_usd":0.0,"completed":False,"error":None}
     guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
@@ -37,6 +38,8 @@ def main() -> int:
         if v.returncode:
             print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
         authority=nullcontext(None)
+    if governed and not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}",image_name):
+        print("FORGEBOSS SAFE STOP: governed mini-swe image must be digest-pinned.",file=sys.stderr);return 13
     env_obj=None
     try:
         from minisweagent.agents.default import DefaultAgent
@@ -44,16 +47,21 @@ def main() -> int:
         from minisweagent.models.litellm_model import LitellmModel
 
         # Model runs on host; shell runs in a network-disabled container.
-        # The container receives the disposable repo only, not API/GitHub credentials.
+        # Governed mode uses an exact digest-pinned local image and forbids pulls.
         mount=f"type=bind,src={workspace},dst=/workspace"
-        env_obj=DockerEnvironment(
-            image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
-            cwd="/workspace",
-            run_args=["--rm","--network","none","--mount",mount],
-            timeout=180,
-            container_timeout="45m",
-        )
-        model=LitellmModel(model_name=model_name)
+        with authority as control:
+            if governed:
+                runtime=(control or {}).get("runtime") or {}
+                if runtime.get("containerImage")!=image_name:
+                    raise RuntimeError("signed container image differs from runner image")
+            env_obj=DockerEnvironment(
+                image=image_name,
+                cwd="/workspace",
+                run_args=["--rm","--pull=never","--network","none","--mount",mount],
+                timeout=180,
+                container_timeout="45m",
+            )
+            model=LitellmModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.
 Your response must contain exactly ONE bash command block in this format:
 
@@ -71,15 +79,15 @@ echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
 
 You are in {{ cwd }}. Work only inside the bounded repository and obey the task contract.
 """
-        agent=DefaultAgent(
-            model,env_obj,
-            system_template=system_template,
-            instance_template=instance_template,
-            cost_limit=budget,
-            step_limit=30,
-            wall_time_limit_seconds=900,
-        )
-        task=f"""You are a bounded coding worker inside ForgeBoss. Product: SiteBoss.
+            agent=DefaultAgent(
+                model,env_obj,
+                system_template=system_template,
+                instance_template=instance_template,
+                cost_limit=budget,
+                step_limit=30,
+                wall_time_limit_seconds=900,
+            )
+            task=f"""You are a bounded coding worker inside ForgeBoss. Product: SiteBoss.
 Objective: {packet.get('objective','')}
 
 IMMUTABLE RULES:
@@ -94,7 +102,6 @@ IMMUTABLE RULES:
 Required acceptance intent:
 {json.dumps(packet.get('acceptance_criteria',[]))}
 """
-        with authority:
             agent.run(task)
         result["cost_usd"]=float(getattr(agent,"cost",0.0) or 0.0)
         result["calls"]=int(getattr(agent,"n_calls",0) or 0)
