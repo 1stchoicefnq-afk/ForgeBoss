@@ -516,14 +516,17 @@ def _control_authority(raw,lease,workspace,executor):
     if [x.casefold() for x in ea]!=[x.casefold() for x in la]:raise SecurityError("control envelope allowedPaths differ from executor lease")
     unsigned=json.dumps(env,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
     return {"taskId":task,"runId":run,"ownerEpoch":epoch,"budgetUsd":budget,"worktreePath":str(work),"runtime":runtime,"expiresAt":float(env["expiresAt"]),"allowedPaths":ea,"envelopeSha256":hashlib.sha256(unsigned).hexdigest()}
-def issue(packet_path,workspace,executor,ttl=1200):
+def issue_lease(packet_path,workspace,executor,ttl=1200):
     pp=Path(packet_path);work=Path(workspace).resolve();packet=json.loads(pp.read_text(encoding="utf-8"));allowed,context=validate_packet(packet)
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} write-capable execution is quarantined until OS/network isolation is verified")
     with _WorkspaceFence(work):
         assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
         lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
         lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
-    print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
+    return {"ok":True,"lease":str(lp),"token":token}
+
+def issue(packet_path,workspace,executor,ttl=1200):
+    print(json.dumps(issue_lease(packet_path,workspace,executor,ttl)));return 0
 def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
     if time.time()>float(lease.get("expires_at",0)):raise SecurityError("executor lease expired")
