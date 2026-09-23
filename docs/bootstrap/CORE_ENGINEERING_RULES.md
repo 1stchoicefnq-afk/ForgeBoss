@@ -3,9 +3,9 @@
 Status: product-level rules for future project mode  
 Tracking issue: #169
 
-These rules describe the minimum project-engineering behavior ForgeBoss should automatically apply when operating on user projects.
+These rules describe the minimum project-engineering behavior ForgeBoss should automatically apply when operating on user projects and when building ForgeBoss itself.
 
-## Rules
+## Permanent rules
 
 1. Inspect before editing.
 2. Reuse proven components before rebuilding them. This is a permanent, non-optional ForgeBoss rule.
@@ -19,24 +19,44 @@ These rules describe the minimum project-engineering behavior ForgeBoss should a
 10. Check alternate, historical and underlying execution paths.
 11. Put important permission checks at the true action/mutation boundary.
 12. Prefer one authoritative implementation for important state.
-13. Fail closed when safety or authority is unknown.
+13. Fail closed when safety, identity, evidence or authority is unknown.
 14. Require human approval for high-risk actions unless the owner explicitly delegated that exact authority.
 15. Preview destructive actions where practical.
 16. Record material assumptions as durable decisions.
-17. Do not silently invent missing requirements.
+17. Do not silently invent missing requirements, evidence, metrics or causes.
 18. Test both successful and failure paths.
-19. Test concurrency, stale state, retries and partial failure where the domain requires it.
+19. Test concurrency, stale state, retries, restart and partial failure where the domain requires it.
 20. Do not call portable proof native-platform proof.
 21. Do not claim tests that were not actually run.
-22. Do not claim FIXED, VERIFIED, SECURE, RELEASE READY or PRODUCTION READY without supporting evidence.
+22. Do not claim FIXED, VERIFIED, SECURE, RELEASE READY or PRODUCTION READY without supporting exact evidence.
 23. Keep project documentation concise, authoritative and machine-loadable.
-24. Keep secrets out of source control.
+24. Keep secrets out of source control, prompts, logs and evidence exports.
 25. Keep model providers replaceable; provider chat history must not be the only project memory.
 26. Preserve exact evidence sufficient for another worker/reviewer to reproduce important claims.
 27. Prefer reversible changes and known-good rollback paths.
 28. Make risky authority explicit rather than implicit.
 29. If a requirement materially affects money, security, privacy, permissions, data, platform support or irreversible architecture, record and surface the decision.
 30. The final objective is not simply code generation. It is a product whose important behavior can be tested, reviewed and proven.
+31. Every material worker/task/run must have durable identity and provenance.
+32. Expected work with no evidence is SILENT; unexpected work must be surfaced rather than ignored.
+33. A paused worker/routine that still executes is unexpected activity and must be surfaced.
+34. Learned/self-improving state cannot rewrite base rules, permissions, canonical evidence or acceptance state.
+35. Only independently proven repair lessons may be automatically replayed, and only when authoritative preconditions still match.
+36. Do not perform blind model/paid retries. A retry must be justified by new evidence, a corrected precondition, or a materially different bounded strategy.
+37. Prefer deterministic/local/free validation before buying another model call when it can answer the question reliably.
+38. Evidence from an older artifact/snapshot/run cannot prove a newer one.
+39. Final release proof must be bound to the exact final artifact/snapshot and exact evidence set.
+40. UI status must be derived from canonical stored state/evidence, not model-generated prose.
+41. Long-running work must be resumable/reconcilable from durable state after ordinary process/worker interruption.
+42. Providers, worker engines, gateways, workflow engines, sandboxes, browsers, memory engines, integrations and other commodity infrastructure should remain replaceable behind ForgeBoss-owned interfaces where practical.
+43. Installed workers, packs, plugins, skills or dependencies cannot grant themselves broader capabilities or authority.
+44. Chief of Staff is observer/reporting only and cannot become a mutation/approval authority.
+45. Routine worker notifications should be consolidated into an owner brief where practical; urgent safety/authority failures may interrupt immediately.
+46. Worker Pack installation/upgrades must preserve provenance and owner/project modifications and must not silently overwrite conflicts.
+47. Desktop, mobile and web surfaces must consume the same canonical ForgeBoss project/run truth.
+48. The end user should not need a separate AI chat, Git client, PowerShell/terminal workflow or coding-agent UI to use ForgeBoss's normal product path.
+49. Release proving must produce an explicit outcome such as READY, NEEDS_REPAIR, BLOCKED or PROOF_INCOMPLETE.
+50. Missing or unverifiable evidence must never be translated into READY.
 
 ## Permanent reuse-before-build rule
 
@@ -57,6 +77,71 @@ For substantial work, the implementation plan must contain an explicit `UPSTREAM
 
 This rule applies to ForgeBoss itself and to software projects ForgeBoss builds.
 
+## Retry and spend rule
+
+A retry is not a plan.
+
+Before another paid/model attempt after a failure, ForgeBoss must identify at least one of:
+
+- new evidence;
+- corrected/missing context;
+- corrected authority/precondition;
+- a smaller/focused target;
+- a materially different strategy;
+- a different worker/tool chosen for a recorded reason.
+
+If none exists, another paid/model attempt is a blind retry and must be blocked.
+
+Deterministic validators, existing tests, local indexes, parsers, static analysis, stored evidence and other non-model checks should be used first when they can answer the question reliably.
+
+## Evidence-finality rule
+
+All acceptance/proof claims must identify the exact subject they prove.
+
+Important evidence should bind, as applicable, to:
+
+- project;
+- task;
+- run;
+- worker identity;
+- artifact/snapshot/commit/hash;
+- test/reviewer/prover identity;
+- timestamp/version;
+- authoritative rule/policy version.
+
+If the subject changes, prior proof becomes historical evidence and cannot automatically prove the new subject.
+
+## Self-improvement rule
+
+ForgeBoss may accumulate proven repair lessons, skills, routing knowledge and performance history.
+
+Self-improvement is subordinate to immutable governance.
+
+Learned state must never:
+
+- modify its own acceptance criteria after seeing a result merely to make it pass;
+- widen authority, scope, tools, spend or permissions;
+- weaken builder/reviewer separation;
+- alter canonical evidence/history;
+- silently edit permanent rules;
+- bypass required owner approval;
+- promote itself or its own work.
+
+## Worker Pack rule
+
+Reusable worker capability should be packaged as versioned Worker Packs where practical.
+
+Packs must declare identity/version/capabilities/routines/compatibility and remain descriptive rather than authoritative.
+
+Installation/upgrades must:
+
+- record upstream/provenance/license/version/hash;
+- preserve owner/project modifications;
+- preview conflicts;
+- avoid silent overwrite;
+- run pack self-tests before activation where practical;
+- require normal ForgeBoss authority for any capability actually exercised.
+
 ## Required questions for every substantial feature
 
 ForgeBoss should be able to answer:
@@ -70,6 +155,8 @@ ForgeBoss should be able to answer:
 - How will we test it?
 - How could the intended path be bypassed?
 - What evidence proves the result?
+- What exact artifact/snapshot does that evidence prove?
+- How will the work resume after interruption?
 - What remains uncertain?
 - Does the owner need to approve anything before proceeding?
 
