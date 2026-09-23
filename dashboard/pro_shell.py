@@ -193,12 +193,12 @@ def tasks():
  return out
 def costs():
  items=[];total=0.0
- p=ROOT/"state"/"tournament"/"paid-tournament-last.json"
+ p=DASH_STATE_ROOT/"tournament"/"paid-tournament-last.json"
  if p.exists():
   for x in safe_json(p).get("results",[]):
    c=x.get("reported_cost_usd")
    if c is not None:c=float(c);total+=c;items.append({"source":x.get("executor"),"cost":c})
- p=ROOT/"state"/"league"/"league-last.json"
+ p=DASH_STATE_ROOT/"league"/"league-last.json"
  if p.exists():
   c=safe_json(p).get("reported_measured_spend_usd")
   if c is not None:c=float(c);total+=c;items.append({"source":"Category league","cost":c})
@@ -317,7 +317,7 @@ class Api:
 
     def _get_self_build_launcher(self,client):
         with self._self_build_lock:
-            terminal={"COMPLETE","FAILED","SAFE_STOPPED","PREFLIGHT_BLOCKED"}
+            terminal={"COMPLETE","FAILED","SAFE_STOPPED","PREFLIGHT_BLOCKED","P0_PROOF_PASS","P0_PROOF_FAILED"}
             active=any(str(x.get("phase") or "") not in terminal for x in self._self_build_sessions.values())
             if self._self_build_launcher is None or not active:
                 self._self_build_launcher=SelfBuildLauncher(
@@ -580,7 +580,7 @@ class Api:
         log=fb.LOG.read_text(encoding="utf-8",errors="replace")[-50000:] if fb.LOG.exists() else ""
         s["activity"]=friendly_activity(log)
 
-        rp=ROOT/"state"/"tournament"/"retest-last.json"
+        rp=DASH_STATE_ROOT/"tournament"/"retest-last.json"
         r=safe_json(rp) if rp.exists() else {}
         rows={x.get("executor"):x for x in r.get("results",[])}
         def rr(name):
@@ -595,7 +595,7 @@ class Api:
             return {"status":"PASS" if x.get("acceptance_passed") else "FAIL","failures":failures}
         s["retest"]={"mini-swe":rr("mini-swe"),"openhands":rr("openhands"),"winner":r.get("winner"),"new_spend":0.0}
 
-        lp=ROOT/"state"/"league"/"league-last.json"
+        lp=DASH_STATE_ROOT/"league"/"league-last.json"
         league=safe_json(lp) if lp.exists() else {}
         s["league"]={"winners":league.get("winners",{}),"spend":league.get("reported_measured_spend_usd")}
         s["owner_settings"]=load_settings();s["tasks"]=tasks();s["costs"]=costs()
@@ -623,7 +623,7 @@ class Api:
         """Read-only technical drill-down for a friendly activity event."""
         chunks=[]
         if key=="retest":
-            rp=ROOT/"state"/"tournament"/"retest-last.json"
+            rp=DASH_STATE_ROOT/"tournament"/"retest-last.json"
             if rp.exists():
                 try:
                     j=json.loads(rp.read_text(encoding="utf-8-sig"))
@@ -663,12 +663,34 @@ class Api:
         st=fb.load_status()
         meta=st.get("last_run_report") or st.get("last_cycle_report") or {}
         p=meta.get("text")
-        if not p:
-            reason=st.get("last_refusal_reason") or st.get("message")
-            if reason:return {"ok":True,"text":"FORGEBOSS LIVE DIAGNOSIS\n"+"="*72+"\n\n"+str(reason)}
-            return {"ok":False,"text":"No run diagnosis exists yet."}
-        try:return {"ok":True,"text":Path(p).read_text(encoding="utf-8")}
-        except Exception as e:return {"ok":False,"text":"Could not read run report: "+str(e)}
+        if p:
+            try:return {"ok":True,"text":Path(p).read_text(encoding="utf-8")}
+            except Exception as e:return {"ok":False,"text":"Could not read run report: "+str(e)}
+        try:
+            sessions=sorted(SELF_BUILD_EVIDENCE_ROOT.glob("*.json"),key=lambda x:x.stat().st_mtime,reverse=True)
+            if sessions:
+                session=json.loads(sessions[0].read_text(encoding="utf-8"))
+                chunks=[
+                    "FORGEBOSS P0 SELF-BUILD REPORT\n","="*72+"\n\n",
+                    "Session evidence: "+str(sessions[0])+"\n\n",
+                    json.dumps(session,indent=2,sort_keys=True,ensure_ascii=False),
+                ]
+                failures=sorted(
+                    (DASH_STATE_ROOT/"self-build-launch").glob("**/initial-launch-failure.json"),
+                    key=lambda x:x.stat().st_mtime,reverse=True,
+                )
+                if failures:
+                    chunks.extend([
+                        "\n\nINITIAL LAUNCH DIAGNOSTIC\n","="*72+"\n",
+                        "Diagnostic: "+str(failures[0])+"\n\n",
+                        failures[0].read_text(encoding="utf-8"),
+                    ])
+                return {"ok":True,"text":"".join(chunks)}
+        except Exception as e:
+            return {"ok":False,"text":"Could not read P0 self-build report: "+str(e)}
+        reason=st.get("last_refusal_reason") or st.get("message")
+        if reason:return {"ok":True,"text":"FORGEBOSS LIVE DIAGNOSIS\n"+"="*72+"\n\n"+str(reason)}
+        return {"ok":False,"text":"No run diagnosis exists yet."}
 
     def publish_last_run_report(self):
         meta=fb.load_status().get("last_run_report") or {}
@@ -708,11 +730,11 @@ class Api:
                 if proof_mode and int(plan["cycle_target"])!=3:
                     return {"ok":False,"blocked":True,"phase":"PROOF_BUDGET_BLOCKED","message":"P0 three-cycle proof mode requires at least $6.00 owner budget so all three $2.00 protected cycle caps are reserved."}
                 with self._self_build_lock:
-                    terminal={"COMPLETE","FAILED","SAFE_STOPPED"}
+                    terminal={"COMPLETE","FAILED","SAFE_STOPPED","P0_PROOF_PASS","P0_PROOF_FAILED"}
                     active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
                     if active:
                         return {"ok":False,"blocked":True,"phase":"SELF_BUILD_SESSION_ACTIVE","message":"A ForgeBoss self-build session is already active. Stop it safely or let it finish before starting another."}
-                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=180.0)
+                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=300.0)
                 launcher=self._get_self_build_launcher(client)
                 session_id="fl1s-"+uuid.uuid4().hex[:12]
                 with self._self_build_lock:

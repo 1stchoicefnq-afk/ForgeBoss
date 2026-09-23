@@ -40,6 +40,18 @@ def _fd_identity(st) -> tuple[int, int, int, int, int]:
     return (int(st.st_dev), int(st.st_ino), int(st.st_mode), int(getattr(st, "st_uid", -1)), int(getattr(st, "st_gid", -1)))
 
 
+def _create_state_dir(path: Path) -> None:
+    """Create protected workspace-state storage without CPython's Windows 0o700 ACL rewrite.
+
+    The machine-anchored protected parent is already ACL-hardened. On Windows,
+    ordinary mkdir inherits that trusted ACL; on POSIX we retain mode 0700.
+    """
+    if os.name == "nt":
+        path.mkdir()
+    else:
+        path.mkdir(mode=0o700)
+
+
 class ProtectedWorkspaceState:
     """Workspace state anchored to the accepted service-owned protected root.
 
@@ -64,7 +76,7 @@ class ProtectedWorkspaceState:
         if os.name == "nt":
             try:
                 if not self.state_dir.exists():
-                    self.state_dir.mkdir(mode=0o700)
+                    _create_state_dir(self.state_dir)
                     _fsync_dir(self.root)
                 self._assert_windows_state_dir()
             except ProtectedWorkspaceStateError:

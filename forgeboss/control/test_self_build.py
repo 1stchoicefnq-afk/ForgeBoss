@@ -22,6 +22,17 @@ class FinishLineOnePlanTests(unittest.TestCase):
         self.assertNotEqual(b.builder_id,b2.builder_id)
         self.assertEqual(b2.replacement_for,b.task_id)
 
+    def test_different_run_ids_produce_distinct_canary_modules(self):
+        one=finish_line_one_plan(KG,"fl1-generation-one")
+        two=finish_line_one_plan(KG,"fl1-generation-two")
+        self.assertNotEqual(one.initial_workers[0].allowed_files,two.initial_workers[0].allowed_files)
+        self.assertNotEqual(one.initial_workers[1].allowed_files,two.initial_workers[1].allowed_files)
+        self.assertEqual(one.initial_workers[1].allowed_files,one.replacement_workers[0].allowed_files)
+        for plan in (one,two):
+            for worker in plan.initial_workers:
+                self.assertIn("g_",worker.allowed_files[0])
+                self.assertIn(worker.allowed_files[0].removesuffix(".py").replace("/","."),worker.required_tests[0])
+
     def test_global_two_dollar_cap_reserves_reassignment_headroom(self):
         plan=finish_line_one_plan(KG,"fl1-test")
         values=[x.budget_usd for x in plan.initial_workers+plan.replacement_workers]

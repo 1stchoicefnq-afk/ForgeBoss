@@ -165,6 +165,7 @@ def evaluate_p0_session(record:dict,*,receipt_public_key_b64:str|None=None)->dic
     result={
         "schema":1,"session_id":session_id,
         "status":"PASS" if not blockers else "FAIL",
+        "trust_grade":"OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP",
         "cycle_count":len(ordered),"accepted_revisions":accepted,
         "rollback_proven":isinstance(proof,dict) and proof.get("status")=="ROLLBACK_PROVEN",
         "receipt_signatures_verified":not any(str(x.get("name") or "").endswith("signature-verified") or x.get("name")=="receipt-public-key" for x in blockers),

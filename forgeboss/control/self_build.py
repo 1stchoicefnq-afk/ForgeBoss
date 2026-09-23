@@ -175,15 +175,20 @@ def finish_line_one_plan(known_good_sha:str,run_id:str|None=None)->SelfBuildRunP
     kg=_sha(known_good_sha)
     rid=run_id or ("fl1-"+uuid.uuid4().hex[:12])
     tag=hashlib.sha256(rid.encode("utf-8")).hexdigest()[:12]
+    generation_suffix=f"g_{tag}"
+    learning_file=f"forgeboss/learning/test_fl1_reuse_regression_{generation_suffix}.py"
+    learning_module=f"forgeboss.learning.test_fl1_reuse_regression_{generation_suffix}"
+    security_file=f"forgeboss/security/test_fl1_packet_validation_{generation_suffix}.py"
+    security_module=f"forgeboss.security.test_fl1_packet_validation_{generation_suffix}"
     a=WorkerPlan(
         task_id=f"fl1-a-{tag}",
         builder_id="builder-a",
         branch=f"forgeboss/fl1-selfbuild-a-{rid}",
-        allowed_files=("forgeboss/learning/test_fl1_reuse_regression.py",),
+        allowed_files=(learning_file,),
         context_files=("forgeboss/learning/policy.py","forgeboss/learning/store.py"),
-        required_tests=("python -m unittest forgeboss.learning.test_fl1_reuse_regression -v",),
+        required_tests=(f"python -m unittest {learning_module} -v",),
         acceptance_criteria=(
-            "Add deterministic regressions proving failed, superseded, or non-promotable learning evidence cannot become reusable while valid verified lessons remain reusable across restart.",
+            f"Create {learning_file} with deterministic regressions proving failed, superseded, or non-promotable learning evidence cannot become reusable while valid verified lessons remain reusable across restart. This run-specific module must contain real assertions and pass its focused unittest command.",
             "Do not modify production learning code in the first canary.",
         ),
         budget_usd="1.00",max_changed_files=1,max_changed_lines=250,
@@ -192,11 +197,11 @@ def finish_line_one_plan(known_good_sha:str,run_id:str|None=None)->SelfBuildRunP
         task_id=f"fl1-b-{tag}",
         builder_id="builder-b",
         branch=f"forgeboss/fl1-selfbuild-b-{rid}",
-        allowed_files=("forgeboss/security/test_fl1_packet_validation.py",),
+        allowed_files=(security_file,),
         context_files=("forgeboss/security/executor_guard.py",),
-        required_tests=("python -m unittest forgeboss.security.test_fl1_packet_validation -v",),
+        required_tests=(f"python -m unittest {security_module} -v",),
         acceptance_criteria=(
-            "Add deterministic fail-closed regressions for malformed worker packets: missing identity/base, unsafe writable paths, non-finite budget, and unexpected authority structure.",
+            f"Create {security_file} with deterministic fail-closed regressions for malformed worker packets: missing identity/base, unsafe writable paths, non-finite budget, and unexpected authority structure. This run-specific module must contain real assertions and pass its focused unittest command.",
             "Do not modify production security/control code in the first canary.",
         ),
         budget_usd="0.50",max_changed_files=1,max_changed_lines=250,

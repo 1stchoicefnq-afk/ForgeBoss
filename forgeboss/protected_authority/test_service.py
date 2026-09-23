@@ -64,6 +64,14 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
     def tearDown(self):self.td.cleanup()
     def test_receipt_is_signed_and_forgery_or_result_swap_fails(self):
         out=self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX);self.assertTrue(verify_signed_receipt(out,self.public_b64));forged=dict(out);forged['receipt']=dict(out['receipt']);forged['receipt']['repository']='evil/repo';self.assertFalse(verify_signed_receipt(forged,self.public_b64));swapped=dict(out);swapped['result']={'ok':False};self.assertFalse(verify_signed_receipt(swapped,self.public_b64));self.assertNotIn(self.secrets.private_key,canonical_json(out).decode())
+    def test_explicit_offline_mode_denies_github_without_private_key_read(self):
+        self.service.github_enabled=False
+        with self.assertRaises(AuthorityError) as cm:
+            self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX)
+        self.assertEqual(cm.exception.code,'GITHUB_NOT_CONFIGURED')
+        self.assertEqual(self.secrets.github_reads,0)
+        self.assertEqual(self.backend.calls,[])
+
     def test_peer_context_required(self):
         r=req('read_github_control',{'rootPr':10,'preferredRepairPr':0})
         with self.assertRaises(TypeError):self.service.handle(r)

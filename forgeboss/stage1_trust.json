@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "stage": "Stage 1 bootstrap",
+  "trustGrade": "OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP",
+  "principalSeparation": false,
+  "statement": "The Stage 1 bootstrap runs controller and protected authority under the same trusted local Windows user. P0 receipts prove integrity and workflow execution for the owner-declared bootstrap, not independence from a malicious controller. Principal-separated controller/authority/reviewer hardening is the first Stage 2 priority."
+}

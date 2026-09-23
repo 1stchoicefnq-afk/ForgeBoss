@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
 from forgeboss.control.self_build_freeze import SelfBuildFreezeError,freeze_candidate
-from forgeboss.control.process_supervisor import ProcessSupervisor
+from forgeboss.control.process_supervisor import ProcessSupervisor,SupervisorError
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 
 
@@ -127,7 +127,8 @@ class LauncherTests(unittest.TestCase):
     def launcher(self,supervisor=None,freeze_fn=freeze_candidate):
         return SelfBuildLauncher(
             client=self.client,supervisor=supervisor or self.supervisor,state_root=self.state,
-            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,freeze_fn=freeze_fn,clock=lambda:1000.0,
+            python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,freeze_fn=freeze_fn,
+            container_cleanup_fn=lambda **kw:{"container_empty":True,"observed_container_ids":[]},clock=lambda:1000.0,
         )
 
     def test_launch_initial_binds_two_workers_to_exact_packet_and_service_attestation(self):
@@ -158,6 +159,43 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(out["concurrent_proof"]["states"],["RUNNING","RUNNING"])
         self.assertEqual(out["concurrent_proof"]["builders"],["builder-a","builder-b"])
 
+    def test_initial_workers_are_fully_staged_before_either_process_starts(self):
+        launcher=self.launcher()
+        events=[]
+        original_prepare=launcher._prepare_worker_launch
+        original_start=launcher._start_prepared_worker
+        def prepare(prepared_run,item):
+            events.append("prepare-"+item["builder_id"])
+            return original_prepare(prepared_run,item)
+        def start(staged):
+            events.append("start-"+staged["builder_id"])
+            return original_start(staged)
+        with patch.object(launcher,"_prepare_worker_launch",side_effect=prepare), \
+             patch.object(launcher,"_start_prepared_worker",side_effect=start):
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(events,[
+            "prepare-builder-a","prepare-builder-b",
+            "start-builder-a","start-builder-b",
+        ])
+
+    def test_concurrency_failure_persists_worker_exit_diagnostic(self):
+        class FailedB(Supervisor):
+            def get(self,worker_id,*,refresh=False):
+                row=super().get(worker_id,refresh=refresh)
+                if worker_id=="builder-b":
+                    return A(row.worker_id,row.generation,"FAILED",row.pid,exit_code=13,started_at=row.started_at,containment_id=row.containment_id)
+                return row
+        launcher=self.launcher(FailedB())
+        with self.assertRaises(SelfBuildLaunchError) as cm:
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(cm.exception.code,"CONCURRENCY_NOT_PROVEN")
+        report=self.state/"self-build-launch"/"fl1-run"/"initial-launch-failure.json"
+        self.assertTrue(report.is_file())
+        data=json.loads(report.read_text(encoding="utf-8"))
+        rows={x["builder_id"]:x for x in data["workers"]}
+        self.assertEqual(rows["builder-b"]["state"],"FAILED")
+        self.assertEqual(rows["builder-b"]["exit_code"],13)
+
     def test_fresh_replacement_is_appended_without_erasing_initial_evidence(self):
         out=self.launcher().launch_initial(self.prepared)
         replacement=self._item("builder-b2","task-b2",self.root/"wb2","0.50")
@@ -179,6 +217,31 @@ class LauncherTests(unittest.TestCase):
         revoked={x["task_id"] for x in self.client.revoked}
         self.assertIn("task-a",revoked)
         self.assertIn("task-b",revoked)
+
+    def test_second_prelaunch_failure_revokes_both_unstarted_authorities_and_reports(self):
+        calls=[]
+        def issue(packet,workspace,executor,ttl):
+            calls.append(packet)
+            if len(calls)==2:
+                raise RuntimeError("lease preparation boom")
+            return {"ok":True,"lease":str(self.state/"lease-prep.json"),"token":"TOKEN-PREP"}
+        launcher=SelfBuildLauncher(
+            client=self.client,supervisor=self.supervisor,state_root=self.state,
+            python_executable=self.python,runner_path=self.runner,issue_lease_fn=issue,
+            freeze_fn=freeze_candidate,
+            container_cleanup_fn=lambda **kw:{"container_empty":True,"observed_container_ids":[]},
+            clock=lambda:1000.0,
+        )
+        with self.assertRaises(RuntimeError):
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(self.supervisor.launched,[])
+        revoked={x["task_id"] for x in self.client.revoked}
+        self.assertEqual(revoked,{"task-a","task-b"})
+        report=self.state/"self-build-launch"/"fl1-run"/"initial-launch-failure.json"
+        self.assertTrue(report.is_file())
+        data=json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(data["error_code"],"RuntimeError")
+        self.assertIn("lease preparation boom",data["message"])
 
     def test_public_launch_record_never_contains_executor_lease_token(self):
         out=self.launcher().launch_initial(self.prepared)
@@ -203,6 +266,29 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertTrue(result["stopped"])
         self.assertEqual(self.client.revoked[-1]["task_id"],"task-b")
+        self.assertTrue(result["docker_evidence"]["container_empty"])
+
+    def test_complete_worker_surfaces_persisted_worker_error(self):
+        class FailedComplete(Supervisor):
+            def complete(self,worker_id,expected_generation,*,timeout=5.0):
+                raise SupervisorError("WORKER_COMPLETION_UNPROVEN","worker-exit-nonzero")
+        sup=FailedComplete()
+        launcher=self.launcher(sup)
+        out=launcher.launch_initial(self.prepared)
+        first=out["workers"][0]
+        Path(first["result_file"]).parent.mkdir(parents=True,exist_ok=True)
+        Path(first["result_file"]).write_text(json.dumps({
+            "schema":1,"executor":"mini-swe","model":"test","cost_usd":0.0,"calls":0,
+            "completed":False,"error":"protected paid-start guard denied: fixture",
+            "task_id":"task-a","builder_id":"builder-a","run_id":"fl1-run",
+            "expected_head_revision":"a"*40,"workspace":str(self.worka.resolve()),
+            "packet_sha256":first["packet_sha256"],"postflight":None,
+        }),encoding="utf-8")
+        with self.assertRaises(SelfBuildLaunchError) as cm:
+            launcher.complete_worker(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
+        self.assertEqual(cm.exception.code,"WORKER_COMPLETION_UNPROVEN")
+        self.assertIn("builder-a",str(cm.exception))
+        self.assertIn("protected paid-start guard denied",str(cm.exception))
 
     def test_complete_worker_freezes_then_records_protected_handoff(self):
         out=self.launcher(freeze_fn=lambda **kw:{

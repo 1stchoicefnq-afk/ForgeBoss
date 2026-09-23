@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -50,6 +52,35 @@ def _packet_sha(path:Path)->str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _cleanup_labeled_container(*,run_id:str,builder_id:str)->dict:
+    docker=shutil.which("docker.exe") or shutil.which("docker")
+    if not docker:
+        raise SelfBuildLaunchError("DOCKER_CLI_MISSING","Docker executable disappeared during worker containment proof")
+    filters=[
+        "--filter",f"label=forgeboss.stage1.run={run_id}",
+        "--filter",f"label=forgeboss.stage1.worker={builder_id}",
+    ]
+    empty_streak=0
+    observed=[]
+    for _ in range(12):
+        q=subprocess.run([docker,"ps","-aq",*filters],capture_output=True,text=True,timeout=15,check=False)
+        if q.returncode:
+            raise SelfBuildLaunchError("DOCKER_CONTAINMENT_QUERY_FAILED",(q.stderr or q.stdout or "")[-1000:])
+        ids=[x.strip() for x in (q.stdout or "").splitlines() if x.strip()]
+        observed.extend(x for x in ids if x not in observed)
+        if ids:
+            empty_streak=0
+            rm=subprocess.run([docker,"rm","-f",*ids],capture_output=True,text=True,timeout=30,check=False)
+            if rm.returncode:
+                raise SelfBuildLaunchError("DOCKER_CONTAINMENT_CLEANUP_FAILED",(rm.stderr or rm.stdout or "")[-1000:])
+        else:
+            empty_streak+=1
+            if empty_streak>=2:
+                return {"container_empty":True,"observed_container_ids":observed}
+        time.sleep(0.2)
+    raise SelfBuildLaunchError("DOCKER_CONTAINMENT_NOT_EMPTY","Docker worker container remained after bounded cleanup")
+
+
 class SelfBuildLauncher:
     """Launches already-prepared ForgeBoss workers.
 
@@ -59,12 +90,13 @@ class SelfBuildLauncher:
     """
     def __init__(self,*,client:ProtectedAuthorityClient,supervisor:ProcessSupervisor,
                  state_root,python_executable=None,runner_path=None,
-                 issue_lease_fn:Callable=issue_lease,freeze_fn:Callable=freeze_candidate,clock:Callable=time.time):
+                 issue_lease_fn:Callable=issue_lease,freeze_fn:Callable=freeze_candidate,
+                 container_cleanup_fn:Callable=_cleanup_labeled_container,clock:Callable=time.time):
         if not isinstance(client,ProtectedAuthorityClient):
             raise SelfBuildLaunchError("AUTHORITY_CLIENT_REQUIRED","protected authority client required")
         if not isinstance(supervisor,ProcessSupervisor):
             raise SelfBuildLaunchError("SUPERVISOR_REQUIRED","ProcessSupervisor required")
-        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.freeze_fn=freeze_fn;self.clock=clock
+        self.client=client;self.supervisor=supervisor;self.issue_lease_fn=issue_lease_fn;self.freeze_fn=freeze_fn;self.container_cleanup_fn=container_cleanup_fn;self.clock=clock
         self.state_root=Path(state_root).expanduser().resolve()
         source_root=Path(__file__).resolve().parents[2]
         if _inside(self.state_root,source_root):
@@ -120,11 +152,12 @@ class SelfBuildLauncher:
             "FORGEBOSS_PROTECTED_LAUNCH_BUNDLE":str(bundle_path),
             "FORGEBOSS_RESULT_FILE":str(result_path),
             "FORGEBOSS_STATE_ROOT":str(self.state_root),
+            "PYTHONDONTWRITEBYTECODE":"1",
             "PYTHONUTF8":"1",
         })
         return env
 
-    def launch_worker(self,prepared_run:dict,item:dict)->dict:
+    def _prepare_worker_launch(self,prepared_run:dict,item:dict)->dict:
         run_id=str(prepared_run.get("run_id") or "")
         builder_id=str(item.get("builder_id") or "")
         if not run_id or not builder_id:
@@ -135,7 +168,6 @@ class SelfBuildLauncher:
         _atomic_json(paths["packet"],item["packet"])
         packet_sha=_packet_sha(paths["packet"])
         lease=self.issue_lease_fn(str(paths["packet"]),item["worktree"],"mini-swe",1200)
-        # The lease token is intentionally never written into packet/bundle/result/run state.
         signed=self._launch_payload(item,packet_sha,self.clock()+600.0)
         bundle=self.client.attest_launch_payload(signed)
         _atomic_json(paths["bundle"],bundle)
@@ -144,8 +176,13 @@ class SelfBuildLauncher:
             str(self.python),str(self.runner),str(paths["packet"]),
             str(Path(item["worktree"]).resolve()),str(item["authority"]["budget_usd"]),
         ]
+        return {"run_id":run_id,"builder_id":builder_id,"item":item,"paths":paths,
+                "packet_sha":packet_sha,"env":env,"argv":argv}
+
+    def _start_prepared_worker(self,prepared:dict)->dict:
+        run_id=prepared["run_id"];builder_id=prepared["builder_id"];item=prepared["item"];paths=prepared["paths"]
         try:
-            assignment=self.supervisor.launch(builder_id,argv,cwd=item["worktree"],env=env)
+            assignment=self.supervisor.launch(builder_id,prepared["argv"],cwd=item["worktree"],env=prepared["env"])
         except Exception as ex:
             try:self.client.revoke_self_build_worker(
                 run_id=run_id,task_id=item["task_id"],
@@ -154,34 +191,53 @@ class SelfBuildLauncher:
             )
             except Exception:pass
             raise SelfBuildLaunchError("WORKER_LAUNCH_FAILED",str(ex)) from ex
-        public={
-            "builder_id":builder_id,
-            "task_id":item["task_id"],
-            "generation":assignment.generation,
-            "pid":assignment.pid,
-            "state":assignment.state,
-            "started_at":assignment.started_at,
-            "containment_id":assignment.containment_id,
-            "worktree":item["worktree"],
-            "packet_sha256":packet_sha,
-            "packet_file":str(paths["packet"]),
-            "launch_bundle_file":str(paths["bundle"]),
-            "result_file":str(paths["result"]),
+        return {
+            "builder_id":builder_id,"task_id":item["task_id"],"generation":assignment.generation,
+            "pid":assignment.pid,"state":assignment.state,"started_at":assignment.started_at,
+            "containment_id":assignment.containment_id,"worktree":item["worktree"],
+            "packet_sha256":prepared["packet_sha"],"packet_file":str(paths["packet"]),
+            "launch_bundle_file":str(paths["bundle"]),"result_file":str(paths["result"]),
             "budget_usd":str(item["authority"]["budget_usd"]),
         }
-        return public
+
+    def _initial_launch_failure(self,prepared_run:dict,launched:list[dict],live:list)->dict:
+        rows=[];by_id={x.get("builder_id"):x for x in launched}
+        for current in live:
+            public=by_id.get(current.worker_id) or {}
+            result=None;result_file=public.get("result_file")
+            if result_file and Path(result_file).is_file():
+                try:result=json.loads(Path(result_file).read_text(encoding="utf-8"))
+                except Exception:result={"completed":False,"error":"result evidence unreadable"}
+            rows.append({
+                "builder_id":current.worker_id,"generation":current.generation,"pid":current.pid,
+                "state":current.state,"exit_code":current.exit_code,"containment_id":current.containment_id,
+                "result_file":result_file,"result":result,
+            })
+        evidence={"schema":1,"run_id":str(prepared_run.get("run_id") or ""),
+                  "error_code":"CONCURRENCY_NOT_PROVEN",
+                  "message":"both initial builders were not simultaneously RUNNING",
+                  "workers":rows,"captured_at":self.clock()}
+        _atomic_json(self.run_root/evidence["run_id"]/"initial-launch-failure.json",evidence)
+        return evidence
+
+    def launch_worker(self,prepared_run:dict,item:dict)->dict:
+        return self._start_prepared_worker(self._prepare_worker_launch(prepared_run,item))
 
     def launch_initial(self,prepared_run:dict)->dict:
         builders=list(prepared_run.get("builders") or [])
         if len(builders)!=2:
             raise SelfBuildLaunchError("INITIAL_BUILDER_COUNT_INVALID","first FL1 run requires exactly two initial builders")
-        launched=[]
+        staged=[];launched=[]
         try:
             for item in builders:
-                launched.append(self.launch_worker(prepared_run,item))
+                staged.append(self._prepare_worker_launch(prepared_run,item))
+            for prepared in staged:
+                launched.append(self._start_prepared_worker(prepared))
             live=[self.supervisor.get(x["builder_id"],refresh=True) for x in launched]
             if any(x.state!="RUNNING" for x in live):
-                raise SelfBuildLaunchError("CONCURRENCY_NOT_PROVEN","both initial builders were not simultaneously RUNNING")
+                evidence=self._initial_launch_failure(prepared_run,launched,live)
+                summary=", ".join(f'{x["builder_id"]}={x["state"]}/exit={x["exit_code"]}' for x in evidence["workers"])
+                raise SelfBuildLaunchError("CONCURRENCY_NOT_PROVEN","both initial builders were not simultaneously RUNNING; "+summary)
             proof_at=self.clock()
             return {
                 "schema":1,"run_id":prepared_run["run_id"],"base_sha":prepared_run["base_sha"],
@@ -189,10 +245,34 @@ class SelfBuildLauncher:
                 "concurrent_proof":{"at":proof_at,"builders":[x["builder_id"] for x in launched],"states":[x.state for x in live]},
                 "workers":launched,
             }
-        except BaseException:
-            for public,item in zip(reversed(launched),reversed(builders[:len(launched)])):
-                try:self.supervisor.stop(public["builder_id"],public["generation"],timeout=5.0)
+        except BaseException as ex:
+            diagnostic=self.run_root/str(prepared_run.get("run_id") or "")/"initial-launch-failure.json"
+            if not diagnostic.is_file():
+                rows=[]
+                for public in launched:
+                    try:
+                        current=self.supervisor.get(public["builder_id"],refresh=True)
+                        state=current.state;exit_code=current.exit_code;pid=current.pid;containment=current.containment_id
+                    except Exception as status_error:
+                        state="STATUS_UNAVAILABLE";exit_code=None;pid=public.get("pid");containment=public.get("containment_id")
+                        status_error_text=f"{type(status_error).__name__}: {status_error}"
+                    else:status_error_text=None
+                    result=None;result_file=public.get("result_file")
+                    if result_file and Path(result_file).is_file():
+                        try:result=json.loads(Path(result_file).read_text(encoding="utf-8"))
+                        except Exception:result={"completed":False,"error":"result evidence unreadable"}
+                    rows.append({"builder_id":public.get("builder_id"),"generation":public.get("generation"),
+                                 "pid":pid,"state":state,"exit_code":exit_code,"containment_id":containment,
+                                 "result_file":result_file,"result":result,"status_error":status_error_text})
+                _atomic_json(diagnostic,{"schema":1,"run_id":str(prepared_run.get("run_id") or ""),
+                                         "error_code":str(getattr(ex,"code",type(ex).__name__)),
+                                         "message":str(ex),"workers":rows,"captured_at":self.clock()})
+            for public in reversed(launched):
+                try:
+                    self.supervisor.stop(public["builder_id"],public["generation"],timeout=5.0)
+                    self.container_cleanup_fn(run_id=prepared_run["run_id"],builder_id=public["builder_id"])
                 except Exception:pass
+            for item in builders:
                 try:self.client.revoke_self_build_worker(
                     run_id=prepared_run["run_id"],task_id=item["task_id"],
                     worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
@@ -274,8 +354,23 @@ class SelfBuildLauncher:
         try:
             process=self.supervisor.complete(builder_id,int(public["generation"]),timeout=10.0)
         except SupervisorError as ex:
-            raise SelfBuildLaunchError(ex.code,str(ex)) from ex
+            detail=str(ex)
+            try:
+                result=load_result_file(public["result_file"],state_root=self.state_root)
+                worker_error=result.get("error")
+                if worker_error:
+                    detail=f"{builder_id}: {detail}; worker error: {worker_error}"
+                else:
+                    detail=f"{builder_id}: {detail}; worker result completed={result.get('completed')} calls={result.get('calls')} cost_usd={result.get('cost_usd')}"
+            except Exception:
+                detail=f"{builder_id}: {detail}"
+            raise SelfBuildLaunchError(ex.code,detail) from ex
         process_evidence=process.as_dict()
+        docker_evidence=self.container_cleanup_fn(
+            run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
+            builder_id=builder_id,
+        )
+        process_evidence["dockerContainmentEmpty"]=docker_evidence.get("container_empty") is True
         candidate=self._load_candidate_evidence(paths["candidate"],item=item)
         if candidate is None:
             try:
@@ -434,10 +529,16 @@ class SelfBuildLauncher:
             raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
         evidence=self.supervisor.stop(builder_id,int(public["generation"]),timeout=10.0)
         if evidence.state!="STOPPED" or not evidence.containment_empty:
-            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","ProcessSupervisor could not prove worker containment empty")
+            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","ProcessSupervisor could not prove host-process containment empty")
+        docker_evidence=self.container_cleanup_fn(
+            run_id=str(prepared_run.get("run_id") or ""),
+            builder_id=builder_id,
+        )
+        if docker_evidence.get("container_empty") is not True:
+            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","Docker worker containment is not empty")
         response=self.client.revoke_self_build_worker(
             run_id=prepared_run["run_id"],task_id=item["task_id"],
             worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
             reason=reason,
         )
-        return {"stopped":True,"builder_id":builder_id,"process_evidence":evidence.as_dict(),"authority_receipt":response}
+        return {"stopped":True,"builder_id":builder_id,"process_evidence":evidence.as_dict(),"docker_evidence":docker_evidence,"authority_receipt":response}

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from forgeboss.control import workspace as w
+from forgeboss.control import workspace_state as ws
 from forgeboss.control.workspace_state import ProtectedWorkspaceState, ProtectedWorkspaceStateError
 
 
@@ -52,6 +53,12 @@ class WorkspaceV7ProtectedStateTests(unittest.TestCase):
         canonical_target = root / self.target.name
         stage = root / (w.STAGE_PREFIX + "fixture-" + generation)
         return {"version": w.QUARANTINE_VERSION, "generation": generation, "target": str(canonical_target), "stage": str(stage), "identity": self._identity(stage), "contentOid": oid, "state": state, "updatedAt": 1.0}
+
+    def test_windows_state_directory_creation_inherits_parent_acl(self):
+        fake=mock.Mock()
+        with mock.patch.object(ws.os,"name","nt"):
+            ws._create_state_dir(fake)
+        fake.mkdir.assert_called_once_with()
 
     def test_workspace_operations_require_protected_state(self):
         with self.assertRaises(w.WorkspaceProvisionError) as cm:
