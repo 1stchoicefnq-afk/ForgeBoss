@@ -218,6 +218,31 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("task-a",revoked)
         self.assertIn("task-b",revoked)
 
+    def test_second_prelaunch_failure_revokes_both_unstarted_authorities_and_reports(self):
+        calls=[]
+        def issue(packet,workspace,executor,ttl):
+            calls.append(packet)
+            if len(calls)==2:
+                raise RuntimeError("lease preparation boom")
+            return {"ok":True,"lease":str(self.state/"lease-prep.json"),"token":"TOKEN-PREP"}
+        launcher=SelfBuildLauncher(
+            client=self.client,supervisor=self.supervisor,state_root=self.state,
+            python_executable=self.python,runner_path=self.runner,issue_lease_fn=issue,
+            freeze_fn=freeze_candidate,
+            container_cleanup_fn=lambda **kw:{"container_empty":True,"observed_container_ids":[]},
+            clock=lambda:1000.0,
+        )
+        with self.assertRaises(RuntimeError):
+            launcher.launch_initial(self.prepared)
+        self.assertEqual(self.supervisor.launched,[])
+        revoked={x["task_id"] for x in self.client.revoked}
+        self.assertEqual(revoked,{"task-a","task-b"})
+        report=self.state/"self-build-launch"/"fl1-run"/"initial-launch-failure.json"
+        self.assertTrue(report.is_file())
+        data=json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(data["error_code"],"RuntimeError")
+        self.assertIn("lease preparation boom",data["message"])
+
     def test_public_launch_record_never_contains_executor_lease_token(self):
         out=self.launcher().launch_initial(self.prepared)
         raw=json.dumps(out,sort_keys=True)
@@ -358,10 +383,3 @@ class LauncherTests(unittest.TestCase):
         source=Path(__file__).resolve().parents[2]
         with self.assertRaises(SelfBuildLaunchError) as cm:
             SelfBuildLauncher(
-                client=self.client,supervisor=self.supervisor,state_root=source/"state",
-                python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,
-            )
-        self.assertEqual(cm.exception.code,"STATE_ROOT_INSIDE_SOURCE")
-
-
-if __name__=="__main__":unittest.main()
