@@ -169,7 +169,7 @@ class SelfBuildLauncher:
         packet_sha=_packet_sha(paths["packet"])
         lease=self.issue_lease_fn(str(paths["packet"]),item["worktree"],"mini-swe",1200)
         signed=self._launch_payload(item,packet_sha,self.clock()+600.0)
-        bundle=self.client.attest_launch_payload(signed)
+        bundle=self.client.authorize_self_build_launch(signed)
         _atomic_json(paths["bundle"],bundle)
         env=self._worker_env(lease=lease,bundle_path=paths["bundle"],result_path=paths["result"])
         argv=[

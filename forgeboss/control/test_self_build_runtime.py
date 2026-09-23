@@ -187,6 +187,56 @@ class RuntimeTests(unittest.TestCase):
         }),encoding="utf-8")
         return p
 
+    def test_launch_authority_is_derived_from_live_store_and_known_good(self):
+        import hashlib,time
+        self.pointer()
+        work=self.runtime.workspace_root/"fl1-launch-builder-a";work.mkdir()
+        packet={"allowed_files":["forgeboss/x.py"],"expected_head_revision":self.base}
+        authority={
+            "repository":"1stchoicefnq-afk/ForgeBoss","control_revision":1,
+            "task_id":"FL1-A","run_id":"worker-a","owner_epoch":1,
+            "builder_id":"builder-a","assignment_generation":1,
+            "assignment_sha256":"2"*64,"branch":"forgeboss/fl1-selfbuild-a",
+            "budget_usd":"1.00","global_budget_run_id":"fl1-launch",
+            "global_budget_reservation_id":"FL1-A","receipt_public_key_b64":"pin",
+        }
+        item={"task_id":"FL1-A","builder_id":"builder-a","worktree":str(work.resolve()),"owner_epoch":1,
+              "packet":packet,"authority":authority}
+        run=self.runtime._run_path("fl1-launch")
+        run.write_text(json.dumps({"schema":1,"phase":"PREPARED","prepared":{
+            "base_sha":self.base,"source_root":str(self.source.resolve()),"builders":[item]
+        },"replacement":None}),encoding="utf-8")
+        identity={
+            "taskId":"FL1-A","runId":"worker-a","attempt":1,"ownerEpoch":1,
+            "builderPrincipal":"builder-a","assignmentGeneration":1,
+            "assignmentPolicySha256":"2"*64,"repository":"1stchoicefnq-afk/ForgeBoss",
+            "baseSha":self.base,"branch":"forgeboss/fl1-selfbuild-a",
+            "worktreePath":str(work.resolve()),"workspaceGeneration":1,
+            "workspaceContentIdentity":self.base,"budgetRunId":"fl1-launch",
+        }
+        class Store:
+            def assignment_identity(self,*args):return {"identity":identity,"assignmentIdentitySha256":"3"*64}
+            def assert_writer(self,*args,**kwargs):return {"ok":True}
+        self.runtime.store=Store()
+        packet_bytes=(json.dumps(packet,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+        launch={
+            "schema":1,"repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":1,
+            "taskId":"FL1-A","runId":"worker-a","ownerEpoch":1,"builderId":"builder-a",
+            "assignmentGeneration":1,"assignmentSha256":"2"*64,
+            "branch":"forgeboss/fl1-selfbuild-a","worktreePath":str(work.resolve()),
+            "runtimeId":"mini-swe","allowedPaths":["forgeboss/x.py"],
+            "packetSha256":hashlib.sha256(packet_bytes).hexdigest(),"budgetUsd":"1.00",
+            "globalBudgetRunId":"fl1-launch","globalBudgetReservationId":"FL1-A",
+            "expiresAt":time.time()+300,
+        }
+        out=self.runtime.authorize_launch(launch,repository="1stchoicefnq-afk/ForgeBoss",control_revision=1)
+        self.assertTrue(out["verified"])
+        self.assertEqual(out["sourceIdentity"]["revision"],self.base)
+        tampered=dict(launch);tampered["budgetUsd"]="9.00"
+        with self.assertRaises(SelfBuildRuntimeError) as cm:
+            self.runtime.authorize_launch(tampered,repository="1stchoicefnq-afk/ForgeBoss",control_revision=1)
+        self.assertEqual(cm.exception.code,"LAUNCH_BINDING_MISMATCH")
+
     def test_missing_known_good_pointer_blocks_prepare_before_coordinator(self):
         with self.assertRaises(SelfBuildRuntimeError) as cm:
             self.runtime.prepare({"sourceRoot":str(self.source),"baseSha":self.base,"runId":"fl1-one"})

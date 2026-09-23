@@ -501,8 +501,10 @@ def _protected_launch_bundle(raw):
     p=Path(raw)
     try:obj=json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:raise SecurityError("protected launch bundle is invalid") from e
-    if not isinstance(obj,dict) or set(obj)!={"schema","envelope","authorityResponse"} or obj.get("schema")!=1:
+    if not isinstance(obj,dict) or set(obj)!={"schema","launch","authorityResponse"} or obj.get("schema")!=2:
         raise SecurityError("protected launch bundle schema invalid")
+    if not isinstance(obj.get("launch"),dict):
+        raise SecurityError("protected launch payload invalid")
     return obj
 
 def _protected_control_authority(raw,lease,packet,workspace,executor,cli_budget=None):
@@ -511,20 +513,24 @@ def _protected_control_authority(raw,lease,packet,workspace,executor,cli_budget=
     required={"repository","control_revision","task_id","run_id","owner_epoch","builder_id","assignment_generation","assignment_sha256",
               "branch","budget_usd","global_budget_run_id","global_budget_reservation_id","receipt_public_key_b64"}
     if set(authority)!=required:raise SecurityError("self-build protected authority packet shape invalid")
-    env=bundle["envelope"]
-    if not isinstance(env,dict) or set(env)!={"signed","signature"} or not isinstance(env.get("signed"),dict) or not isinstance(env.get("signature"),str):
-        raise SecurityError("protected launch envelope invalid")
-    signed=env["signed"]
+    signed=bundle["launch"]
     from forgeboss.protected_authority.protocol import canonical_digest
     from forgeboss.protected_authority.signing import verify_signed_receipt
     digest=canonical_digest(signed);response=bundle["authorityResponse"]
     pin=authority["receipt_public_key_b64"]
     if not verify_signed_receipt(response,pin):raise SecurityError("protected authority service receipt invalid")
     receipt=response["receipt"];result=response["result"]
-    if receipt.get("operation")!="verify_launch_authority":raise SecurityError("protected authority receipt operation mismatch")
+    if receipt.get("operation")!="authorize_self_build_launch":raise SecurityError("protected authority receipt operation mismatch")
     if str(receipt.get("repository","")).casefold()!=str(authority["repository"]).casefold():raise SecurityError("protected authority receipt repository mismatch")
     if int(receipt.get("controlRevision",0))!=int(authority["control_revision"]):raise SecurityError("protected authority control revision mismatch")
-    if result.get("verified") is not True or result.get("envelopeDigest")!=digest:raise SecurityError("protected launch authority not verified")
+    if result.get("verified") is not True or result.get("launchDigest")!=digest:raise SecurityError("protected launch authority not verified")
+    source=result.get("sourceIdentity")
+    if not isinstance(source,dict):raise SecurityError("protected launch source identity missing")
+    expected_head=str(packet.get("expected_head_revision") or "").lower()
+    if not expected_head or str(source.get("revision") or "").lower()!=expected_head:
+        raise SecurityError("protected launch source revision mismatch")
+    if result.get("trustGrade")!="OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP":
+        raise SecurityError("protected launch trust grade mismatch")
     work=Path(workspace).resolve();allowed=[norm(x) for x in lease.get("allowed_files",[])]
     expected={
         "schema":1,

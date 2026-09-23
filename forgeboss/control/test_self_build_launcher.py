@@ -34,10 +34,10 @@ class E:
 
 class Client(ProtectedAuthorityClient):
     def __init__(self):
-        self.attested=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[];self.composed=[];self.activated=[]
-    def attest_launch_payload(self,signed):
-        self.attested.append(dict(signed))
-        return {"schema":1,"envelope":{"signed":dict(signed),"signature":"sig"},"authorityResponse":{"receipt":"public"}}
+        self.authorized=[];self.revoked=[];self.handoffs=[];self.reviews=[];self.accepted=[];self.composed=[];self.activated=[]
+    def authorize_self_build_launch(self,launch):
+        self.authorized.append(dict(launch))
+        return {"schema":2,"launch":dict(launch),"authorityResponse":{"receipt":"public","result":{"verified":True}}}
     def revoke_self_build_worker(self,**kw):
         self.revoked.append(dict(kw));return {"result":{"revoked":True}}
     def record_self_build_handoff(self,**kw):
@@ -131,7 +131,7 @@ class LauncherTests(unittest.TestCase):
             container_cleanup_fn=lambda **kw:{"container_empty":True,"observed_container_ids":[]},clock=lambda:1000.0,
         )
 
-    def test_launch_initial_binds_two_workers_to_exact_packet_and_service_attestation(self):
+    def test_launch_initial_binds_two_workers_to_exact_packet_and_service_authorization(self):
         with patch.dict(os.environ,{
             "OPENAI_API_KEY":"MODEL-KEY",
             "GH_TOKEN":"GITHUB-SECRET",
@@ -140,8 +140,8 @@ class LauncherTests(unittest.TestCase):
             out=self.launcher().launch_initial(self.prepared)
         self.assertEqual(len(out["workers"]),2)
         self.assertEqual(len(self.supervisor.launched),2)
-        self.assertEqual(len(self.client.attested),2)
-        for launched,public,attested in zip(self.supervisor.launched,out["workers"],self.client.attested):
+        self.assertEqual(len(self.client.authorized),2)
+        for launched,public,authorized in zip(self.supervisor.launched,out["workers"],self.client.authorized):
             env=launched["env"]
             self.assertEqual(env["FORGEBOSS_ALLOW_PAID_EXECUTOR"],"YES")
             self.assertEqual(env["FORGEBOSS_SELF_BUILD_MODE"],"YES")
@@ -151,8 +151,8 @@ class LauncherTests(unittest.TestCase):
             self.assertNotIn("TOKEN-",json.dumps(public))
             packet=Path(public["packet_file"])
             self.assertEqual(__import__("hashlib").sha256(packet.read_bytes()).hexdigest(),public["packet_sha256"])
-            self.assertEqual(attested["packetSha256"],public["packet_sha256"])
-            self.assertEqual(attested["worktreePath"],str(Path(public["worktree"]).resolve()))
+            self.assertEqual(authorized["packetSha256"],public["packet_sha256"])
+            self.assertEqual(authorized["worktreePath"],str(Path(public["worktree"]).resolve()))
 
     def test_launch_initial_records_simultaneous_running_proof(self):
         out=self.launcher().launch_initial(self.prepared)

@@ -136,7 +136,7 @@ class PlatformMachineBoundary:
         if peer_context.platform!=('windows' if os.name=='nt' else 'posix') or peer_context.principal.casefold()!=self.peer_principals[peer_id]:return False
         return _ed25519_verify(self.peer_keys[peer_id],request_digest,signature)
 class FileSecretProvider:
-    def __init__(self,*,root:Path,private_key_path:Path,launch_trust_path:Path,boundary:PlatformMachineBoundary):self.root=root.resolve(strict=True);self.private_key_path=private_key_path;self.launch_trust_path=launch_trust_path;self.boundary=boundary
+    def __init__(self,*,root:Path,private_key_path:Path,launch_trust_path:Path|None=None,boundary:PlatformMachineBoundary):self.root=root.resolve(strict=True);self.private_key_path=private_key_path;self.launch_trust_path=launch_trust_path;self.boundary=boundary
     def _read(self,path:Path)->bytes:
         raw=Path(path)
         if raw.is_symlink():raise AuthorityError('SECRET_PATH_INVALID')
@@ -164,4 +164,6 @@ class FileSecretProvider:
         finally:
             if fd is not None:os.close(fd)
     def github_app_private_key(self)->bytes:return self._read(self.private_key_path)
-    def launch_trust_root(self)->bytes:return self._read(self.launch_trust_path)
+    def launch_trust_root(self)->bytes:
+        if self.launch_trust_path is None:raise AuthorityError('LEGACY_LAUNCH_TRUST_DISABLED')
+        return self._read(self.launch_trust_path)

@@ -51,7 +51,7 @@ class ProtectedPaidStartTests(unittest.TestCase):
             "allowed_files":["forgeboss/learning/test_fl1_reuse_regression.py"],
             "packet_sha256":self.packet_sha,
         }
-        self.packet={"self_build_authority":dict(self.authority)}
+        self.packet={"expected_head_revision":"a"*40,"self_build_authority":dict(self.authority)}
         self.signed=self._signed()
 
     def tearDown(self):
@@ -85,14 +85,18 @@ class ProtectedPaidStartTests(unittest.TestCase):
         signed=dict(self.signed if signed is None else signed)
         digest=canonical_digest(signed)
         result={
-            "repository":self.authority["repository"],
-            "controlRevision":1,
             "verified":True,
-            "envelopeDigest":digest,
+            "launchDigest":digest,
+            "sourceIdentity":{
+                "revision":"a"*40,"manifestSha256":"4"*64,
+                "identitySha256":"5"*64,"treeSha256":"6"*64,
+                "codeRoot":"C:\\ForgeBoss",
+            },
+            "trustGrade":"OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP",
         }
         receipt={
             "schema":3,
-            "operation":"verify_launch_authority",
+            "operation":"authorize_self_build_launch",
             "requestId":"00000000-0000-4000-8000-000000000001",
             "peerId":"controller-a",
             "peerPrincipal":"test",
@@ -106,8 +110,8 @@ class ProtectedPaidStartTests(unittest.TestCase):
         response={**signer.sign(receipt),"result":result}
         p=self.root/("bundle-"+str(time.time_ns())+".json")
         p.write_text(json.dumps({
-            "schema":1,
-            "envelope":{"signed":signed,"signature":"controller-signature"},
+            "schema":2,
+            "launch":signed,
             "authorityResponse":response,
         }),encoding="utf-8")
         return str(p)
