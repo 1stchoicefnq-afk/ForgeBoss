@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
 from pathlib import Path
-from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
+from .store import ControlStore,BudgetReservationError,TaskCancellationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
 from .envelope import secret_file,policy_secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
@@ -127,6 +127,12 @@ class ForgeBossDaemon:
                 governed["smallRepairExemptionSha256"]=digest(p.get("smallRepairExemption"))
                 return self.store.create_task(governed)
             return self._idem(req,create)
+        if m=="task.cancel":
+            def cancel():
+                try:return self.store.cancel_task(p["taskId"])
+                except KeyError as ex:raise ProtocolError("TASK_NOT_FOUND","task not found") from ex
+                except TaskCancellationError as ex:raise ProtocolError(ex.code,str(ex)) from ex
+            return self._idem(req,cancel)
         if m=="task.get":
             t=self.store.get_task(p["taskId"])
             if not t:raise ProtocolError("TASK_NOT_FOUND","task not found")
@@ -158,6 +164,8 @@ class ForgeBossDaemon:
                                                      int(p.get("ttlSeconds",1200)),p.get("runtimeId"),WORKTREE_ROOT,
                                                      budget_reserved=p.get("budgetUsd",0))
                 except BudgetReservationError as ex:
+                    raise ProtocolError(ex.code,str(ex)) from ex
+                except TaskCancellationError as ex:
                     raise ProtocolError(ex.code,str(ex)) from ex
                 env={
                   "envelopeVersion":1,"protocolVersion":1,"taskId":p["taskId"],"repository":p["repository"],
