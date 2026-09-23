@@ -93,7 +93,10 @@ def _validated_budget_request(task,requested):
 
 def _governance_fields(task):
     mode=task.get("governanceMode")
+    governed_keys=("workKind","subsystem","reuseReviewSha256","reuseReviewReceiptSha256","smallRepairExemptionSha256")
     if mode is None:
+        if any(task.get(name) is not None for name in governed_keys):
+            raise ValueError("governance evidence requires governanceMode")
         return (None,None,None,None,None,None)
     if mode!="reuse-v1": raise ValueError("unsupported governanceMode")
     work_kind=task.get("workKind")
