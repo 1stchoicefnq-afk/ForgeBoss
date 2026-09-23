@@ -498,6 +498,20 @@ def _control_authority(raw,lease,workspace,executor):
     if epoch<=0:raise SecurityError("control envelope ownerEpoch invalid")
     runtime=env.get("runtime")
     if not isinstance(runtime,dict) or str(runtime.get("adapter") or "")!=executor:raise SecurityError("control envelope runtime differs from executor")
+    attested_fields=("runnerPath","runnerSha256","interpreterPath","interpreterSha256")
+    if any(not runtime.get(name) for name in attested_fields):raise SecurityError("control envelope missing governed runtime identity")
+    try:
+        from forgeboss.control.governed_launch import resolve_runner_identity
+        identity=resolve_runner_identity(executor,repo_root=ROOT)
+    except Exception as e:raise SecurityError("unable to resolve governed runtime identity: "+str(e)) from e
+    expected_runtime={
+        "runnerPath":identity.runner_path,
+        "runnerSha256":identity.runner_sha256,
+        "interpreterPath":identity.interpreter_path,
+        "interpreterSha256":identity.interpreter_sha256,
+    }
+    for name,value in expected_runtime.items():
+        if runtime.get(name)!=value:raise SecurityError("control envelope governed runtime identity mismatch: "+name)
     budget=_positive_budget(env.get("budgetUsd"));ea=[norm(x) for x in env.get("allowedPaths",[])];la=[norm(x) for x in lease.get("allowed_files",[])]
     if [x.casefold() for x in ea]!=[x.casefold() for x in la]:raise SecurityError("control envelope allowedPaths differ from executor lease")
     unsigned=json.dumps(env,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
