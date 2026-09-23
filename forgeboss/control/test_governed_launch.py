@@ -5,6 +5,10 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import forgeboss.control.governed_launch as launch_module
+from forgeboss.security.host_tool_identity import HostToolIdentity
 
 from forgeboss.control.governed_launch import (
     GovernedLaunchError,
@@ -29,6 +33,19 @@ class GovernedLaunchTests(unittest.TestCase):
         self.runner = self.repo / "forgeboss" / "executors" / "mini_swe_runner.py"
         self.runner.write_text("#!/usr/bin/env python3\nprint('runner')\n", encoding="utf-8")
         self.runner.chmod(0o700)
+        self.docker = HostToolIdentity(
+            name="docker",
+            path=str(self.root / "trusted-docker"),
+            sha256="f" * 64,
+            size=123,
+        )
+        self.docker_patch = patch.object(
+            launch_module,
+            "resolve_trusted_host_executable",
+            return_value=self.docker,
+        )
+        self.docker_resolver = self.docker_patch.start()
+        self.addCleanup(self.docker_patch.stop)
 
     def args(self):
         return {
@@ -78,6 +95,7 @@ class GovernedLaunchTests(unittest.TestCase):
         self.assertEqual(verified.model, "openai/gpt-5.6-luna")
         self.assertEqual(verified.packet_sha256, "b" * 64)
         self.assertEqual(verified.container_image, "node@sha256:" + "d" * 64)
+        self.assertEqual(verified.docker_identity, self.docker)
         self.assertEqual(
             verified.identity.runner_sha256,
             hashlib.sha256(self.runner.read_bytes()).hexdigest(),
@@ -107,6 +125,17 @@ class GovernedLaunchTests(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(GovernedLaunchError):
                     self.verify(token, **{key: value})
+
+    def test_docker_identity_change_invalidates_existing_attestation(self):
+        token = self.issue()
+        self.docker_resolver.return_value = HostToolIdentity(
+            name="docker",
+            path=self.docker.path,
+            sha256="e" * 64,
+            size=self.docker.size,
+        )
+        with self.assertRaisesRegex(GovernedLaunchError, "binding mismatch"):
+            self.verify(token)
 
     def test_runner_change_invalidates_existing_attestation(self):
         token = self.issue()
