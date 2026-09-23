@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -259,7 +260,12 @@ def verify_protected_policy_approval(
     expires = _int(result["expiresAt"], "result.expiresAt")
     if expires <= issued or expires - issued > MAX_POLICY_TTL_SECONDS:
         raise ProtectedPolicyReceiptError("protected policy approval TTL is invalid")
-    current = time.time() if now is None else float(now)
+    try:
+        current = time.time() if now is None else float(now)
+    except (TypeError, ValueError, OverflowError) as ex:
+        raise ProtectedPolicyReceiptError("current time is invalid") from ex
+    if not math.isfinite(current):
+        raise ProtectedPolicyReceiptError("current time is invalid")
     if current < issued - 30:
         raise ProtectedPolicyReceiptError("protected policy approval is not yet valid")
     if current >= expires:
