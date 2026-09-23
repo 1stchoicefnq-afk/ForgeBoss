@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
+import time
 import tempfile
 import unittest
 
@@ -14,17 +16,35 @@ from forgeboss.code_intelligence.cbm_adapter import (
 )
 
 
-FAKE = r"""#!/usr/bin/env python3
-import json, os, sys
+FAKE_BODY = r"""
+import json, os, subprocess, sys, time
 
 tool = sys.argv[2]
 args = json.loads(sys.argv[3])
-if tool == "fail":
-    print("forced failure", file=sys.stderr)
-    raise SystemExit(7)
-if tool == "bad-json":
-    print("not-json")
+
+if args.get("emit_bytes"):
+    count = int(args["emit_bytes"])
+    sys.stdout.write('{"blob":"' + ("x" * count) + '"}')
     raise SystemExit(0)
+
+if args.get("stderr_bytes"):
+    sys.stderr.write("e" * int(args["stderr_bytes"]))
+    raise SystemExit(0)
+
+if args.get("spawn_child_pid_file"):
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with open(args["spawn_child_pid_file"], "w", encoding="utf-8") as handle:
+        handle.write(str(child.pid))
+    time.sleep(float(args.get("sleep", 60)))
+
+if args.get("sleep"):
+    time.sleep(float(args["sleep"]))
+
 print(json.dumps({
     "tool": tool,
     "args": args,
@@ -46,18 +66,18 @@ class AdapterFixture(unittest.TestCase):
         self.cache = self.state / "cache"
         self.runtime = self.state / "runtime"
         self.binary = self.root / "fake-cbm.py"
-        self.binary.write_text(FAKE, encoding="utf-8")
+        self.binary.write_text("#!" + sys.executable + "\n" + FAKE_BODY, encoding="utf-8")
         self.binary.chmod(self.binary.stat().st_mode | stat.S_IXUSR)
         self.digest = hashlib.sha256(self.binary.read_bytes()).hexdigest()
 
-    def adapter(self):
+    def adapter(self, *, timeout_seconds=10):
         return CodebaseMemoryAdapter(
             binary_path=self.binary,
             expected_sha256=self.digest,
             workspace=self.workspace,
             cache_dir=self.cache,
             runtime_dir=self.runtime,
-            timeout_seconds=10,
+            timeout_seconds=timeout_seconds,
         )
 
 
@@ -123,7 +143,7 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
 
     def test_binary_change_after_initialization_is_blocked(self):
         adapter = self.adapter()
-        self.binary.write_text(FAKE + "\n# changed\n", encoding="utf-8")
+        self.binary.write_text("#!" + sys.executable + "\n" + FAKE_BODY + "\n# changed\n", encoding="utf-8")
         with self.assertRaises(CodeIntelligenceError):
             adapter.call("list_projects", {})
 
@@ -146,6 +166,42 @@ class CodebaseMemoryAdapterTests(AdapterFixture):
         result = self.adapter().call("get_architecture", {})
         with self.assertRaises(TypeError):
             result.payload["new"] = True
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable fixture")
+    def test_live_stdout_limit_fails_closed(self):
+        with self.assertRaisesRegex(CodeIntelligenceError, "stdout exceeded"):
+            self.adapter().call("search_code", {"emit_bytes": 2_100_000})
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable fixture")
+    def test_completed_stderr_limit_fails_closed(self):
+        with self.assertRaisesRegex(CodeIntelligenceError, "stderr exceeded"):
+            self.adapter().call("search_code", {"stderr_bytes": 1_100_000})
+
+    def test_oversized_or_non_json_arguments_fail_closed(self):
+        with self.assertRaisesRegex(CodeIntelligenceError, "arguments exceed"):
+            self.adapter().call("search_code", {"query": "x" * 30_000})
+        with self.assertRaisesRegex(CodeIntelligenceError, "not valid JSON data"):
+            self.adapter().call("search_code", {"bad": float("nan")})
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-group assertion")
+    def test_timeout_reaps_same_group_descendant(self):
+        pid_file = self.state / "child.pid"
+        with self.assertRaisesRegex(CodeIntelligenceError, "timed out"):
+            self.adapter(timeout_seconds=1).call(
+                "search_code",
+                {
+                    "spawn_child_pid_file": str(pid_file),
+                    "sleep": 60,
+                },
+            )
+        for _ in range(50):
+            if pid_file.exists():
+                break
+            time.sleep(0.02)
+        self.assertTrue(pid_file.exists())
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_overlapping_cache_and_runtime_are_rejected(self):
         with self.assertRaises(CodeIntelligenceError):
