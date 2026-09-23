@@ -512,6 +512,9 @@ def _control_authority(raw,lease,workspace,executor):
     }
     for name,value in expected_runtime.items():
         if runtime.get(name)!=value:raise SecurityError("control envelope governed runtime identity mismatch: "+name)
+    packet_sha=str(env.get("packetSha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}",packet_sha):raise SecurityError("control envelope packet SHA-256 missing or invalid")
+    if packet_sha!=str(lease.get("packet_sha256") or "").lower():raise SecurityError("control envelope packet differs from executor lease")
     budget=_positive_budget(env.get("budgetUsd"));ea=[norm(x) for x in env.get("allowedPaths",[])];la=[norm(x) for x in lease.get("allowed_files",[])]
     if [x.casefold() for x in ea]!=[x.casefold() for x in la]:raise SecurityError("control envelope allowedPaths differ from executor lease")
     unsigned=json.dumps(env,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
