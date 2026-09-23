@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const os = require("node:os");
 
 const {
   BoundedOutputBuffer,
@@ -90,6 +91,25 @@ test("runProcess times out and terminates owned process", async () => {
   });
   assert.equal(result.timedOut, true);
   assert.ok(result.durationMs < 5000);
+});
+
+test("runProcess reaps same-group background descendants on POSIX", { skip: os.platform() === "win32" }, async () => {
+  const script = [
+    "const cp=require('child_process')",
+    "const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})",
+    "console.log(child.pid)",
+  ].join(";");
+  const result = await runProcess({
+    executable: process.execPath,
+    args: ["-e", script],
+    cwd: CWD,
+    env: {},
+    timeoutMs: 5000,
+  });
+  assert.equal(result.exitCode, 0);
+  const pid = Number(result.stdout.trim());
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  assert.throws(() => process.kill(pid, 0));
 });
 
 test("runProcess returns structured start failure without shell fallback", async () => {
