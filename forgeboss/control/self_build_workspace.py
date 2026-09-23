@@ -205,10 +205,24 @@ def create_successor_workspace(
     if not re.fullmatch(r"[A-Za-z0-9._-]{8,80}", wid):
         raise SelfBuildWorkspaceError("workspace_id contains unsafe characters or length")
 
-    wt_root = _safe_external_path(Path(worktree_root or DEFAULT_WORKTREE_ROOT).expanduser(), live)
-    st_root = _safe_external_path(Path(state_root or DEFAULT_STATE_ROOT).expanduser(), live)
-    workspace = _safe_external_path(wt_root / wid, live)
-    receipt_path = _safe_external_path(st_root / f"{wid}.json", live)
+    raw_wt_root = Path(worktree_root or DEFAULT_WORKTREE_ROOT).expanduser()
+    raw_st_root = Path(state_root or DEFAULT_STATE_ROOT).expanduser()
+    wt_root = _safe_external_path(raw_wt_root, live)
+    st_root = _safe_external_path(raw_st_root, live)
+
+    raw_workspace = wt_root / wid
+    raw_receipt_path = st_root / f"{wid}.json"
+    if is_linklike(raw_workspace):
+        raise SelfBuildWorkspaceError(
+            f"successor workspace destination is link-like: {raw_workspace}"
+        )
+    if is_linklike(raw_receipt_path):
+        raise SelfBuildWorkspaceError(
+            f"successor receipt destination is link-like: {raw_receipt_path}"
+        )
+
+    workspace = _safe_external_path(raw_workspace, live)
+    receipt_path = _safe_external_path(raw_receipt_path, live)
     branch = f"forgeboss/selfbuild/{wid}"
 
     if _same_or_descendant(receipt_path, workspace):
@@ -216,9 +230,9 @@ def create_successor_workspace(
             "self-build state/receipt path must not be inside successor workspace"
         )
 
-    if workspace.exists() or is_linklike(workspace):
+    if workspace.exists():
         raise SelfBuildWorkspaceError(
-            f"successor workspace already exists or is link-like: {workspace}"
+            f"successor workspace already exists: {workspace}"
         )
 
     branch_check = _git(live, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
