@@ -245,6 +245,81 @@ The release prover must use explicit outcomes such as:
 
 Unknown/missing evidence cannot be converted into READY.
 
+## User ownership and portability
+
+The user's project belongs to the user.
+
+ForgeBoss must support a documented export path that preserves, as applicable:
+
+- source files;
+- requirements and architecture;
+- decisions;
+- project configuration;
+- Worker Pack/component provenance;
+- relevant evidence/release records;
+- other portable project metadata required to continue work elsewhere.
+
+Export/import must not require continued access to one AI provider or proprietary ForgeBoss cloud service merely to recover the user's own source/project records.
+
+Uninstalling ForgeBoss must not silently delete user project source or cloud/project data. Destructive deletion requires an explicit owner choice.
+
+## Privacy, secrets and network boundary
+
+ForgeBoss must make data movement visible and policy-controlled.
+
+Permanent expectations:
+
+- no hidden telemetry or undisclosed project/code collection;
+- retention and deletion behavior is explicit;
+- secrets are stored through an appropriate secure credential/vault mechanism rather than ordinary project files;
+- secrets are scoped to the smallest worker/tool/action that needs them and masked from ordinary logs/evidence;
+- worker/tool network egress is policy-controlled rather than unlimited by default;
+- external services receive only the minimum context required for the approved task.
+
+## Supply-chain and extension safety
+
+ForgeBoss must know what executable third-party code it is trusting.
+
+Releases/projects should maintain sufficient component provenance to produce an SBOM or equivalent dependency inventory.
+
+Authority/security-critical dependencies should be pinned to reviewed versions. Dependency updates must be reviewed/tested rather than silently rolling to an unknown latest version.
+
+Executable Worker Packs/plugins/extensions should be pinned to an exact identity/version and cryptographically hash-verified at minimum; signatures should additionally be verified where the distribution mechanism supports them. Installation never grants runtime capability automatically.
+
+## Backup, recovery and updates
+
+Important project/state transformations require a recovery path.
+
+ForgeBoss must support tested backup/restore for authoritative project/runtime state appropriate to the deployment mode.
+
+Before destructive migrations or irreversible state transformations, create or verify an appropriate backup/export where practical.
+
+ForgeBoss application updates must be authenticated/versioned and support safe rollback or recovery to known-good when an update fails.
+
+## Isolation and audit
+
+Separate projects must not silently share private project context, secrets, workspaces or evidence.
+
+Cloud/team features must enforce tenant/account/team boundaries server-side.
+
+Material actions, approvals, authority changes, releases and destructive operations should be represented in one canonical audit trail sufficient to answer who/what/when/which authority/which artifact.
+
+Cancellation/stop is an authority event: cancelled or superseded workers must not later resume and mutate state using stale authority.
+
+## Cost and degraded operation
+
+Before materially expensive work, ForgeBoss should show a useful estimate/bound where practical; after work, it should show actual recorded spend.
+
+Hard owner/project/run spend ceilings remain authoritative even if a provider or worker requests more.
+
+Local/degraded operation should continue where feasible when a provider/cloud service is unavailable. Loss of one replaceable external service must not destroy canonical project truth.
+
+## Compatibility and accessibility
+
+Rulesets, projects, Worker Packs, adapters and state schemas should declare compatibility/version expectations rather than fail mysteriously.
+
+ForgeBoss itself should maintain an accessibility baseline for normal workflows, including keyboard-operable core actions and readable status/approval information.
+
 ## Definition of success
 
 This vision is not complete merely because the UI exists or a prompt imitates it.
