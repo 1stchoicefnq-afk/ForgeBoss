@@ -11,6 +11,8 @@ import subprocess
 from types import MappingProxyType
 from typing import Mapping
 
+from forgeboss.security.local_acl import LocalAclError, harden_private_dir
+
 
 class CodeIntelligenceError(RuntimeError):
     """Raised when the optional code-intelligence adapter cannot fail safely."""
@@ -68,8 +70,10 @@ def _is_within(root: Path, candidate: Path) -> bool:
 
 def _outside_workspace(workspace: Path, candidate: Path, label: str) -> Path:
     resolved = candidate.resolve(strict=False)
-    if _is_within(workspace, resolved):
-        raise CodeIntelligenceError(f"{label} must live outside the project workspace")
+    if _is_within(workspace, resolved) or _is_within(resolved, workspace):
+        raise CodeIntelligenceError(
+            f"{label} must be disjoint from the project workspace, not inside it or an ancestor"
+        )
     return resolved
 
 
@@ -134,13 +138,17 @@ class CodebaseMemoryAdapter:
         self.timeout_seconds = timeout_seconds
         self.binary_sha256 = actual
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        self.home_dir = self.runtime_dir / "home"
-        self.home_dir.mkdir(parents=True, exist_ok=True)
-
-        staged_dir = self.runtime_dir / "verified-bin"
-        staged_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            harden_private_dir(self.cache_dir)
+            harden_private_dir(self.runtime_dir)
+            self.home_dir = self.runtime_dir / "home"
+            harden_private_dir(self.home_dir)
+            staged_dir = self.runtime_dir / "verified-bin"
+            harden_private_dir(staged_dir)
+        except LocalAclError as ex:
+            raise CodeIntelligenceError(
+                f"cannot harden code-intelligence state directories: {ex}"
+            ) from ex
         suffix = self.binary.suffix if self.binary.suffix else ""
         self.staged_binary = staged_dir / f"codebase-memory-mcp-{actual}{suffix}"
         if self.staged_binary.exists():
@@ -151,6 +159,8 @@ class CodebaseMemoryAdapter:
             try:
                 shutil.copyfile(self.binary, temp)
                 shutil.copymode(self.binary, temp)
+                if os.name != "nt":
+                    os.chmod(temp, 0o700)
                 if _sha256_file(temp) != actual:
                     raise CodeIntelligenceError("staged code-intelligence binary failed SHA-256 verification")
                 os.replace(temp, self.staged_binary)
