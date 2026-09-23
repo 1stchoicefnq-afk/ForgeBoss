@@ -194,8 +194,8 @@ def _budget(value: object) -> str:
         amount = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as ex:
         raise GovernedLaunchError("budgetUsd must be finite and non-negative") from ex
-    if not amount.is_finite() or amount < 0:
-        raise GovernedLaunchError("budgetUsd must be finite and non-negative")
+    if not amount.is_finite() or amount <= 0:
+        raise GovernedLaunchError("budgetUsd must be finite and positive")
     normalized = amount.normalize()
     text = format(normalized, "f")
     return "0" if Decimal(text) == 0 else text
