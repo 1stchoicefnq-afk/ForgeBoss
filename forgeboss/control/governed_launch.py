@@ -102,15 +102,18 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _regular_executable(path: Path, label: str) -> Path:
+def _regular_file(path: Path, label: str) -> Path:
     try:
         resolved = path.resolve(strict=True)
     except OSError as ex:
         raise GovernedLaunchError(f"{label} is unavailable") from ex
     if not resolved.is_file():
         raise GovernedLaunchError(f"{label} must be a regular file")
-    if resolved.is_symlink():
-        raise GovernedLaunchError(f"{label} must not be a symlink")
+    return resolved
+
+
+def _regular_executable(path: Path, label: str) -> Path:
+    resolved = _regular_file(path, label)
     if os.name != "nt" and not os.access(resolved, os.X_OK):
         raise GovernedLaunchError(f"{label} is not executable")
     return resolved
@@ -126,7 +129,7 @@ def resolve_runner_identity(adapter: object, *, repo_root: str | Path) -> Runner
         "mini-swe": root / "forgeboss" / "executors" / "mini_swe_runner.py",
         "openhands": root / "forgeboss" / "executors" / "openhands_runner.py",
     }
-    runner = _regular_executable(runners[clean], "runner")
+    runner = _regular_file(runners[clean], "runner")
 
     interpreter = _regular_executable(Path(sys.executable), "python interpreter")
 
