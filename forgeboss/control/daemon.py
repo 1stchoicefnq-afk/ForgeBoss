@@ -89,7 +89,7 @@ class ForgeBossDaemon:
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
                     "permanentRules":self._rules_status(),
-                    "capabilities":["tasks","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+                    "capabilities":["tasks","task-cancel","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"permanentRules":self._rules_status(),"state":self.store.snapshot()}
@@ -141,6 +141,8 @@ class ForgeBossDaemon:
             def do():
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("cancel_requested_at") is not None:
+                    raise ProtocolError("TASK_CANCELLED","task is cancelled and cannot claim workspace authority")
                 if task.get("governance_mode")=="reuse-v1":
                     runtime_id=str(p.get("runtimeId") or "")
                     if runtime_id not in GOVERNED_RUNTIME_IDS:
