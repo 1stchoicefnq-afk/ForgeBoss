@@ -1,0 +1,62 @@
+diff --git a/LoadingScreen/Show-ForgeBossSplash.ps1 b/LoadingScreen/Show-ForgeBossSplash.ps1
+--- a/LoadingScreen/Show-ForgeBossSplash.ps1
++++ b/LoadingScreen/Show-ForgeBossSplash.ps1
+@@
+-$mutex = $null; $owned = $false; $form = $null; $timer = $null; $background = $null; $icon = $null
++$mutex = $null; $owned = $false; $form = $null; $timer = $null; $animationTimer = $null; $background = $null; $icon = $null
+@@
+-    $script:status = $null; $script:lastSeq = 0; $script:pct = 0; $script:pulse = 0
++    $script:status = $null; $script:lastSeq = 0; $script:pct = 0; $script:targetPct = 0; $script:reportedPct = 0; $script:pulse = 0
+@@
+     $form.Add_KeyDown({ param($sender,$e) if ($e.KeyCode -eq 'Escape') { $form.Close() } })
++    # Status remains authoritative. This second timer only smooths the VISUAL fill so
++    # a real status jump such as 42 -> 100 is shown as 43,44,...,99,100 instead
++    # of snapping. It never advances beyond ForgeBoss's latest reported percent.
++    $animationTimer = [Windows.Forms.Timer]::new(); $animationTimer.Interval = 25
++    $animationTimer.Add_Tick({
++        try {
++            if ($script:pct -lt $script:targetPct -and $script:view -notin @('FAILED','LAUNCH_ERROR')) {
++                $script:pct++
++                if ($script:view -ceq 'READY') {
++                    if ($script:pct -ge 100) { $info.Text = '100% - READY' }
++                    else { $info.Text = ('{0}% - finalising startup' -f $script:pct) }
++                } elseif ($script:status) {
++                    $info.Text = ('{0}% | ForgeBoss reported {1}% | step {2} of 6' -f $script:pct,$script:reportedPct,$script:status.step)
++                }
++                $progress.Invalidate()
++            }
++        } catch {}
++    })
+     $timer = [Windows.Forms.Timer]::new(); $timer.Interval = 350
+@@
+             if ($script:status) {
+                 $title.Text = Get-FBSplashHeading $script:status; $detail.Text = $script:status.detail
+-                $script:pct = $script:status.percent; $script:logPath = $script:status.log_path
+-                $info.Text = ('{0}% reported | step {1} of 6 | update {2}' -f $script:pct,$script:status.step,$script:lastSeq)
++                $script:reportedPct = [Math]::Max(0,[Math]::Min(100,[int]$script:status.percent))
++                $script:targetPct = [Math]::Max($script:targetPct,$script:reportedPct)
++                $script:logPath = $script:status.log_path
++                $info.Text = ('{0}% | ForgeBoss reported {1}% | step {2} of 6' -f $script:pct,$script:reportedPct,$script:status.step)
+             }
+@@
+                 'READY' {
+                     $title.Text = 'ForgeBoss ready'; $detail.Text = 'Startup completion reported by ForgeBoss.'
+-                    $script:pct = 100; $info.Text = '100% - READY'
+-                    if ($script:readyAt -lt 0) { $script:readyAt = $now }
+-                    if (($now-$script:readyAt) -ge 0.65) { $form.Close(); return }
++                    $script:reportedPct = 100; $script:targetPct = 100
++                    if ($script:pct -ge 100) {
++                        $info.Text = '100% - READY'
++                        if ($script:readyAt -lt 0) { $script:readyAt = $now }
++                        if (($now-$script:readyAt) -ge 0.65) { $form.Close(); return }
++                    } else {
++                        $info.Text = ('{0}% - finalising startup' -f $script:pct)
++                    }
+                 }
+@@
+-    $form.Add_Shown({ $timer.Start() })
++    $form.Add_Shown({ $animationTimer.Start(); $timer.Start() })
+@@
+ } finally {
++    if ($animationTimer) { $animationTimer.Stop(); $animationTimer.Dispose() }
+     if ($timer) { $timer.Stop(); $timer.Dispose() }
