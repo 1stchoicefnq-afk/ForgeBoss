@@ -40,7 +40,7 @@ def verify_envelope(payload,secret:bytes,now=None):
     now=time.time() if now is None else float(now)
     if not isinstance(payload,dict):raise ValueError("envelope must be object")
     allowed={"envelopeVersion","taskId","repository","baseSha","branch","worktreePath","runId","attempt","ownerEpoch","runtime",
-             "allowedPaths","deniedPaths","allowedTools","contextBundleHash","transcript","events","budgetUsd","expiresAt","protocolVersion","signature"}
+             "allowedPaths","deniedPaths","allowedTools","packetSha256","contextBundleHash","transcript","events","budgetUsd","expiresAt","protocolVersion","signature"}
     extra=set(payload)-allowed
     if extra:raise ValueError("unexpected envelope keys: "+",".join(sorted(extra)))
     required={"envelopeVersion","taskId","repository","baseSha","worktreePath","runId","ownerEpoch","runtime","allowedPaths","allowedTools","expiresAt","protocolVersion","signature"}
