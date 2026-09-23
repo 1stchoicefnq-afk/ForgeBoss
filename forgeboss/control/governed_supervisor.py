@@ -14,7 +14,8 @@ import uuid
 
 from forgeboss.control.envelope import verify_envelope
 from forgeboss.control.governed_launch import issue_governed_launch_attestation, resolve_runner_identity
-from forgeboss.security.executor_guard import SecurityError, _assert_live_control_lease, issue_lease, revoke_lease
+from forgeboss.security.executor_guard import SecurityError, _assert_live_control_lease, _resolve_git_executable, issue_lease, revoke_lease
+from forgeboss.security.host_tool_identity import HostToolIdentityError, resolve_trusted_host_executable
 
 
 class GovernedSupervisorError(RuntimeError):
@@ -161,6 +162,15 @@ def supervise_governed_run(
     if poll_seconds <= 0 or poll_seconds > 5:
         raise GovernedSupervisorError("poll_seconds must be between 0 and 5 seconds")
     provider_credentials = _validated_openai_credentials(provider, model, credential_env)
+    try:
+        docker_identity = resolve_trusted_host_executable("docker")
+        git_executable = _resolve_git_executable()
+    except Exception as ex:
+        raise GovernedSupervisorError(f"trusted host tool resolution failed: {ex}") from ex
+    trusted_path = os.pathsep.join(dict.fromkeys([
+        str(Path(docker_identity.path).parent),
+        str(Path(git_executable).parent),
+    ]))
 
     task = daemon.store.get_task(task_id)
     if not task:
@@ -203,6 +213,12 @@ def supervise_governed_run(
         secret=daemon.launch_secret,
         ttl_seconds=300,
     )
+    if (
+        attestation.get("dockerPath") != docker_identity.path
+        or attestation.get("dockerSha256") != docker_identity.sha256
+        or int(attestation.get("dockerSize") or -1) != docker_identity.size
+    ):
+        raise GovernedSupervisorError("Docker identity changed before launch attestation")
 
     claim = daemon.dispatch({
         "method":"workspace.claim",
@@ -246,7 +262,7 @@ def supervise_governed_run(
         raise GovernedSupervisorError(f"executor lease creation failed: {ex}") from ex
 
     env = {
-        "PATH": os.environ.get("PATH",""),
+        "PATH": trusted_path,
         "SYSTEMROOT": os.environ.get("SYSTEMROOT",""),
         "WINDIR": os.environ.get("WINDIR",""),
         "TEMP": os.environ.get("TEMP",""),
