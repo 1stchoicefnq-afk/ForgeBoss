@@ -66,7 +66,7 @@ These rules describe the minimum project-engineering behavior ForgeBoss should a
 57. Releases/projects must maintain sufficient third-party provenance for an SBOM or equivalent dependency inventory.
 58. Authority/security-critical dependencies must be pinned to reviewed versions/identities.
 59. Dependency upgrades must be reviewed and tested; do not silently follow an unreviewed latest version.
-60. Executable Worker Packs/plugins/extensions must be identity/version/hash/signature verified where the distribution model supports it.
+60. Executable Worker Packs/plugins/extensions must be pinned to an exact identity/version and cryptographically hash-verified at minimum; signatures are additionally verified where the distribution model supports them.
 61. Installing a plugin/extension/pack never grants capabilities automatically; declared capabilities remain subject to ForgeBoss authority.
 62. ForgeBoss application updates must be authenticated/versioned and have known-good rollback/recovery behavior.
 63. Projects must be isolated from one another for private context, secrets, workspace and evidence unless explicit sharing is authorised.
