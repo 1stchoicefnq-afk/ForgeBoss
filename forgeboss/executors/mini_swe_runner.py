@@ -55,6 +55,20 @@ def _persist_early_failure(result:dict,message:str,code:int)->int:
     print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
     return code
 
+def _guard_subprocess(args:list[str]):
+    engine_root=Path(__file__).resolve().parents[2]
+    env=dict(os.environ)
+    env["PYTHONPATH"]=str(engine_root)
+    env["PYTHONNOUSERSITE"]="1"
+    env["PYTHONDONTWRITEBYTECODE"]="1"
+    env.pop("PYTHONHOME",None)
+    flags=getattr(subprocess,"CREATE_NO_WINDOW",0)
+    return subprocess.run(
+        [sys.executable,"-m","forgeboss.security.executor_guard",*args],
+        cwd=str(engine_root),env=env,capture_output=True,text=True,
+        creationflags=flags,
+    )
+
 def main() -> int:
     if len(sys.argv)<4:
         print("usage: mini_swe_runner.py PACKET.json WORKSPACE BUDGET_USD",file=sys.stderr);return 2
@@ -67,7 +81,6 @@ def main() -> int:
 
     if os.environ.get("FORGEBOSS_ALLOW_PAID_EXECUTOR")!="YES":
         return _persist_early_failure(result,"paid executor gate is not enabled",3)
-    guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         return _persist_early_failure(result,"unified executor lease missing",13)
@@ -75,11 +88,16 @@ def main() -> int:
         launch_bundle=os.environ.get("FORGEBOSS_PROTECTED_LAUNCH_BUNDLE","")
         if not launch_bundle:
             return _persist_early_failure(result,"protected self-build launch bundle missing",13)
-        v=subprocess.run([sys.executable,str(guard),"protected-paid-start","--lease",lease,"--token",lease_token,
-                          "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
-                          "--launch-bundle",launch_bundle,"--budget",str(budget)],capture_output=True,text=True)
+        v=_guard_subprocess([
+            "protected-paid-start","--lease",lease,"--token",lease_token,
+            "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+            "--launch-bundle",launch_bundle,"--budget",str(budget),
+        ])
     else:
-        v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+        v=_guard_subprocess([
+            "verify","--lease",lease,"--token",lease_token,
+            "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+        ])
     if v.returncode:
         detail=(v.stdout or v.stderr or "protected paid-start guard denied").strip()[-2000:]
         return _persist_early_failure(result,"protected paid-start guard denied: "+detail,13)
@@ -164,7 +182,10 @@ Required acceptance intent:
         agent.run(task)
         result["cost_usd"]=float(getattr(agent,"cost",0.0) or 0.0)
         result["calls"]=int(getattr(agent,"n_calls",0) or 0)
-        post=subprocess.run([sys.executable,str(guard),"postflight","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+        post=_guard_subprocess([
+            "postflight","--lease",lease,"--token",lease_token,
+            "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+        ])
         if post.returncode:
             result["error"]="ForgeBoss postflight denied worker result: "+(post.stdout or post.stderr)[-1200:]
             return 13
