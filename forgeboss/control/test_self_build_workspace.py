@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -64,7 +63,8 @@ class SelfBuildWorkspaceTests(unittest.TestCase):
         self.assertEqual(r["base_sha"], self.base)
         self.assertEqual(r["head_sha"], self.base)
         self.assertEqual(r["network_policy"], "LOCAL_ONLY")
-        self.assertFalse(r["network_used"])
+        self.assertFalse(r["network_transport_requested"])
+        self.assertFalse(r["network_isolation_proven"])
         self.assertRegex(r["git_executable_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(r["source_git_metadata_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(r["successor_git_metadata_sha256"], r"^[0-9a-f]{64}$")
@@ -184,6 +184,16 @@ class SelfBuildWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(SelfBuildWorkspaceError, "receipt destination is link-like"):
             self._create(wid)
         self.assertTrue(receipt.is_symlink())
+
+    def test_existing_regular_receipt_is_not_overwritten(self):
+        wid = "workspace-test-receipt"
+        self.state.mkdir(parents=True)
+        receipt = self.state / f"{wid}.json"
+        receipt.write_text("KEEP-ME\n", encoding="utf-8")
+        with self.assertRaisesRegex(SelfBuildWorkspaceError, "receipt already exists"):
+            self._create(wid)
+        self.assertEqual(receipt.read_text(encoding="utf-8"), "KEEP-ME\n")
+        self.assertFalse((self.worktrees / wid).exists())
 
     def test_invalid_or_unknown_sha_fails_closed(self):
         with self.assertRaises(SelfBuildWorkspaceError):
