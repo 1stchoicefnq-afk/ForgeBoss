@@ -59,7 +59,8 @@ def failed_steps(obj):
 def discover_workspace_head(repo):
     try:
         import subprocess
-        p=subprocess.run(["git.exe","rev-parse","HEAD"],cwd=str(repo),capture_output=True,text=True,timeout=30)
+        p=subprocess.run(["git.exe","rev-parse","HEAD"],cwd=str(repo),capture_output=True,text=True,timeout=30,
+                         creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
         if p.returncode==0:return p.stdout.strip()
     except Exception:pass
     return None
