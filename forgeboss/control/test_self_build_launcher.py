@@ -383,3 +383,10 @@ class LauncherTests(unittest.TestCase):
         source=Path(__file__).resolve().parents[2]
         with self.assertRaises(SelfBuildLaunchError) as cm:
             SelfBuildLauncher(
+                client=self.client,supervisor=self.supervisor,state_root=source/"state",
+                python_executable=self.python,runner_path=self.runner,issue_lease_fn=self.issue,
+            )
+        self.assertEqual(cm.exception.code,"STATE_ROOT_INSIDE_SOURCE")
+
+
+if __name__=="__main__":unittest.main()
