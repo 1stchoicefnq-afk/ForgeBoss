@@ -223,11 +223,29 @@ class ProtectedAuthorityClient:
         k.WriteFile.argtypes=[wintypes.HANDLE,wintypes.LPCVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];k.WriteFile.restype=wintypes.BOOL
         k.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];k.ReadFile.restype=wintypes.BOOL
         k.CloseHandle.argtypes=[wintypes.HANDLE];k.CloseHandle.restype=wintypes.BOOL
-        timeout_ms=max(100,int(self.timeout*1000))
-        if not k.WaitNamedPipeW(self.pipe_name,timeout_ms): raise AuthorityError("IPC_CONNECT_FAILED")
-        h=k.CreateFileW(self.pipe_name,0xC0000000,0,None,3,0,None)
+        deadline=time.monotonic()+self.timeout
         invalid=ctypes.c_void_p(-1).value
-        if not h or int(h)==invalid: raise AuthorityError("IPC_CONNECT_FAILED")
+        h=None
+        # WaitNamedPipeW returns immediately with ERROR_FILE_NOT_FOUND when the
+        # fixed pipe exists only between server batch/listen cycles. Treat that
+        # short listener turnover as transient, but stay bounded by the exact
+        # client timeout and fail closed once the deadline expires.
+        while True:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                raise AuthorityError("IPC_CONNECT_FAILED")
+            wait_ms=max(100,min(1000,int(remaining*1000)))
+            ctypes.set_last_error(0)
+            ready=bool(k.WaitNamedPipeW(self.pipe_name,wait_ms))
+            if ready:
+                ctypes.set_last_error(0)
+                candidate=k.CreateFileW(self.pipe_name,0xC0000000,0,None,3,0,None)
+                if candidate and int(candidate)!=invalid:
+                    h=candidate
+                    break
+            time.sleep(min(0.02,max(0.0,deadline-time.monotonic())))
+        if h is None:
+            raise AuthorityError("IPC_CONNECT_FAILED")
         try:
             written=wintypes.DWORD(0);buf=ctypes.create_string_buffer(raw)
             if not k.WriteFile(h,buf,len(raw),ctypes.byref(written),None) or written.value!=len(raw):
