@@ -30,7 +30,8 @@ class GovernedSupervisorTests(unittest.TestCase):
             supervise_governed_run(
                 D(), task_id="T", packet_path="missing", workspace_path="missing",
                 allowed_tools=[], adapter="mini-swe", provider="openai", model="openai/m",
-                budget_usd=1, poll_seconds=0, credential_env={"OPENAI_API_KEY":"x"},
+                budget_usd=1, container_image="node@sha256:"+"d"*64,
+                poll_seconds=0, credential_env={"OPENAI_API_KEY":"x"},
             )
 
     def test_non_miniswe_is_not_supported_in_r0(self):
@@ -40,7 +41,8 @@ class GovernedSupervisorTests(unittest.TestCase):
             supervise_governed_run(
                 D(), task_id="T", packet_path="missing", workspace_path="missing",
                 allowed_tools=[], adapter="openhands", provider="openai", model="openai/m",
-                budget_usd=1, credential_env={"OPENAI_API_KEY":"x"},
+                budget_usd=1, container_image="node@sha256:"+"d"*64,
+                credential_env={"OPENAI_API_KEY":"x"},
             )
 
     def test_r0_credential_is_bound_to_openai_provider_and_model_prefix(self):
