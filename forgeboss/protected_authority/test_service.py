@@ -46,6 +46,11 @@ class TestService(ProtectedAuthorityService):
 
 class Runtime:
     def __init__(self,leak=False):self.calls=[];self.leak=leak
+    def authorize_launch(self,launch,*,repository,control_revision):
+        self.calls.append(('authorize-launch',dict(launch),repository,control_revision))
+        return {"verified":True,"launchDigest":canonical_digest(launch),
+                "sourceIdentity":{"revision":"a"*40},
+                "trustGrade":"OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP"}
     def prepare(self,payload):
         self.calls.append(('prepare',dict(payload)))
         if self.leak:return {'assignmentToken':'must-not-escape'}
@@ -91,6 +96,23 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
         p={'baseSha':'a'*40,'headSha':'b'*40,'baseRef':'main','headRef':'repair/fix','title':'Reviewed fix','body':'evidence','reviewDigest':'c'*64};out=self.service.handle(req('publish_reviewed_draft_pr',p),peer_context=CTX);self.assertTrue(verify_signed_receipt(out,self.public_b64));self.backend.leak=True
         with self.assertRaises(AuthorityError) as cm:self.service.handle(req('read_github_control',{'rootPr':10,'preferredRepairPr':0}),peer_context=CTX)
         self.assertEqual(cm.exception.code,'SECRET_FIELD_DENIED')
+    def test_launch_authorization_uses_protected_runtime_not_launch_trust_key(self):
+        runtime=Runtime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        launch={
+            "schema":1,"repository":"owner/repo","controlRevision":129,"taskId":"task-a",
+            "runId":"worker-a","ownerEpoch":1,"builderId":"builder-a","assignmentGeneration":1,
+            "assignmentSha256":"2"*64,"branch":"forgeboss/fl1-a","worktreePath":"/tmp/work",
+            "runtimeId":"mini-swe","allowedPaths":["x.py"],"packetSha256":"3"*64,
+            "budgetUsd":"1.00","globalBudgetRunId":"fl1-run","globalBudgetReservationId":"task-a",
+            "expiresAt":9999999999.0,
+        }
+        out=svc.handle(req('authorize_self_build_launch',{'launch':launch}),peer_context=CTX)
+        self.assertTrue(verify_signed_receipt(out,self.public_b64))
+        self.assertEqual(out['result']['launchDigest'],canonical_digest(launch))
+        self.assertEqual(self.secrets.launch_reads,0)
+        self.assertEqual(runtime.calls[0][0],'authorize-launch')
+
     def test_self_build_prepare_uses_local_runtime_without_github_private_key(self):
         runtime=Runtime()
         svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
