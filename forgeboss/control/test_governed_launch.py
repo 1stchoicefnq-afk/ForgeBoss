@@ -150,6 +150,12 @@ class GovernedLaunchTests(unittest.TestCase):
         verified = self.verify(token, budget_usd=0.5)
         self.assertEqual(verified.budget_usd, "0.5")
 
+    def test_zero_or_negative_budget_is_rejected_for_paid_governed_launch(self):
+        for value in (0, "0", -0.01):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(GovernedLaunchError, "positive"):
+                    self.issue(budget_usd=value)
+
 
 if __name__ == "__main__":
     unittest.main()
