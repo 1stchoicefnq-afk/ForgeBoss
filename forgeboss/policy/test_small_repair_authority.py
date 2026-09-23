@@ -138,6 +138,29 @@ class SmallRepairAuthorityTests(unittest.TestCase):
         )
         self.assertEqual(verified.allowed_paths, ("src/a.py", "tests/a.test.py"))
 
+    def test_scope_uses_control_store_case_and_trailing_dot_identity(self):
+        value = issue_small_repair_exemption(
+            task_id=TASK["task_id"],
+            repository=TASK["repository"],
+            base_sha=TASK["base_sha"],
+            objective=TASK["objective"],
+            allowed_paths=["SRC/A.PY.", "Tests/A.Test.py "],
+            secret=SECRET,
+            ttl_seconds=300,
+            now=1000.0,
+        )
+        verified = verify_small_repair_exemption(
+            value,
+            task_id=TASK["task_id"],
+            repository="OWNER/REPO",
+            base_sha=TASK["base_sha"],
+            objective=TASK["objective"],
+            allowed_paths=["src/a.py", "tests/a.test.py"],
+            secret=SECRET,
+            now=1100.0,
+        )
+        self.assertEqual(verified.allowed_paths, ("src/a.py", "tests/a.test.py"))
+
     def test_absolute_parent_and_empty_scope_paths_fail_closed(self):
         for path in ("/etc/passwd", "../src/a.py", "C:/Windows/system32", "."):
             with self.subTest(path=path):
