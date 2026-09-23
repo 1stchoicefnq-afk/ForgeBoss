@@ -247,6 +247,58 @@ class GovernedTaskCreateTests(unittest.TestCase):
             self.store.create_task(p)
         self.assertIsNone(self.store.get_task("T2"))
 
+    def _create_governed_substantial(self, task_id="T-GOV"):
+        p = self.params(task_id=task_id)
+        p["reuseReview"] = self.review()
+        p["reuseReviewReceipt"] = issue_reuse_review_receipt(
+            task_id=p["taskId"],
+            repository=p["repository"],
+            base_sha=p["baseSha"],
+            objective=p["purpose"],
+            allowed_paths=p["allowedPaths"],
+            subsystem=p["subsystem"],
+            reuse_review=p["reuseReview"],
+            secret=self.daemon.policy_secret,
+            ttl_seconds=600,
+        )
+        return p, self.daemon.dispatch(self.request(p), True)
+
+    def _claim_request(self, task_id, runtime_id):
+        work = self.worktrees / uuid.uuid4().hex
+        work.mkdir()
+        return {
+            "method": "workspace.claim",
+            "idempotencyKey": uuid.uuid4().hex,
+            "params": {
+                "taskId": task_id,
+                "repository": "owner/repo",
+                "baseSha": "a" * 40,
+                "allowedPaths": ["src/terminal.py", "tests/test_terminal.py"],
+                "allowedTools": ["python"],
+                "worktreePath": str(work),
+                "runId": uuid.uuid4().hex,
+                "currentHead": "a" * 40,
+                "ttlSeconds": 60,
+                "runtimeId": runtime_id,
+                "budgetUsd": 0.0,
+            },
+        }
+
+    def test_governed_task_blocks_host_worker_runtime_without_isolation_proof(self):
+        p, _ = self._create_governed_substantial("T-HOST")
+        for runtime_id in ("openhands", "opencode", "", "unknown"):
+            with self.subTest(runtime_id=runtime_id):
+                with self.assertRaises(self.mod.ProtocolError) as ctx:
+                    self.daemon.dispatch(self._claim_request(p["taskId"], runtime_id), True)
+                self.assertEqual(ctx.exception.code, "POLICY_KEY_ISOLATION_UNPROVEN")
+        self.assertIsNone(self.store.get_lease("T-HOST"))
+
+    def test_governed_task_allows_current_container_isolated_mini_swe_runtime(self):
+        p, _ = self._create_governed_substantial("T-MINI")
+        out = self.daemon.dispatch(self._claim_request(p["taskId"], "mini-swe"), True)
+        self.assertEqual(out["launchEnvelope"]["runtime"]["adapter"], "mini-swe")
+        self.assertEqual(out["lease"]["owner_epoch"], 1)
+
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
