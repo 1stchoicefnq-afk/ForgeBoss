@@ -109,20 +109,114 @@ test("runProcess reaps same-group background descendants on POSIX", { skip: os.p
   assert.equal(result.exitCode, 0);
   const pid = Number(result.stdout.trim());
   assert.ok(Number.isInteger(pid) && pid > 0);
-  assert.throws(() => process.kill(pid, 0));
+  let gone = false;
+  for (let i = 0; i < 100; i += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      gone = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(gone, true, "background descendant survived broker cleanup");
 });
 
-test("runProcess returns structured start failure without shell fallback", async () => {
+test("runProcess rejects unavailable or relative executable before spawn", async () => {
   const fake = path.join(CWD, "definitely-does-not-exist-forgeboss-executable");
-  const result = await runProcess({
-    executable: fake,
-    args: [],
-    cwd: CWD,
-    env: {},
-    timeoutMs: 1000,
-  });
-  assert.match(result.startError || "", /ENOENT|not found/i);
-  assert.equal(result.timedOut, false);
+  await assert.rejects(
+    runProcess({ executable: fake, args: [], cwd: CWD, env: {}, timeoutMs: 1000 }),
+    /executable is unavailable/,
+  );
+  await assert.rejects(
+    runProcess({ executable: "node", args: [], cwd: CWD, env: {}, timeoutMs: 1000 }),
+    /executable must be an absolute path/,
+  );
+});
+
+test("runProcess rejects relative or unavailable cwd before spawn", async () => {
+  await assert.rejects(
+    runProcess({ executable: process.execPath, args: [], cwd: ".", env: {}, timeoutMs: 1000 }),
+    /cwd must be an absolute path/,
+  );
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: path.join(CWD, "definitely-missing-cwd"),
+      env: {},
+      timeoutMs: 1000,
+    }),
+    /cwd is unavailable/,
+  );
+});
+
+test("runProcess enforces hard resource-input caps before spawn", async () => {
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: ["x".repeat(70000)],
+      cwd: CWD,
+      env: {},
+      timeoutMs: 1000,
+    }),
+    /args are too large/,
+  );
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: CWD,
+      env: { HUGE: "x".repeat(70000) },
+      timeoutMs: 1000,
+    }),
+    /env is too large/,
+  );
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: CWD,
+      env: {},
+      timeoutMs: (60 * 60 * 1000) + 1,
+    }),
+    /timeoutMs must be/,
+  );
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: CWD,
+      env: {},
+      timeoutMs: 1000,
+      maxOutput: 1000001,
+    }),
+    /maxOutput is outside/,
+  );
+});
+
+test("runProcess rejects malformed env and signal before spawn", async () => {
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: CWD,
+      env: { BAD: 123 },
+      timeoutMs: 1000,
+    }),
+    /env values must be/,
+  );
+  await assert.rejects(
+    runProcess({
+      executable: process.execPath,
+      args: [],
+      cwd: CWD,
+      env: {},
+      timeoutMs: 1000,
+      signal: {},
+    }),
+    /signal must be an AbortSignal/,
+  );
 });
 
 test("AbortSignal cancels a running process", async () => {
