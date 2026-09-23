@@ -110,11 +110,24 @@ def _sha256_file(path: Path) -> str:
 
 def _regular_file(path: Path, label: str) -> Path:
     try:
+        if path.is_symlink():
+            raise GovernedLaunchError(f"{label} must not be a symlink")
+        if hasattr(path, "is_junction") and path.is_junction():
+            raise GovernedLaunchError(f"{label} must not be a junction")
         resolved = path.resolve(strict=True)
+    except GovernedLaunchError:
+        raise
     except OSError as ex:
         raise GovernedLaunchError(f"{label} is unavailable") from ex
     if not resolved.is_file():
         raise GovernedLaunchError(f"{label} must be a regular file")
+    if os.name == "nt":
+        try:
+            attrs = int(getattr(os.lstat(path), "st_file_attributes", 0))
+        except OSError as ex:
+            raise GovernedLaunchError(f"{label} identity cannot be inspected") from ex
+        if attrs & 0x400:
+            raise GovernedLaunchError(f"{label} must not be a reparse point")
     return resolved
 
 
