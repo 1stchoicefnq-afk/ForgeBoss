@@ -235,6 +235,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             "governanceMode": "reuse-v1",
             "workKind": "small-repair",
             "smallRepairExemptionSha256": None,
+            "governanceAuthorityReceipt": "hmac-sha256:" + ("0" * 64),
         })
         with self.assertRaisesRegex(ValueError, "small-repair governance evidence"):
             self.store.create_task(p)
@@ -246,6 +247,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             "workKind": "substantial-subsystem",
             "reuseReviewSha256": "1" * 64,
             "reuseReviewReceiptSha256": None,
+            "governanceAuthorityReceipt": "hmac-sha256:" + ("0" * 64),
         })
         with self.assertRaisesRegex(ValueError, "substantial governance evidence"):
             self.store.create_task(p)
@@ -360,6 +362,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
         p["smallRepairExemptionSha256"] = "1" * 64
+        p["governanceAuthorityReceipt"] = "hmac-sha256:" + ("0" * 64)
         with self.assertRaisesRegex(ValueError, "requires governanceMode"):
             self.store.create_task(p)
         self.assertIsNone(self.store.get_task("T3"))

@@ -9,6 +9,7 @@ from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
 from forgeboss.control.governed_launch import GovernedLaunchError,verify_governed_launch_attestation
+from forgeboss.policy.task_governance_authority import sign_governed_task_authority
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -21,6 +22,8 @@ SAFE_TOOL_IDS={"git","node","npm","python","pytest","docker"}
 class ForgeBossDaemon:
     def __init__(self):
         WORKTREE_ROOT.mkdir(parents=True,exist_ok=True)
+        self.repo_root=ROOT
+        self.worktree_root=WORKTREE_ROOT
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
         self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
@@ -102,6 +105,7 @@ class ForgeBossDaemon:
                 governed["reuseReviewSha256"]=digest(p.get("reuseReview"))
                 governed["reuseReviewReceiptSha256"]=digest(p.get("reuseReviewReceipt"))
                 governed["smallRepairExemptionSha256"]=digest(p.get("smallRepairExemption"))
+                governed["governanceAuthorityReceipt"]=sign_governed_task_authority(governed,self.policy_secret)
                 return self.store.create_task(governed)
             return self._idem(req,create)
         if m=="task.get":
@@ -152,7 +156,8 @@ class ForgeBossDaemon:
                 try:
                     lease=self.store.claim_workspace(p["taskId"],p["runId"],p["worktreePath"],p.get("branch"),p["currentHead"],
                                                      int(p.get("ttlSeconds",1200)),p.get("runtimeId"),WORKTREE_ROOT,
-                                                     budget_reserved=p.get("budgetUsd",0))
+                                                     budget_reserved=p.get("budgetUsd",0),
+                                                     require_queued=(task.get("governance_mode")=="reuse-v1"))
                 except BudgetReservationError as ex:
                     raise ProtocolError(ex.code,str(ex)) from ex
                 env={

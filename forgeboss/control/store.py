@@ -5,7 +5,7 @@ from pathlib import Path
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 from forgeboss.control.scheduler import _canonical_path
 
-SCHEMA_VERSION=4
+SCHEMA_VERSION=5
 class BudgetReservationError(RuntimeError):
     def __init__(self,code,message): super().__init__(message);self.code=code
 class WorkspaceCollisionError(RuntimeError):
@@ -93,11 +93,11 @@ def _validated_budget_request(task,requested):
 
 def _governance_fields(task):
     mode=task.get("governanceMode")
-    governed_keys=("workKind","subsystem","reuseReviewSha256","reuseReviewReceiptSha256","smallRepairExemptionSha256")
+    governed_keys=("workKind","subsystem","reuseReviewSha256","reuseReviewReceiptSha256","smallRepairExemptionSha256","governanceAuthorityReceipt")
     if mode is None:
         if any(task.get(name) is not None for name in governed_keys):
             raise ValueError("governance evidence requires governanceMode")
-        return (None,None,None,None,None,None)
+        return (None,None,None,None,None,None,None)
     if mode!="reuse-v1": raise ValueError("unsupported governanceMode")
     work_kind=task.get("workKind")
     if work_kind not in ("small-repair","substantial-subsystem"): raise ValueError("governed task workKind invalid")
@@ -109,11 +109,14 @@ def _governance_fields(task):
         if not isinstance(value,str) or not re.fullmatch(r"[0-9a-f]{64}",value): raise ValueError(f"{name} must be lowercase SHA-256")
         return value
     review=digest("reuseReviewSha256");receipt=digest("reuseReviewReceiptSha256");exemption=digest("smallRepairExemptionSha256")
+    authority=task.get("governanceAuthorityReceipt")
+    if not isinstance(authority,str) or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}",authority):
+        raise ValueError("governed task authority receipt invalid")
     if work_kind=="small-repair":
         if not exemption or review is not None or receipt is not None: raise ValueError("small-repair governance evidence invalid")
     else:
         if not review or not receipt or exemption is not None: raise ValueError("substantial governance evidence invalid")
-    return (mode,work_kind,subsystem,review,receipt,exemption)
+    return (mode,work_kind,subsystem,review,receipt,exemption,authority)
 
 def _ttl(value):
     if isinstance(value,bool): raise ValueError("ttl_seconds must be finite positive")
@@ -134,7 +137,7 @@ class ControlStore:
         with self._lock:
             self.db.executescript("""
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,governance_mode TEXT,work_kind TEXT,subsystem TEXT,reuse_review_sha256 TEXT,reuse_review_receipt_sha256 TEXT,small_repair_exemption_sha256 TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,governance_mode TEXT,work_kind TEXT,subsystem TEXT,reuse_review_sha256 TEXT,reuse_review_receipt_sha256 TEXT,small_repair_exemption_sha256 TEXT,governance_authority_receipt TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS task_runs(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),attempt INTEGER NOT NULL,owner_epoch INTEGER NOT NULL,runtime_id TEXT,status TEXT NOT NULL,started_at REAL NOT NULL,finished_at REAL);
             CREATE TABLE IF NOT EXISTS task_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,event_type TEXT NOT NULL,payload_json TEXT NOT NULL,state_version INTEGER NOT NULL,created_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS workspace_leases(task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),worktree_path TEXT NOT NULL,branch TEXT,owner_run_id TEXT NOT NULL,owner_epoch INTEGER NOT NULL,claimed_at REAL NOT NULL,heartbeat_at REAL NOT NULL,expires_at REAL NOT NULL,released_at REAL,current_head TEXT NOT NULL,budget_reserved REAL NOT NULL DEFAULT 0);
@@ -153,6 +156,7 @@ class ControlStore:
                 ("reuse_review_sha256","TEXT"),
                 ("reuse_review_receipt_sha256","TEXT"),
                 ("small_repair_exemption_sha256","TEXT"),
+                ("governance_authority_receipt","TEXT"),
             ):
                 if name not in task_cols:self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
             self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
@@ -175,8 +179,8 @@ class ControlStore:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
-                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,governance_mode,work_kind,subsystem,reuse_review_sha256,reuse_review_receipt_sha256,small_repair_exemption_sha256,created_at,updated_at)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),*governance,now,now))
+                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,governance_mode,work_kind,subsystem,reuse_review_sha256,reuse_review_receipt_sha256,small_repair_exemption_sha256,governance_authority_receipt,created_at,updated_at)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),*governance,now,now))
                 event={"status":"queued"}
                 if governance[0] is not None:event.update({"governanceMode":governance[0],"workKind":governance[1],"subsystem":governance[2],"reuseReviewSha256":governance[3],"reuseReviewReceiptSha256":governance[4],"smallRepairExemptionSha256":governance[5]})
                 self._event_locked("task.created",event,t["taskId"])
@@ -202,7 +206,7 @@ class ControlStore:
             if _repository_identity(row["repository"])!=repository_id or _git_object_id(row["base_sha"])!=base_id: continue
             if _scope_overlap(scope,_scope_authorities(row["allowed_paths_json"])): raise WorkspaceCollisionError("WRITABLE_SCOPE_COLLISION",f"writable scope overlaps live task {other_task}")
 
-    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0):
+    def claim_workspace(self,task_id,run_id,worktree,branch,current_head,ttl_seconds=1200,runtime_id=None,worktree_root=None,budget_reserved=0.0,require_queued=False):
         if worktree_root is None: raise ValueError("worktree_root required")
         worktree=canonical_worktree_path(worktree,worktree_root);ttl_seconds=_ttl(ttl_seconds)
         with self._lock:
@@ -212,6 +216,9 @@ class ControlStore:
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row: raise KeyError("task not found")
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
+                if require_queued:
+                    if task.get("status")!="queued": raise PermissionError("governed task is no longer queued")
+                    if task.get("cancel_requested_at") is not None: raise PermissionError("governed task was cancelled")
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and float(row["expires_at"])>now: raise RuntimeError("workspace lease is already active")
