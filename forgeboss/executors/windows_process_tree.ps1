@@ -6,44 +6,68 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$knownParents = [System.Collections.Generic.HashSet[int]]::new()
+$knownParents.Add($RootPid) | Out-Null
 
-$rows = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
-$children = @{}
+function Get-Descendants {
+    param(
+        [System.Collections.Generic.HashSet[int]]$Known
+    )
 
-foreach ($row in $rows) {
-    $pid = [int]$row.ProcessId
-    $parent = [int]$row.ParentProcessId
-    if (-not $children.ContainsKey($parent)) {
-        $children[$parent] = [System.Collections.Generic.List[int]]::new()
+    $rows = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
+    $live = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($row in $rows) {
+        $live.Add([int]$row.ProcessId) | Out-Null
     }
-    $children[$parent].Add($pid)
-}
 
-$queue = [System.Collections.Generic.Queue[int]]::new()
-$seen = [System.Collections.Generic.HashSet[int]]::new()
-$targets = [System.Collections.Generic.List[int]]::new()
-$queue.Enqueue($RootPid) | Out-Null
-$seen.Add($RootPid) | Out-Null
-
-while ($queue.Count -gt 0) {
-    $parent = $queue.Dequeue()
-    if (-not $children.ContainsKey($parent)) {
-        continue
-    }
-    foreach ($child in $children[$parent]) {
-        if ($seen.Add($child)) {
-            $targets.Add($child)
-            $queue.Enqueue($child)
+    $targets = [System.Collections.Generic.HashSet[int]]::new()
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($row in $rows) {
+            $pid = [int]$row.ProcessId
+            $parent = [int]$row.ParentProcessId
+            if (($Known.Contains($parent) -or $targets.Contains($parent)) -and -not $Known.Contains($pid)) {
+                if ($targets.Add($pid)) {
+                    $changed = $true
+                }
+            }
         }
     }
+
+    return [pscustomobject]@{
+        Live = $live
+        Targets = $targets
+    }
 }
 
-for ($i = $targets.Count - 1; $i -ge 0; $i--) {
-    $pid = $targets[$i]
-    try {
-        Stop-Process -Id $pid -Force -ErrorAction Stop
+for ($round = 0; $round -lt 6; $round++) {
+    $snapshot = Get-Descendants -Known $knownParents
+    $targets = @($snapshot.Targets)
+
+    if ($targets.Count -eq 0) {
+        exit 0
     }
-    catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
-        # The process may have exited between snapshot and termination.
+
+    foreach ($pid in $targets) {
+        $knownParents.Add([int]$pid) | Out-Null
     }
+
+    foreach ($pid in ($targets | Sort-Object -Descending)) {
+        try {
+            Stop-Process -Id ([int]$pid) -Force -ErrorAction Stop
+        }
+        catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+            # Process exited between snapshot and termination.
+        }
+    }
+
+    Start-Sleep -Milliseconds 50
 }
+
+$final = Get-Descendants -Known $knownParents
+if (@($final.Targets).Count -gt 0) {
+    exit 9
+}
+
+exit 0
