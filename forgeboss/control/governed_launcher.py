@@ -13,8 +13,7 @@ import uuid
 
 from forgeboss.control.client import Client
 from forgeboss.control.envelope import (
-    canonical,
-    launch_secret_file,
+     launch_secret_file,
     secret_file,
     verify_envelope,
 )
@@ -38,6 +37,14 @@ from forgeboss.security.executor_guard import (
 
 class GovernedLauncherError(RuntimeError):
     """Raised when trusted governed launch preparation cannot fail safely."""
+
+
+def _freeze(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(k): _freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(v) for v in value)
+    return value
 
 
 R0_ADAPTER = "mini-swe"
@@ -104,7 +111,7 @@ def _task_budget_remaining(task: Mapping[str, object]) -> Decimal:
     return allocated - spent
 
 
-def _packet(path: str | Path, task: Mapping[str, object]) -> tuple[Path, dict[str, object], str]:
+def _packet(path: str | Path, task: Mapping[str, object]) -> tuple[Path, dict[str, object], str, tuple[str, ...]]:
     p = Path(path)
     try:
         resolved = p.resolve(strict=True)
@@ -146,8 +153,21 @@ def _packet(path: str | Path, task: Mapping[str, object]) -> tuple[Path, dict[st
     packet_scope = tuple(sorted(_scope_authorities(list(allowed))))
     if packet_scope != task_scope:
         raise GovernedLauncherError("packet writable scope differs from canonical task scope")
+    try:
+        raw_task_scope = task.get("allowed_paths_json")
+        if isinstance(raw_task_scope, str):
+            raw_task_scope = json.loads(raw_task_scope)
+        task_allowed, _ = validate_packet({"allowed_files": raw_task_scope or [], "context_files": []})
+    except Exception as ex:
+        raise GovernedLauncherError("canonical task writable scope cannot be normalized safely") from ex
+    task_spelling = tuple(sorted(x.casefold() for x in task_allowed))
+    packet_spelling = tuple(sorted(x.casefold() for x in allowed))
+    if packet_spelling != task_spelling:
+        raise GovernedLauncherError(
+            "packet/task writable scope uses ambiguous alias spelling; normalize task scope before launch"
+        )
 
-    return resolved, document, hashlib.sha256(raw).hexdigest()
+    return resolved, document, hashlib.sha256(raw).hexdigest(), tuple(allowed)
 
 
 def _provider_env(provider: str, values: Mapping[str, object]) -> Mapping[str, str]:
@@ -164,14 +184,17 @@ def _provider_env(provider: str, values: Mapping[str, object]) -> Mapping[str, s
         )
     out: dict[str, str] = {}
     for key, value in values.items():
-        clean = _text(value, key)
-        out[str(key)] = clean
+        if not isinstance(value, str) or not value:
+            raise GovernedLauncherError(f"{key} must be a non-empty string")
+        if value != value.strip() or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise GovernedLauncherError(f"{key} contains invalid whitespace/control characters")
+        out[str(key)] = value
     if not out:
         raise GovernedLauncherError("provider_env must contain an approved provider credential")
     return MappingProxyType(out)
 
 
-def _cleanup_executor_lease(lease_obj: Mapping[str, object] | None) -> None:
+def _cleanup_executor_lease(lease_obj: Mapping[str, object] | None, repo_root: str | Path) -> None:
     if not lease_obj:
         return
     raw = lease_obj.get("lease")
@@ -179,7 +202,7 @@ def _cleanup_executor_lease(lease_obj: Mapping[str, object] | None) -> None:
         return
     try:
         p = Path(raw).resolve(strict=False)
-        state = (Path(__file__).resolve().parents[2] / "state" / "executor-security").resolve(strict=False)
+        state = (Path(repo_root).resolve(strict=False) / "state" / "executor-security").resolve(strict=False)
         if os.path.commonpath((str(state), str(p))) == str(state) and p.is_file():
             p.unlink()
     except Exception:
@@ -195,7 +218,7 @@ def _release_claim(client, task_id: str, run_id: str, owner_epoch: int, current_
                 "runId": run_id,
                 "ownerEpoch": owner_epoch,
                 "resultHead": current_head,
-                "outcome": "launch-preparation-failed",
+                "outcome": "queued",
                 "expectedHead": current_head,
             },
         )
@@ -250,7 +273,8 @@ def prepare_governed_launch(
     if task.get("cancel_requested_at") is not None:
         raise GovernedLauncherError("task cancellation has been requested")
 
-    repository = _repository_identity(task.get("repository"))
+    repository_raw = _text(task.get("repository"), "canonical task repository")
+    _repository_identity(repository_raw)
     base_sha = _git_object_id(task.get("base_sha"))
     current_head = _git_object_id(task.get("result_head") or base_sha)
     task_scope = tuple(sorted(_scope_authorities(task.get("allowed_paths_json"))))
@@ -261,7 +285,7 @@ def prepare_governed_launch(
     if requested_budget > _task_budget_remaining(task):
         raise GovernedLauncherError("requested launch budget exceeds canonical task remaining budget")
 
-    packet, packet_document, packet_sha256 = _packet(packet_path, task)
+    packet, packet_document, packet_sha256, packet_allowed = _packet(packet_path, task)
     workspace = Path(canonical_worktree_path(workspace_path, worktree_root))
     try:
         workspace = workspace.resolve(strict=True)
@@ -292,7 +316,7 @@ def prepare_governed_launch(
 
         attestation = issue_governed_launch_attestation(
             task_id=clean_task_id,
-            repository=repository,
+            repository=repository_raw,
             base_sha=base_sha,
             run_id=run_id,
             adapter=R0_ADAPTER,
@@ -302,7 +326,7 @@ def prepare_governed_launch(
             repo_root=repo_root,
             workspace_path=workspace,
             worktree_root=worktree_root,
-            allowed_paths=task_scope,
+            allowed_paths=packet_allowed,
             allowed_tools=R0_ALLOWED_TOOLS,
             budget_usd=budget_text,
             secret=bytes(launch_secret),
@@ -311,10 +335,10 @@ def prepare_governed_launch(
 
         claim_params = {
             "taskId": clean_task_id,
-            "repository": repository,
+            "repository": repository_raw,
             "baseSha": base_sha,
             "branch": task.get("branch"),
-            "allowedPaths": list(task_scope),
+            "allowedPaths": list(packet_allowed),
             "allowedTools": list(R0_ALLOWED_TOOLS),
             "worktreePath": str(workspace),
             "runId": run_id,
@@ -360,7 +384,7 @@ def prepare_governed_launch(
         }
         checks = {
             "taskId": clean_task_id,
-            "repository": repository,
+            "repository": repository_raw,
             "baseSha": base_sha,
             "worktreePath": str(workspace),
             "runId": run_id,
@@ -436,7 +460,7 @@ def prepare_governed_launch(
             argv=argv,
             authority_env=MappingProxyType(authority_env),
             executor_lease_path=lease_path,
-            launch_envelope=MappingProxyType(dict(envelope)),
+            launch_envelope=_freeze(envelope),
         )
     except Exception:
         if claim and isinstance(claim, Mapping) and isinstance(claim.get("lease"), Mapping):
@@ -445,7 +469,7 @@ def prepare_governed_launch(
                 _release_claim(client, clean_task_id, run_id, epoch, current_head)
             except Exception:
                 pass
-        _cleanup_executor_lease(lease_obj)
+        _cleanup_executor_lease(lease_obj, repo_root)
         raise
 
 
