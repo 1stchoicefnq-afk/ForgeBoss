@@ -284,20 +284,14 @@ class GovernedTaskCreateTests(unittest.TestCase):
             },
         }
 
-    def test_governed_task_blocks_host_worker_runtime_without_isolation_proof(self):
-        p, _ = self._create_governed_substantial("T-HOST")
-        for runtime_id in ("openhands", "opencode", "", "unknown"):
+    def test_governed_task_claim_fails_closed_until_attested_launch_exists(self):
+        p, _ = self._create_governed_substantial("T-GOV")
+        for runtime_id in ("mini-swe", "openhands", "opencode", "", "unknown"):
             with self.subTest(runtime_id=runtime_id):
                 with self.assertRaises(self.mod.ProtocolError) as ctx:
                     self.daemon.dispatch(self._claim_request(p["taskId"], runtime_id), True)
-                self.assertEqual(ctx.exception.code, "POLICY_KEY_ISOLATION_UNPROVEN")
-        self.assertIsNone(self.store.get_lease("T-HOST"))
-
-    def test_governed_task_allows_current_container_isolated_mini_swe_runtime(self):
-        p, _ = self._create_governed_substantial("T-MINI")
-        out = self.daemon.dispatch(self._claim_request(p["taskId"], "mini-swe"), True)
-        self.assertEqual(out["launchEnvelope"]["runtime"]["adapter"], "mini-swe")
-        self.assertEqual(out["lease"]["owner_epoch"], 1)
+                self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_REQUIRED")
+        self.assertIsNone(self.store.get_lease("T-GOV"))
 
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
