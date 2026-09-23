@@ -162,7 +162,7 @@ class TaskCancellationStoreTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["status"], "cancelled")
 
-    def test_cancel_event_failure_rolls_back_task_lease_run_and_worker(self):
+    def test_cancel_event_failure_still_revokes_authority_and_marks_audit_pending(self):
         self.create()
         lease = self.claim()
         now = time.time()
@@ -179,10 +179,8 @@ class TaskCancellationStoreTests(unittest.TestCase):
             BEGIN SELECT RAISE(ABORT,'cancel event rejected'); END"""
         )
 
-        with self.assertRaises(Exception):
-            self.store.cancel_task("T1")
+        cancelled = self.store.cancel_task("T1")
 
-        task = self.store.get_task("T1")
         after_lease = self.store.get_lease("T1")
         run = self.store.db.execute(
             "SELECT status,finished_at FROM task_runs WHERE run_id='R1'"
@@ -191,12 +189,35 @@ class TaskCancellationStoreTests(unittest.TestCase):
             "SELECT status FROM worker_instances WHERE worker_id='W1'"
         ).fetchone()
 
-        self.assertIsNone(task["cancel_requested_at"])
-        self.assertIsNone(after_lease["released_at"])
-        self.assertEqual(run["status"], "running")
-        self.assertIsNone(run["finished_at"])
-        self.assertEqual(worker["status"], "running")
+        self.assertIsNotNone(cancelled["cancel_requested_at"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["current_step"], "cancelled-audit-pending")
+        self.assertIsNotNone(after_lease["released_at"])
+        self.assertEqual(run["status"], "cancelled")
+        self.assertIsNotNone(run["finished_at"])
+        self.assertEqual(worker["status"], "cancelled")
         self.assertEqual(self.event_count("T1", "task.cancelled"), 0)
+        with self.assertRaises(PermissionError):
+            self.store.assert_writer("T1", "R1", int(lease["owner_epoch"]))
+
+    def test_active_lease_run_state_mismatch_does_not_restore_authority(self):
+        self.create()
+        lease = self.claim()
+        self.store.db.execute(
+            "UPDATE task_runs SET status='broken' WHERE run_id='R1'"
+        )
+        cancelled = self.store.cancel_task("T1")
+        after_lease = self.store.get_lease("T1")
+        event = self.store.db.execute(
+            "SELECT payload_json FROM task_events "
+            "WHERE task_id='T1' AND event_type='task.cancelled'"
+        ).fetchone()
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertIsNotNone(after_lease["released_at"])
+        self.assertIn('"activeRunStateMismatch":true', event["payload_json"])
+        with self.assertRaises(PermissionError):
+            self.store.assert_writer("T1", "R1", int(lease["owner_epoch"]))
 
     def test_cancel_applies_to_governed_and_legacy_tasks(self):
         self.create("LEGACY", governed=False)
