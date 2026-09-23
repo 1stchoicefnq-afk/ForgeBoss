@@ -112,6 +112,7 @@ class ForgeBossDaemon:
             def cancel():
                 try:return self.store.request_cancel(p["taskId"])
                 except KeyError as ex:raise ProtocolError("TASK_NOT_FOUND","task not found") from ex
+                except PermissionError as ex:raise ProtocolError("TASK_TERMINAL",str(ex)) from ex
             return self._idem(req,cancel)
         if m=="workspace.claim":
             def do():
