@@ -156,7 +156,8 @@ class ForgeBossDaemon:
                 try:
                     lease=self.store.claim_workspace(p["taskId"],p["runId"],p["worktreePath"],p.get("branch"),p["currentHead"],
                                                      int(p.get("ttlSeconds",1200)),p.get("runtimeId"),WORKTREE_ROOT,
-                                                     budget_reserved=p.get("budgetUsd",0))
+                                                     budget_reserved=p.get("budgetUsd",0),
+                                                     require_queued=(task.get("governance_mode")=="reuse-v1"))
                 except BudgetReservationError as ex:
                     raise ProtocolError(ex.code,str(ex)) from ex
                 env={
