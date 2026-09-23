@@ -1,0 +1,163 @@
+{
+  "schema": 1,
+  "ruleset_id": "FORGEBOSS_PERMANENT_PRODUCT_RULES",
+  "ruleset_version": "1.0.0",
+  "status": "PERMANENT_PRODUCT_CONTRACT",
+  "applies_to": [
+    "forgeboss",
+    "projects_built_by_forgeboss"
+  ],
+  "precedence": [
+    "runtime_authority",
+    "permanent_rules",
+    "project_authority",
+    "project_decisions",
+    "worker_contracts",
+    "model_or_tool_output"
+  ],
+  "rules": [
+    {
+      "id": "FB-PERM-001",
+      "name": "single_user_facing_product",
+      "law": "ForgeBoss is the normal user-facing engineering application; separate AI chats, Git/PowerShell/test-runner/coding-agent UIs are not required for the normal path."
+    },
+    {
+      "id": "FB-PERM-002",
+      "name": "product_form",
+      "law": "Desktop is the primary workshop; mobile is a companion remote; web is the account/cloud dashboard; all surfaces consume one canonical project/run truth."
+    },
+    {
+      "id": "FB-PERM-003",
+      "name": "canonical_authority",
+      "law": "ForgeBoss owns authoritative project state, workflow, permissions, evidence, decisions, spend and release state; external engines never become canonical authority."
+    },
+    {
+      "id": "FB-PERM-004",
+      "name": "reuse_before_build",
+      "law": "Substantial work requires an upstream reuse review before custom implementation; build from scratch only with a recorded reason."
+    },
+    {
+      "id": "FB-PERM-005",
+      "name": "worker_reviewer_separation",
+      "law": "A material builder cannot independently accept, approve or review its own work."
+    },
+    {
+      "id": "FB-PERM-006",
+      "name": "chief_of_staff_observer_only",
+      "law": "Chief of Staff reconciles and reports authoritative state but has no mutation, approval, merge, deploy, spend or permission authority."
+    },
+    {
+      "id": "FB-PERM-007",
+      "name": "worker_pack_contract",
+      "law": "Reusable workers are versioned descriptive packs; packs cannot grant themselves authority and upgrades preserve provenance and local modifications."
+    },
+    {
+      "id": "FB-PERM-008",
+      "name": "self_improvement_subordinate",
+      "law": "Learned state may improve execution but cannot rewrite permanent rules, permissions, canonical evidence, acceptance state or approval requirements."
+    },
+    {
+      "id": "FB-PERM-009",
+      "name": "proven_learning_only",
+      "law": "Only independently proven repair lessons may be replayed automatically, and only when authoritative preconditions still match."
+    },
+    {
+      "id": "FB-PERM-010",
+      "name": "no_blind_paid_retries",
+      "law": "A failed paid/model attempt cannot be repeated without new evidence, corrected preconditions, narrower scope or a materially different recorded strategy."
+    },
+    {
+      "id": "FB-PERM-011",
+      "name": "deterministic_first",
+      "law": "Use reliable deterministic/local/free validation before another paid model call when it can answer the question."
+    },
+    {
+      "id": "FB-PERM-012",
+      "name": "durable_run_identity",
+      "law": "Every material task/run has durable identity and provenance covering project, role, worker, route, authority, inputs, snapshots, outputs and evidence lineage."
+    },
+    {
+      "id": "FB-PERM-013",
+      "name": "silent_and_unexpected_work",
+      "law": "Expected work without evidence is SILENT; unscheduled or paused-but-running work is UNEXPECTED_RUN and must be surfaced."
+    },
+    {
+      "id": "FB-PERM-014",
+      "name": "durable_resume",
+      "law": "Long-running work resumes or reconciles from authoritative persisted state after ordinary interruption; ambiguous recovery fails closed."
+    },
+    {
+      "id": "FB-PERM-015",
+      "name": "exact_evidence_binding",
+      "law": "Evidence proves only the exact artifact/snapshot/run it names; older proof cannot automatically prove a newer candidate."
+    },
+    {
+      "id": "FB-PERM-016",
+      "name": "release_prover",
+      "law": "Final proof is bound to the exact final artifact/evidence set and produces READY, NEEDS_REPAIR, BLOCKED or PROOF_INCOMPLETE."
+    },
+    {
+      "id": "FB-PERM-017",
+      "name": "evidence_derived_status",
+      "law": "UI PASS/FIXED/READY/SECURE/COMPLETE states derive from canonical stored evidence, never model prose alone."
+    },
+    {
+      "id": "FB-PERM-018",
+      "name": "replaceable_commodity_components",
+      "law": "Models, worker engines, gateways, workflow engines, sandboxes, browsers, memory engines and integrations remain replaceable behind ForgeBoss-owned interfaces where practical."
+    },
+    {
+      "id": "FB-PERM-019",
+      "name": "no_capability_self_escalation",
+      "law": "Workers, packs, plugins, skills and dependencies cannot widen their own tools, write scope, spend or permissions."
+    },
+    {
+      "id": "FB-PERM-020",
+      "name": "native_proof_distinction",
+      "law": "Portable/source-level proof is not native-platform/runtime proof; platform-specific claims require matching evidence."
+    },
+    {
+      "id": "FB-PERM-021",
+      "name": "hostile_review",
+      "law": "Green tests are provisional; important changes require independent hostile review of alternate/bypass/historical paths."
+    },
+    {
+      "id": "FB-PERM-022",
+      "name": "mutation_regression_proof",
+      "law": "Important protections should be weakened/removed in a controlled test where practical to prove their regression test actually fails."
+    },
+    {
+      "id": "FB-PERM-023",
+      "name": "owner_interruption_policy",
+      "law": "Routine worker updates are consolidated into an owner/Chief-of-Staff brief where practical; urgent safety/authority failures may interrupt immediately."
+    },
+    {
+      "id": "FB-PERM-024",
+      "name": "fail_closed",
+      "law": "Unknown or unverifiable authority, identity, evidence or safety state blocks the affected action rather than being guessed."
+    },
+    {
+      "id": "FB-PERM-025",
+      "name": "secrets_boundary",
+      "law": "Secrets and credentials stay out of source control, prompts, ordinary logs and evidence exports unless an explicit secure mechanism owns them."
+    }
+  ],
+  "required_structured_records": [
+    "PROJECT_IDEA",
+    "REQUIREMENTS",
+    "UPSTREAM_REUSE_REVIEW",
+    "ARCHITECTURE",
+    "AUTHORITY_MODEL",
+    "SAFETY_RULES",
+    "TEST_MATRIX",
+    "DECISIONS",
+    "COMPONENT_REGISTRY",
+    "WORKER_REGISTRY",
+    "ACTIVE_RUNS",
+    "EVIDENCE_MANIFEST",
+    "KNOWN_ISSUES",
+    "STATUS",
+    "RELEASE_PROOF"
+  ],
+  "note": "This file is a product contract. Runtime enforcement is tracked separately; models and workers must not treat this manifest itself as permission to mutate or execute."
+}
