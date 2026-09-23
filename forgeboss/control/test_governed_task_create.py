@@ -284,6 +284,9 @@ class GovernedTaskCreateTests(unittest.TestCase):
                 "currentHead": "a" * 40,
                 "ttlSeconds": 60,
                 "runtimeId": runtime_id,
+                "provider": "openai",
+                "model": "openai/gpt-5.6-luna",
+                "packetSha256": "b" * 64,
                 "budgetUsd": 0.25,
             },
         }
@@ -306,6 +309,9 @@ class GovernedTaskCreateTests(unittest.TestCase):
             base_sha=q["baseSha"],
             run_id=q["runId"],
             adapter=q["runtimeId"],
+            provider=q["provider"],
+            model=q["model"],
+            packet_sha256=q["packetSha256"],
             repo_root=self.mod.ROOT,
             workspace_path=q["worktreePath"],
             worktree_root=self.mod.WORKTREE_ROOT,
@@ -323,6 +329,12 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(runtime["adapter"], "mini-swe")
         self.assertRegex(runtime["runnerSha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(runtime["interpreterSha256"], r"^[0-9a-f]{64}$")
+        env = self.mod.verify_envelope(
+            out["launchEnvelope"], self.daemon.secret, now=time.time()
+        )
+        self.assertEqual(env["packetSha256"], q["packetSha256"])
+        self.assertEqual(env["runtime"]["provider"], q["provider"])
+        self.assertEqual(env["runtime"]["model"], q["model"])
 
     def test_governed_launch_token_cannot_rebind_runtime_or_run(self):
         p, _ = self._create_governed_substantial("T-GOV-BIND")
@@ -334,6 +346,9 @@ class GovernedTaskCreateTests(unittest.TestCase):
             base_sha=q["baseSha"],
             run_id=q["runId"],
             adapter=q["runtimeId"],
+            provider=q["provider"],
+            model=q["model"],
+            packet_sha256=q["packetSha256"],
             repo_root=self.mod.ROOT,
             workspace_path=q["worktreePath"],
             worktree_root=self.mod.WORKTREE_ROOT,
