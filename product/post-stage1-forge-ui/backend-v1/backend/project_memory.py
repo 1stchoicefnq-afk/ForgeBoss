@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 _SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
@@ -43,23 +42,22 @@ class ContextBundle:
 
 
 class ProjectMemoryStore:
-    """Project-scoped conversation, memory and Bible authority store.
-
-    Precedence is explicit: active Bible > validated memory > conversation history.
-    Raw secrets are redacted before chat/memory persistence.
-    """
+    """Thread-safe project conversation, memory and Bible authority store."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.db_path)
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self._init_schema()
+        with self.lock:
+            self.db.execute("PRAGMA foreign_keys=ON")
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self._init_schema()
 
     def close(self) -> None:
-        self.db.close()
+        with self.lock:
+            self.db.close()
 
     def _init_schema(self) -> None:
         self.db.executescript(
@@ -69,6 +67,10 @@ class ProjectMemoryStore:
               name TEXT NOT NULL,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS project_locations(
+              project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+              root_path TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS conversations(
               conversation_id TEXT PRIMARY KEY,
@@ -121,20 +123,33 @@ class ProjectMemoryStore:
     def create_project(self, name: str, project_id: str | None = None) -> str:
         pid = project_id or f"prj_{uuid.uuid4().hex}"
         now = utc_now()
-        self.db.execute(
-            "INSERT INTO projects(project_id,name,created_at,updated_at) VALUES(?,?,?,?)",
-            (pid, str(name).strip() or "Untitled Project", now, now),
-        )
-        self.db.commit()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO projects(project_id,name,created_at,updated_at) VALUES(?,?,?,?)",
+                (pid, str(name).strip() or "Untitled Project", now, now),
+            )
         return pid
+
+    def set_project_root(self, project_id: str, root_path: str) -> None:
+        root = str(Path(root_path).resolve())
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO project_locations(project_id,root_path) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET root_path=excluded.root_path",
+                (project_id, root),
+            )
+
+    def get_project_root(self, project_id: str) -> str | None:
+        with self.lock:
+            row = self.db.execute("SELECT root_path FROM project_locations WHERE project_id=?", (project_id,)).fetchone()
+            return str(row["root_path"]) if row else None
 
     def create_conversation(self, project_id: str, title: str = "Forge Chat") -> str:
         cid = f"chat_{uuid.uuid4().hex}"
-        self.db.execute(
-            "INSERT INTO conversations(conversation_id,project_id,title,created_at) VALUES(?,?,?,?)",
-            (cid, project_id, title, utc_now()),
-        )
-        self.db.commit()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO conversations(conversation_id,project_id,title,created_at) VALUES(?,?,?,?)",
+                (cid, project_id, title, utc_now()),
+            )
         return cid
 
     def add_message(self, project_id: str, conversation_id: str, role: str, content: str) -> str:
@@ -143,12 +158,12 @@ class ProjectMemoryStore:
         safe, was_redacted = redact_secrets(content)
         mid = f"msg_{uuid.uuid4().hex}"
         now = utc_now()
-        self.db.execute(
-            "INSERT INTO messages(message_id,conversation_id,project_id,role,content,redacted,created_at) VALUES(?,?,?,?,?,?,?)",
-            (mid, conversation_id, project_id, role, safe, int(was_redacted), now),
-        )
-        self.db.execute("UPDATE projects SET updated_at=? WHERE project_id=?", (now, project_id))
-        self.db.commit()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO messages(message_id,conversation_id,project_id,role,content,redacted,created_at) VALUES(?,?,?,?,?,?,?)",
+                (mid, conversation_id, project_id, role, safe, int(was_redacted), now),
+            )
+            self.db.execute("UPDATE projects SET updated_at=? WHERE project_id=?", (now, project_id))
         return mid
 
     def propose_memory(self, project_id: str, category: str, summary: str, source_message_id: str | None = None, confidence: float = 0.5) -> str:
@@ -156,77 +171,77 @@ class ProjectMemoryStore:
             raise ValueError("confidence must be between 0 and 1")
         safe, _ = redact_secrets(summary)
         memory_id = f"mem_{uuid.uuid4().hex}"
-        self.db.execute(
-            "INSERT INTO memory_facts(memory_id,project_id,category,summary,source_message_id,status,confidence,created_at) VALUES(?,?,?,?,?,'candidate',?,?)",
-            (memory_id, project_id, category, safe, source_message_id, confidence, utc_now()),
-        )
-        self.db.commit()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO memory_facts(memory_id,project_id,category,summary,source_message_id,status,confidence,created_at) VALUES(?,?,?,?,?,'candidate',?,?)",
+                (memory_id, project_id, category, safe, source_message_id, confidence, utc_now()),
+            )
         return memory_id
 
     def validate_memory(self, memory_id: str, accepted: bool) -> None:
-        status = "validated" if accepted else "rejected"
-        self.db.execute(
-            "UPDATE memory_facts SET status=?,validated_at=? WHERE memory_id=?",
-            (status, utc_now(), memory_id),
-        )
-        self.db.commit()
+        with self.lock, self.db:
+            self.db.execute(
+                "UPDATE memory_facts SET status=?,validated_at=? WHERE memory_id=?",
+                ("validated" if accepted else "rejected", utc_now(), memory_id),
+            )
 
     def propose_bible_entry(self, project_id: str, bible_key: str, content: str, source_ref: str | None = None) -> str:
         safe, redacted = redact_secrets(content)
         if redacted:
             raise ValueError("Bible content contained secret material and was refused")
-        row = self.db.execute(
-            "SELECT COALESCE(MAX(version),0) AS v FROM bible_entries WHERE project_id=? AND bible_key=?",
-            (project_id, bible_key),
-        ).fetchone()
-        version = int(row["v"]) + 1
-        eid = f"bible_{uuid.uuid4().hex}"
-        self.db.execute(
-            "INSERT INTO bible_entries(entry_id,project_id,bible_key,content,content_sha256,version,active,source_ref,created_at) VALUES(?,?,?,?,?,?,0,?,?)",
-            (eid, project_id, bible_key, safe, content_hash(safe), version, source_ref, utc_now()),
-        )
-        self.db.commit()
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT COALESCE(MAX(version),0) AS v FROM bible_entries WHERE project_id=? AND bible_key=?",
+                (project_id, bible_key),
+            ).fetchone()
+            version = int(row["v"]) + 1
+            eid = f"bible_{uuid.uuid4().hex}"
+            self.db.execute(
+                "INSERT INTO bible_entries(entry_id,project_id,bible_key,content,content_sha256,version,active,source_ref,created_at) VALUES(?,?,?,?,?,?,0,?,?)",
+                (eid, project_id, bible_key, safe, content_hash(safe), version, source_ref, utc_now()),
+            )
         return eid
 
     def activate_bible_entry(self, entry_id: str, *, owner_approved: bool, approved_by: str = "human-owner") -> None:
         if not owner_approved or approved_by != "human-owner":
             raise PermissionError("canonical Bible activation requires explicit Human Owner approval")
-        row = self.db.execute("SELECT project_id,bible_key FROM bible_entries WHERE entry_id=?", (entry_id,)).fetchone()
-        if not row:
-            raise KeyError(entry_id)
-        now = utc_now()
-        with self.db:
+        with self.lock, self.db:
+            row = self.db.execute("SELECT project_id,bible_key FROM bible_entries WHERE entry_id=?", (entry_id,)).fetchone()
+            if not row:
+                raise KeyError(entry_id)
             self.db.execute(
                 "UPDATE bible_entries SET active=0 WHERE project_id=? AND bible_key=?",
                 (row["project_id"], row["bible_key"]),
             )
             self.db.execute(
                 "UPDATE bible_entries SET active=1,approved_by=?,approved_at=? WHERE entry_id=?",
-                (approved_by, now, entry_id),
+                (approved_by, utc_now(), entry_id),
             )
 
     def context_bundle(self, project_id: str, recent_limit: int = 30) -> ContextBundle:
-        bible = [dict(r) for r in self.db.execute(
-            "SELECT bible_key,content,content_sha256,version,approved_at FROM bible_entries WHERE project_id=? AND active=1 ORDER BY bible_key",
-            (project_id,),
-        )]
-        memory = [dict(r) for r in self.db.execute(
-            "SELECT category,summary,confidence,source_message_id,validated_at FROM memory_facts WHERE project_id=? AND status='validated' ORDER BY created_at DESC",
-            (project_id,),
-        )]
-        messages = [dict(r) for r in self.db.execute(
-            "SELECT message_id,role,content,redacted,created_at FROM messages WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
-            (project_id, int(recent_limit)),
-        )]
+        with self.lock:
+            bible = [dict(r) for r in self.db.execute(
+                "SELECT bible_key,content,content_sha256,version,approved_at FROM bible_entries WHERE project_id=? AND active=1 ORDER BY bible_key",
+                (project_id,),
+            )]
+            memory = [dict(r) for r in self.db.execute(
+                "SELECT category,summary,confidence,source_message_id,validated_at FROM memory_facts WHERE project_id=? AND status='validated' ORDER BY created_at DESC",
+                (project_id,),
+            )]
+            messages = [dict(r) for r in self.db.execute(
+                "SELECT message_id,role,content,redacted,created_at FROM messages WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+                (project_id, int(recent_limit)),
+            )]
         messages.reverse()
         return ContextBundle(bible=bible, validated_memory=memory, recent_messages=messages)
 
     def search_messages(self, project_id: str, needle: str, limit: int = 50) -> list[dict]:
         q = f"%{needle.replace('%','')}%"
-        return [dict(r) for r in self.db.execute(
-            "SELECT message_id,role,content,redacted,created_at FROM messages WHERE project_id=? AND content LIKE ? ORDER BY created_at DESC LIMIT ?",
-            (project_id, q, int(limit)),
-        )]
+        with self.lock:
+            return [dict(r) for r in self.db.execute(
+                "SELECT message_id,role,content,redacted,created_at FROM messages WHERE project_id=? AND content LIKE ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, q, int(limit)),
+            )]
 
     def export_safe_snapshot(self, project_id: str) -> dict:
         bundle = self.context_bundle(project_id, recent_limit=1000)
