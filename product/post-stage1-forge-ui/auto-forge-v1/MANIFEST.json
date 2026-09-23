@@ -1,0 +1,18 @@
+{
+  "base_commit": "9669583bd10af91d52e3647a5f5c85e0cec975b7",
+  "target_blobs": {
+    "dashboard/server.py": "c12d7639daf80c62a4eb2f29eb1ee8876e7dec27",
+    "forgeboss/autonomy/selftest-v080.py": "5b33868b9c718748c7b372e4fd401c85cfbd862b"
+  },
+  "standalone_router_tests": "PASS",
+  "stage1_modified": false,
+  "github_main_modified": false,
+  "git_staging_variant": "compact fail-closed installer; logic and safety contract match isolated candidate",
+  "files": {
+    "apply_auto_forge.py": "c42327584182b063d5a252fe3205c296256df6cc",
+    "router_reference.py": "c140ef57d29853a92d1abae8821a754027d04bca",
+    "selftest-auto-forge.py": "75cbd682517cc77c8cb6d5da5f82b4e3a66e8194",
+    "README.md": "961f9235847805731522ae6280549c59443a35c5",
+    "INTEGRATION_HANDOFF.md": "4a854d632dff4ea93fbda5c20cce861920c1c95b"
+  }
+}

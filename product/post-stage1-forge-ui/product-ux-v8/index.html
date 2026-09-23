@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ForgeBoss — Product UX v8</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">FORGE<span>BOSS</span></div>
+    <div class="tag">PLAN. BUILD. TEST. PROVE.</div>
+
+    <nav>
+      <button class="nav active" data-page="projects">Projects</button>
+      <button class="nav" data-page="chat">Forge Chat</button>
+      <button class="nav" data-page="forge">Forge</button>
+      <button class="nav" data-page="bible">Bible</button>
+      <button class="nav" data-page="evidence">Evidence</button>
+      <button class="nav" data-page="vault">Forge Vault</button>
+      <button class="nav" data-page="settings">Settings</button>
+    </nav>
+
+    <div class="side-status">
+      <span class="dot"></span>
+      <div><b>ForgeBoss online</b><small>Stage 1 isolated</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h1 id="pageTitle">Projects</h1>
+        <p id="pageSub">Create a new workpiece or reopen an existing project.</p>
+      </div>
+      <div class="project-chip" id="activeProjectChip">No project loaded</div>
+    </header>
+
+    <section class="page active" id="projects">
+      <div class="card">
+        <div class="eyebrow">START HERE</div>
+        <h2>What are we forging?</h2>
+
+        <div class="tabs">
+          <button class="tab active" data-source="new">New Project</button>
+          <button class="tab" data-source="local">Existing Folder</button>
+          <button class="tab" data-source="repo">Remote Repository</button>
+        </div>
+
+        <div class="source active" id="src-new">
+          <label>PROJECT IDEA</label>
+          <textarea id="ideaInput" placeholder="Example: I want an app for fencing businesses that answers enquiries, builds quotes, schedules jobs, remembers customers and helps run the business."></textarea>
+
+          <div class="info"><b>ForgeBoss does the engineering.</b> It turns the idea into a Project Bible, asks only the decisions that materially change the product, then forges autonomously from the approved foundation.</div>
+
+          <div class="flow">
+            <span>Idea</span><i>→</i><span>Questions</span><i>→</i><span>Bible</span><i>→</i><span>Forge</span><i>→</i><span>Temper</span><i>→</i><span>Inspect</span><i>→</i><span>Prove</span>
+          </div>
+
+          <button class="primary wide" id="sparkBtn">STRIKE THE FIRST SPARK</button>
+        </div>
+
+        <div class="source" id="src-local">
+          <label>EXISTING WORKPIECE</label>
+          <div class="row">
+            <div class="field-display" id="folderDisplay">No folder selected</div>
+            <button class="secondary" id="chooseFolderBtn">LOAD FOLDER</button>
+            <input id="folderPicker" hidden type="file" webkitdirectory directory multiple>
+          </div>
+          <p class="muted">If the project already has a Bible, ForgeBoss loads it as the authority. An extra instruction is optional.</p>
+          <button class="primary" id="loadLocalBtn">LIGHT THE FORGE</button>
+        </div>
+
+        <div class="source" id="src-repo">
+          <label>REMOTE FORGE</label>
+          <div class="row">
+            <input id="repoInput" placeholder="Paste GitHub, GitLab, Bitbucket, Azure DevOps or another Git URL">
+            <button class="secondary" id="detectRepoBtn">CHECK LINK</button>
+          </div>
+          <div class="provider" id="providerStatus">Provider: not detected</div>
+          <p class="muted">Authentication belongs in Forge Vault. Credentials are never pasted into this URL box.</p>
+          <button class="primary" id="loadRepoBtn">LOAD REMOTE FORGE</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="eyebrow">RECENT WORKPIECES</div>
+        <div id="recentProjects" class="recent-grid"></div>
+      </div>
+    </section>
+
+    <section class="page" id="chat">
+      <div class="card chat-card">
+        <div class="chat-head">
+          <div>
+            <div class="eyebrow">PROJECT MEMORY</div>
+            <h2>Forge Chat</h2>
+          </div>
+          <span class="badge good">Memory on</span>
+        </div>
+        <div id="chatStream" class="chat-stream"></div>
+        <div class="chat-compose">
+          <textarea id="chatInput" placeholder="Talk to ForgeBoss normally. Decisions can be promoted into the Bible; casual discussion stays in conversation memory."></textarea>
+          <button class="primary" id="sendChatBtn">SEND TO THE FORGE</button>
+        </div>
+        <div class="memory-note">
+          <b>Memory layers:</b> Conversation history → Project memory → Project Bible. The Bible stays authoritative.
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="forge">
+      <div class="card">
+        <div class="forge-top">
+          <div>
+            <div class="state" id="forgeState">● FORGING</div>
+            <h2 id="forgeTitle">Forging SiteBoss</h2>
+            <p id="forgeNow">Tempering the latest build with acceptance tests before inspection.</p>
+          </div>
+          <button class="danger" id="quenchBtn">QUENCH SAFELY</button>
+        </div>
+
+        <div class="progress-track"><div class="progress-bar" id="jobProgress"></div></div>
+        <div class="steps">
+          <span class="done">Plan ✓</span>
+          <span class="done">Forge ✓</span>
+          <span class="active">Temper</span>
+          <span>Inspect</span>
+          <span>Prove</span>
+        </div>
+
+        <div class="metrics">
+          <div><b id="cycleVal">Cycle 1</b><small>Forge cycle</small></div>
+          <div><b id="timeVal">12m 41s</b><small>Forge time</small></div>
+          <div><b id="spentVal">$0.42</b><small>Fuel used</small></div>
+          <div><b id="workerVal">Repair Rat</b><small>Current hammer</small></div>
+        </div>
+
+        <div class="fuel">
+          <div class="fuel-head"><span>Fuel reserve</span><span id="fuelLabel">$0.42 / $3.00</span></div>
+          <div class="fuel-track"><div class="fuel-bar" id="fuelBar"></div></div>
+        </div>
+
+        <div class="routing"><b>Forge routing:</b> <span id="routingText">Repair Rat is working now. More heat has not been needed.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="eyebrow">AT THE ANVIL NOW</div>
+        <div class="now">
+          <span class="pulse"></span>
+          <div><b id="anvilTitle">Tempering with acceptance tests</b><p id="anvilDetail">The build has been shaped. ForgeBoss is proving it before it can pass inspection.</p></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="eyebrow">FORGE LOG</div>
+        <h2>Latest activity</h2>
+        <div id="forgeLog" class="timeline"></div>
+      </div>
+
+      <div class="card compact">
+        <div class="settings-grid">
+          <div><label>FORGE TIME</label>
+            <select id="durationSel"><option>30 minutes</option><option>1 hour</option><option selected>2 hours</option><option>4 hours</option><option>8 hours</option><option>Until I quench it</option></select>
+          </div>
+          <div><label>FUEL CAP</label><input id="fuelCap" type="number" min="0" step=".50" value="3.00"></div>
+          <div><label>FORGE MODE</label>
+            <select id="modeSel">
+              <option selected>Auto Forge</option>
+              <option>Repair Rat</option>
+              <option>Low Heat</option>
+              <option>Working Heat</option>
+              <option>High Heat</option>
+              <option>Full Forge</option>
+            </select>
+          </div>
+        </div>
+        <div class="mode-explain" id="modeExplain"><b>Auto Forge:</b> start with Repair Rat / the cheapest suitable path and raise heat only when the evidence says it is needed. Never exceed the fuel cap.</div>
+      </div>
+    </section>
+
+    <section class="page" id="bible">
+      <div class="card">
+        <div class="bible-head">
+          <div><div class="eyebrow">AUTHORITATIVE PROJECT STATE</div><h2>Project Bible</h2></div>
+          <span class="badge">Draft foundation</span>
+        </div>
+        <div class="bible-grid">
+          <button class="bible-item"><b>START_HERE</b><small>Project entry point and current state</small></button>
+          <button class="bible-item"><b>PROJECT_IDEA</b><small>What the user is building and why</small></button>
+          <button class="bible-item"><b>REQUIREMENTS</b><small>Explicit product requirements</small></button>
+          <button class="bible-item"><b>ARCHITECTURE</b><small>System boundaries and design</small></button>
+          <button class="bible-item"><b>RULES</b><small>Permanent build rules</small></button>
+          <button class="bible-item"><b>SAFETY</b><small>Permissions and hard boundaries</small></button>
+          <button class="bible-item"><b>WORKFLOW</b><small>Plan → build → test → review → repair</small></button>
+          <button class="bible-item"><b>REVIEW_STANDARD</b><small>Hostile review requirements</small></button>
+        </div>
+        <div class="info"><b>Promotion rule:</b> chat can suggest changes, but only explicit or validated decisions are promoted into the Bible.</div>
+      </div>
+    </section>
+
+    <section class="page" id="evidence">
+      <div class="card">
+        <div class="eyebrow">PROOF, NOT PROMISES</div>
+        <h2>Evidence</h2>
+        <div class="evidence-list">
+          <div><span class="badge good">PASS</span><b>Scope guard</b><small>No changes outside approved files.</small></div>
+          <div><span class="badge good">PASS</span><b>Acceptance suite</b><small>Required tests completed.</small></div>
+          <div><span class="badge warn">RUNNING</span><b>Hostile inspection</b><small>Attacking bypass and adjacent paths.</small></div>
+          <div><span class="badge">WAITING</span><b>Final proof bundle</b><small>Produced only after all required gates pass.</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="vault">
+      <div class="card">
+        <div class="vault-head">
+          <div><div class="eyebrow">CONNECTIONS & FUEL</div><h2>Forge Vault</h2></div>
+          <span class="badge good">Secrets isolated</span>
+        </div>
+
+        <div class="vault-mode">
+          <label class="radio-card"><input type="radio" name="aiMode" value="managed" checked><span><b>ForgeBoss Managed</b><small>AI is included by the ForgeBoss service. No API key setup for normal users.</small></span></label>
+          <label class="radio-card"><input type="radio" name="aiMode" value="byo"><span><b>Bring Your Own Fuel</b><small>Connect your own provider accounts or API keys.</small></span></label>
+        </div>
+
+        <div class="connections">
+          <div class="connection">
+            <div><b>OpenAI</b><small>AI provider</small></div>
+            <span class="badge good" id="openaiStatus">Managed ✓</span>
+            <button class="secondary connect-btn" data-provider="OpenAI">Connect</button>
+          </div>
+          <div class="connection">
+            <div><b>Anthropic</b><small>AI provider</small></div>
+            <span class="badge" id="anthropicStatus">Not connected</span>
+            <button class="secondary connect-btn" data-provider="Anthropic">Connect</button>
+          </div>
+          <div class="connection">
+            <div><b>GitHub</b><small>Repository provider</small></div>
+            <span class="badge" id="githubStatus">Not connected</span>
+            <button class="secondary connect-btn" data-provider="GitHub">Connect</button>
+          </div>
+          <div class="connection">
+            <div><b>GitLab</b><small>Repository provider</small></div>
+            <span class="badge" id="gitlabStatus">Not connected</span>
+            <button class="secondary connect-btn" data-provider="GitLab">Connect</button>
+          </div>
+          <div class="connection">
+            <div><b>Bitbucket / Azure DevOps</b><small>Repository providers</small></div>
+            <span class="badge">Not connected</span>
+            <button class="secondary connect-btn" data-provider="Git Provider">Connect</button>
+          </div>
+          <div class="connection">
+            <div><b>Local Models</b><small>On-device / LAN engines</small></div>
+            <span class="badge good">Available ✓</span>
+            <button class="secondary">Manage</button>
+          </div>
+        </div>
+
+        <div class="secret-entry" id="secretEntry" hidden>
+          <label id="secretLabel">API KEY</label>
+          <div class="row">
+            <input id="secretInput" type="password" placeholder="Paste once — this demo never persists the raw value">
+            <button class="primary" id="saveSecretBtn">SEAL IN VAULT</button>
+          </div>
+          <p class="muted">Prototype only: the raw key is not written to localStorage. Production ForgeBoss must use OS-protected secret storage / OAuth and must never put raw secrets in projects, logs, Bible files or chat history.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="settings">
+      <div class="card">
+        <div class="eyebrow">DEFAULTS</div>
+        <h2>Forge Settings</h2>
+        <div class="settings-stack">
+          <label>DEFAULT FORGE MODE<select id="defaultMode"><option selected>Auto Forge</option><option>Repair Rat</option><option>Low Heat</option><option>Working Heat</option><option>High Heat</option><option>Full Forge</option></select></label>
+          <label>DEFAULT SESSION FUEL CAP<input id="defaultCap" type="number" step=".50" value="3.00"></label>
+          <label>DEFAULT FORGE TIME<select id="defaultDuration"><option>30 minutes</option><option>1 hour</option><option selected>2 hours</option><option>4 hours</option><option>8 hours</option><option>Until I quench it</option></select></label>
+          <label class="check"><input id="rememberChats" type="checkbox" checked> Keep project conversation memory</label>
+          <label class="check"><input id="promoteDecisions" type="checkbox" checked> Suggest Bible updates when important decisions are made</label>
+          <button class="primary" id="saveSettingsBtn">SAVE FORGE DEFAULTS</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="questionModal" hidden>
+  <div class="modal-card">
+    <div class="eyebrow">ESSENTIAL QUESTIONS</div>
+    <h2>ForgeBoss needs a few decisions</h2>
+    <p class="muted">Only questions that materially change what gets built should stop the forge.</p>
+    <label>WHO IS THIS FOR?<input id="qWho" placeholder="Example: fencing businesses with 1–20 staff"></label>
+    <label>WHAT IS THE MOST IMPORTANT FIRST OUTCOME?<input id="qOutcome" placeholder="Example: answer leads and turn them into booked quotes"></label>
+    <label>ANY HARD LIMITS OR MUST-HAVES?<textarea id="qLimits" placeholder="Example: Australian businesses, MYOB later, mobile friendly, simple enough for non-technical users"></textarea></label>
+    <div class="modal-actions">
+      <button class="secondary" id="cancelQuestionsBtn">CANCEL</button>
+      <button class="primary" id="forgeBibleBtn">FORGE THE BIBLE</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
