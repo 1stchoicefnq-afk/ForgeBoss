@@ -133,6 +133,9 @@ class ForgeBossDaemon:
                             base_sha=p.get("baseSha"),
                             run_id=p.get("runId"),
                             adapter=p.get("runtimeId"),
+                            provider=p.get("provider"),
+                            model=p.get("model"),
+                            packet_sha256=p.get("packetSha256"),
                             repo_root=ROOT,
                             workspace_path=p.get("worktreePath"),
                             worktree_root=WORKTREE_ROOT,
@@ -169,6 +172,7 @@ class ForgeBossDaemon:
                     "interpreterSha256":verified_launch.identity.interpreter_sha256 if verified_launch else None,
                   },
                   "allowedPaths":allowed,"deniedPaths":p.get("deniedPaths",[]),"allowedTools":tools,
+                  "packetSha256":p.get("packetSha256"),
                   "contextBundleHash":p.get("contextBundleHash"),"transcript":p.get("transcript",{}),"events":p.get("events",{}),
                   "budgetUsd":float(lease["budget_reserved"]),"expiresAt":float(lease["expires_at"])
                 }
