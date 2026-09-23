@@ -16,6 +16,7 @@ from typing import Sequence
 from forgeboss.control.envelope import canonical
 from forgeboss.control.scheduler import _canonical_path as _scope_path
 from forgeboss.control.store import _git_object_id, _repository_identity, canonical_worktree_path
+from forgeboss.security.host_tool_identity import HostToolIdentity, resolve_trusted_host_executable
 
 
 class GovernedLaunchError(RuntimeError):
@@ -40,6 +41,9 @@ _TOKEN_KEYS = frozenset({
     "model",
     "packetSha256",
     "containerImage",
+    "dockerPath",
+    "dockerSha256",
+    "dockerSize",
     "runnerPath",
     "runnerSha256",
     "interpreterPath",
@@ -73,6 +77,7 @@ class VerifiedGovernedLaunch:
     model: str
     packet_sha256: str
     container_image: str | None
+    docker_identity: HostToolIdentity | None
     identity: RunnerIdentity
     workspace_path: str
     allowed_paths: tuple[str, ...]
@@ -284,6 +289,7 @@ def issue_governed_launch_attestation(
         )
 
     identity = resolve_runner_identity(adapter, repo_root=repo_root)
+    docker_identity = resolve_trusted_host_executable("docker") if identity.adapter == "mini-swe" else None
     workspace = canonical_worktree_path(workspace_path, worktree_root)
     issued = time.time() if now is None else _timestamp(now, "now")
     body: dict[str, object] = {
@@ -298,6 +304,9 @@ def issue_governed_launch_attestation(
         "model": _text(model, "model"),
         "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
         "containerImage": _container_image(identity.adapter, container_image),
+        "dockerPath": docker_identity.path if docker_identity else None,
+        "dockerSha256": docker_identity.sha256 if docker_identity else None,
+        "dockerSize": docker_identity.size if docker_identity else None,
         "runnerPath": identity.runner_path,
         "runnerSha256": identity.runner_sha256,
         "interpreterPath": identity.interpreter_path,
@@ -351,6 +360,7 @@ def verify_governed_launch_attestation(
         raise GovernedLaunchError("unexpected governed launch type")
 
     expected_identity = resolve_runner_identity(adapter, repo_root=repo_root)
+    expected_docker = resolve_trusted_host_executable("docker") if expected_identity.adapter == "mini-swe" else None
     expected_workspace = canonical_worktree_path(workspace_path, worktree_root)
     expected = {
         "taskId": _text(task_id, "taskId"),
@@ -362,6 +372,9 @@ def verify_governed_launch_attestation(
         "model": _text(model, "model"),
         "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
         "containerImage": _container_image(expected_identity.adapter, container_image),
+        "dockerPath": expected_docker.path if expected_docker else None,
+        "dockerSha256": expected_docker.sha256 if expected_docker else None,
+        "dockerSize": expected_docker.size if expected_docker else None,
         "runnerPath": expected_identity.runner_path,
         "runnerSha256": expected_identity.runner_sha256,
         "interpreterPath": expected_identity.interpreter_path,
@@ -426,6 +439,7 @@ def verify_governed_launch_attestation(
         model=expected["model"],
         packet_sha256=expected["packetSha256"],
         container_image=expected["containerImage"],
+        docker_identity=expected_docker,
         identity=identity,
         workspace_path=expected_workspace,
         allowed_paths=expected["allowedPaths"],
