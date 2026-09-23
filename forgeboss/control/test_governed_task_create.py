@@ -30,9 +30,11 @@ class GovernedTaskCreateTests(unittest.TestCase):
         cls.worktrees = cls.root / "worktrees"
         cls.worktrees.mkdir()
         fake_secret = lambda root: (cls.root / "secret.bin", b"s" * 32)
+        fake_policy_secret = lambda root: (cls.root / "policy-secret.bin", b"p" * 32)
         with (
             mock.patch.object(store_module, "ControlStore", BootstrapStore),
             mock.patch.object(envelope_module, "secret_file", fake_secret),
+            mock.patch.object(envelope_module, "policy_secret_file", fake_policy_secret),
             mock.patch.dict(os.environ, {"FORGEBOSS_WORKTREE_ROOT": str(cls.worktrees)}),
         ):
             sys.modules.pop("forgeboss.control.daemon", None)
@@ -51,6 +53,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon = self.mod.ForgeBossDaemon.__new__(self.mod.ForgeBossDaemon)
         self.daemon.store = self.store
         self.daemon.secret = b"k" * 32
+        self.daemon.policy_secret = b"p" * 32
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -133,7 +136,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             allowed_paths=p["allowedPaths"],
             subsystem=p["subsystem"],
             reuse_review=p["reuseReview"],
-            secret=self.daemon.secret,
+            secret=self.daemon.policy_secret,
             ttl_seconds=600,
         )
         created = self.daemon.dispatch(self.request(p), True)
@@ -154,7 +157,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             base_sha=p["baseSha"],
             objective=p["purpose"],
             allowed_paths=p["allowedPaths"],
-            secret=self.daemon.secret,
+            secret=self.daemon.policy_secret,
             ttl_seconds=600,
         )
         created = self.daemon.dispatch(self.request(p), True)
@@ -162,6 +165,40 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertRegex(created["small_repair_exemption_sha256"], r"^[0-9a-f]{64}$")
         self.assertIsNone(created["reuse_review_sha256"])
         self.assertIsNone(created["reuse_review_receipt_sha256"])
+
+    def test_daemon_auth_key_cannot_mint_policy_approval(self):
+        p = self.params()
+        p["reuseReview"] = self.review()
+        p["reuseReviewReceipt"] = issue_reuse_review_receipt(
+            task_id=p["taskId"],
+            repository=p["repository"],
+            base_sha=p["baseSha"],
+            objective=p["purpose"],
+            allowed_paths=p["allowedPaths"],
+            subsystem=p["subsystem"],
+            reuse_review=p["reuseReview"],
+            secret=self.daemon.secret,
+            ttl_seconds=600,
+        )
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self.request(p), True)
+        self.assertEqual(ctx.exception.code, "REUSE_AUTHORITY_INVALID")
+        self.assertIsNone(self.store.get_task("T1"))
+        self.assertEqual(self.event_count("T1"), 0)
+
+    def test_connect_reports_actual_store_schema_version(self):
+        with mock.patch.object(self.mod, "verify_connect_proof", lambda payload, secret: None):
+            request = {
+                "method": "connect",
+                "params": {
+                    "protocolVersion": 1,
+                    "capabilities": [],
+                    "nonce": uuid.uuid4().hex,
+                },
+            }
+            out = self.daemon.dispatch(request, False)
+        self.assertEqual(out["schemaVersion"], store_module.SCHEMA_VERSION)
+        self.assertEqual(out["state"]["schemaVersion"], store_module.SCHEMA_VERSION)
 
     def test_mismatched_small_repair_token_fails_before_store_mutation(self):
         p = self.params()
@@ -171,7 +208,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             base_sha=p["baseSha"],
             objective=p["purpose"],
             allowed_paths=p["allowedPaths"],
-            secret=self.daemon.secret,
+            secret=self.daemon.policy_secret,
             ttl_seconds=600,
         )
         with self.assertRaises(self.mod.ProtocolError) as ctx:
