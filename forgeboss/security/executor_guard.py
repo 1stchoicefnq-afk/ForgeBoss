@@ -558,14 +558,40 @@ def issue_lease(packet_path,workspace,executor,ttl=1200):
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} write-capable execution is quarantined until OS/network isolation is verified")
     with _WorkspaceFence(work):
         assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
-        lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
+        lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None,"revoked_at":None}
         lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
     return {"ok":True,"lease":str(lp),"token":token}
+
+def revoke_lease(lease_path,token,workspace,executor):
+    lp=Path(lease_path)
+    try:resolved=lp.resolve(strict=True)
+    except Exception as e:raise SecurityError("executor lease file unavailable: "+str(e)) from e
+    try:
+        if resolved.parent!=STATE.resolve(strict=True):raise SecurityError("executor lease path is outside protected state")
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("executor lease state path unavailable: "+str(e)) from e
+    with _WorkspaceFence(workspace):
+        try:lease=json.loads(resolved.read_text(encoding="utf-8"))
+        except Exception as e:raise SecurityError("executor lease is unreadable: "+str(e)) from e
+        if lease.get("executor")!=executor:raise SecurityError("executor identity mismatch")
+        if Path(lease.get("workspace","")).resolve()!=Path(workspace).resolve():raise SecurityError("workspace mismatch")
+        supplied=hashlib.sha256(str(token).encode()).hexdigest()
+        if not secrets.compare_digest(str(lease.get("token_sha256","")),supplied):raise SecurityError("lease token mismatch")
+        if lease.get("revoked_at") is None:
+            lease["revoked_at"]=time.time();_atomic_write_json(resolved,lease)
+        try:
+            resolved.unlink()
+            return {"revoked":True,"removed":True}
+        except FileNotFoundError:
+            return {"revoked":True,"removed":True}
+        except Exception as e:
+            return {"revoked":True,"removed":False,"error":f"{type(e).__name__}: {e}"}
 
 def issue(packet_path,workspace,executor,ttl=1200):
     print(json.dumps(issue_lease(packet_path,workspace,executor,ttl)));return 0
 def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
+    if lease.get("revoked_at") is not None:raise SecurityError("executor lease revoked")
     if time.time()>float(lease.get("expires_at",0)):raise SecurityError("executor lease expired")
     if lease.get("executor")!=executor:raise SecurityError("executor identity mismatch")
     if Path(lease.get("workspace","")).resolve()!=work:raise SecurityError("workspace mismatch")
