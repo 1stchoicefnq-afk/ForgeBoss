@@ -102,6 +102,8 @@ def prepare_governed_launch(
         raise GovernedLauncherError("task not found")
     if task.get("governance_mode") != "reuse-v1":
         raise GovernedLauncherError("task is not governed by reuse-v1")
+    if task.get("status")!="queued" or task.get("cancel_requested_at") is not None:
+        raise GovernedLauncherError("governed task is not launchable from its current state")
     try:
         verify_governed_task_authority_row(task,daemon.policy_secret)
     except TaskGovernanceAuthorityError as ex:
