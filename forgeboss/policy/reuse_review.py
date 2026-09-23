@@ -129,8 +129,10 @@ def _candidate(value: object) -> ReuseCandidate:
             raise ReuseReviewError("selected candidate requires exact_identity")
         if candidate.license_status not in {"permissive", "compatible"}:
             raise ReuseReviewError("selected candidate must have compatible license status")
-        if candidate.platform_fit == "unfit" or candidate.security_fit == "unfit":
-            raise ReuseReviewError("selected candidate cannot be platform/security unfit")
+        if candidate.platform_fit not in {"fit", "partial"}:
+            raise ReuseReviewError("selected candidate requires known acceptable platform fit")
+        if candidate.security_fit not in {"fit", "partial"}:
+            raise ReuseReviewError("selected candidate requires known acceptable security fit")
     return candidate
 
 
