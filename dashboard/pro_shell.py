@@ -193,12 +193,12 @@ def tasks():
  return out
 def costs():
  items=[];total=0.0
- p=ROOT/"state"/"tournament"/"paid-tournament-last.json"
+ p=DASH_STATE_ROOT/"tournament"/"paid-tournament-last.json"
  if p.exists():
   for x in safe_json(p).get("results",[]):
    c=x.get("reported_cost_usd")
    if c is not None:c=float(c);total+=c;items.append({"source":x.get("executor"),"cost":c})
- p=ROOT/"state"/"league"/"league-last.json"
+ p=DASH_STATE_ROOT/"league"/"league-last.json"
  if p.exists():
   c=safe_json(p).get("reported_measured_spend_usd")
   if c is not None:c=float(c);total+=c;items.append({"source":"Category league","cost":c})
@@ -580,7 +580,7 @@ class Api:
         log=fb.LOG.read_text(encoding="utf-8",errors="replace")[-50000:] if fb.LOG.exists() else ""
         s["activity"]=friendly_activity(log)
 
-        rp=ROOT/"state"/"tournament"/"retest-last.json"
+        rp=DASH_STATE_ROOT/"tournament"/"retest-last.json"
         r=safe_json(rp) if rp.exists() else {}
         rows={x.get("executor"):x for x in r.get("results",[])}
         def rr(name):
@@ -595,7 +595,7 @@ class Api:
             return {"status":"PASS" if x.get("acceptance_passed") else "FAIL","failures":failures}
         s["retest"]={"mini-swe":rr("mini-swe"),"openhands":rr("openhands"),"winner":r.get("winner"),"new_spend":0.0}
 
-        lp=ROOT/"state"/"league"/"league-last.json"
+        lp=DASH_STATE_ROOT/"league"/"league-last.json"
         league=safe_json(lp) if lp.exists() else {}
         s["league"]={"winners":league.get("winners",{}),"spend":league.get("reported_measured_spend_usd")}
         s["owner_settings"]=load_settings();s["tasks"]=tasks();s["costs"]=costs()
@@ -623,7 +623,7 @@ class Api:
         """Read-only technical drill-down for a friendly activity event."""
         chunks=[]
         if key=="retest":
-            rp=ROOT/"state"/"tournament"/"retest-last.json"
+            rp=DASH_STATE_ROOT/"tournament"/"retest-last.json"
             if rp.exists():
                 try:
                     j=json.loads(rp.read_text(encoding="utf-8-sig"))
