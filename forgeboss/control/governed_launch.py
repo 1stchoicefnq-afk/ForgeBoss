@@ -39,6 +39,7 @@ _TOKEN_KEYS = frozenset({
     "provider",
     "model",
     "packetSha256",
+    "containerImage",
     "runnerPath",
     "runnerSha256",
     "interpreterPath",
@@ -71,6 +72,7 @@ class VerifiedGovernedLaunch:
     provider: str
     model: str
     packet_sha256: str
+    container_image: str | None
     identity: RunnerIdentity
     workspace_path: str
     allowed_paths: tuple[str, ...]
@@ -227,6 +229,22 @@ def _sha256_text(value: object, label: str) -> str:
     return raw
 
 
+_CONTAINER_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+def _container_image(adapter: str, value: object) -> str | None:
+    if adapter == "mini-swe":
+        image = _text(value, "containerImage")
+        if not _CONTAINER_DIGEST.fullmatch(image):
+            raise GovernedLaunchError(
+                "mini-swe containerImage must be an exact name@sha256:<64hex> reference"
+            )
+        return image
+    if value is not None:
+        raise GovernedLaunchError("containerImage is only valid for mini-swe governed launch")
+    return None
+
+
 def _timestamp(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GovernedLaunchError(f"{label} must be numeric")
@@ -246,7 +264,8 @@ def issue_governed_launch_attestation(
     provider: str,
     model: str,
     packet_sha256: str,
-    repo_root: str | Path,
+    container_image: str | None = None,
+    repo_root: str | Path = ".",
     workspace_path: str | Path,
     worktree_root: str | Path,
     allowed_paths,
@@ -278,6 +297,7 @@ def issue_governed_launch_attestation(
         "provider": _text(provider, "provider"),
         "model": _text(model, "model"),
         "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
+        "containerImage": _container_image(identity.adapter, container_image),
         "runnerPath": identity.runner_path,
         "runnerSha256": identity.runner_sha256,
         "interpreterPath": identity.interpreter_path,
@@ -305,7 +325,8 @@ def verify_governed_launch_attestation(
     provider: str,
     model: str,
     packet_sha256: str,
-    repo_root: str | Path,
+    container_image: str | None = None,
+    repo_root: str | Path = ".",
     workspace_path: str | Path,
     worktree_root: str | Path,
     allowed_paths,
@@ -340,6 +361,7 @@ def verify_governed_launch_attestation(
         "provider": _text(provider, "provider"),
         "model": _text(model, "model"),
         "packetSha256": _sha256_text(packet_sha256, "packetSha256"),
+        "containerImage": _container_image(expected_identity.adapter, container_image),
         "runnerPath": expected_identity.runner_path,
         "runnerSha256": expected_identity.runner_sha256,
         "interpreterPath": expected_identity.interpreter_path,
@@ -403,6 +425,7 @@ def verify_governed_launch_attestation(
         provider=expected["provider"],
         model=expected["model"],
         packet_sha256=expected["packetSha256"],
+        container_image=expected["containerImage"],
         identity=identity,
         workspace_path=expected_workspace,
         allowed_paths=expected["allowedPaths"],
