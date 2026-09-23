@@ -40,6 +40,7 @@ class GovernedLaunchTests(unittest.TestCase):
             "provider": "openai",
             "model": "openai/gpt-5.6-luna",
             "packet_sha256": "b" * 64,
+            "container_image": "node@sha256:" + "d" * 64,
             "repo_root": self.repo,
             "workspace_path": self.workspace,
             "worktree_root": self.worktrees,
@@ -76,6 +77,7 @@ class GovernedLaunchTests(unittest.TestCase):
         self.assertEqual(verified.provider, "openai")
         self.assertEqual(verified.model, "openai/gpt-5.6-luna")
         self.assertEqual(verified.packet_sha256, "b" * 64)
+        self.assertEqual(verified.container_image, "node@sha256:" + "d" * 64)
         self.assertEqual(
             verified.identity.runner_sha256,
             hashlib.sha256(self.runner.read_bytes()).hexdigest(),
@@ -98,6 +100,7 @@ class GovernedLaunchTests(unittest.TestCase):
             "provider": "anthropic",
             "model": "anthropic/claude-test",
             "packet_sha256": "c" * 64,
+            "container_image": "node@sha256:" + "e" * 64,
         }
         (self.worktrees / "other").mkdir()
         for key, value in cases.items():
@@ -171,6 +174,12 @@ class GovernedLaunchTests(unittest.TestCase):
         token = self.issue(budget_usd="0.5000")
         verified = self.verify(token, budget_usd=0.5)
         self.assertEqual(verified.budget_usd, "0.5")
+
+    def test_mutable_or_missing_miniswe_container_image_is_rejected(self):
+        for value in (None, "", "node:22-bookworm", "node@sha256:not-a-digest"):
+            with self.subTest(value=value):
+                with self.assertRaises(GovernedLaunchError):
+                    self.issue(container_image=value)
 
     def test_zero_or_negative_budget_is_rejected_for_paid_governed_launch(self):
         for value in (0, "0", -0.01):
