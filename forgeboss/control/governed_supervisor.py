@@ -31,6 +31,7 @@ class GovernedRunResult:
     stdout_tail: str
     stderr_tail: str
     duration_seconds: float
+    finalization_error: str | None
 
 
 class _BoundedText:
@@ -173,7 +174,21 @@ def supervise_governed_run(
     lease = claim["lease"]
     control_envelope = claim["launchEnvelope"]
 
-    executor_lease = issue_lease(packet_path, workspace, adapter, ttl=900)
+    executor_lease = None
+    proc = None
+    try:
+        executor_lease = issue_lease(packet_path, workspace, adapter, ttl=900)
+    except Exception as ex:
+        try:
+            daemon.store.release(
+                task_id,run_id,int(lease["owner_epoch"]),
+                result_head=lease["current_head"],outcome="failed"
+            )
+        except Exception as release_ex:
+            raise GovernedSupervisorError(
+                f"executor lease creation failed ({ex}); workspace release also failed ({release_ex})"
+            ) from ex
+        raise GovernedSupervisorError(f"executor lease creation failed: {ex}") from ex
 
     env = {
         "PATH": os.environ.get("PATH",""),
@@ -195,18 +210,30 @@ def supervise_governed_run(
 
     argv=[identity.interpreter_path, identity.runner_path, str(packet_path), str(workspace), str(budget_usd)]
     flags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0)|getattr(subprocess,"CREATE_NO_WINDOW",0) if os.name=="nt" else 0
-    proc=subprocess.Popen(
-        argv,
-        cwd=str(Path(__file__).resolve().parents[2]),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        creationflags=flags,
-        start_new_session=(os.name!="nt"),
-    )
+    try:
+        proc=subprocess.Popen(
+            argv,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            creationflags=flags,
+            start_new_session=(os.name!="nt"),
+        )
+    except Exception as ex:
+        try:
+            daemon.store.release(
+                task_id,run_id,int(lease["owner_epoch"]),
+                result_head=lease["current_head"],outcome="failed"
+            )
+        except Exception as release_ex:
+            raise GovernedSupervisorError(
+                f"runner start failed ({ex}); workspace release also failed ({release_ex})"
+            ) from ex
+        raise GovernedSupervisorError(f"runner start failed: {ex}") from ex
     out=_BoundedText(); err=_BoundedText()
     t1=threading.Thread(target=_reader,args=(proc.stdout,out),daemon=True)
     t2=threading.Thread(target=_reader,args=(proc.stderr,err),daemon=True)
@@ -228,14 +255,16 @@ def supervise_governed_run(
             revoked=True; reason=reason or "runner did not terminate"; _kill_tree(proc); proc.wait(timeout=10)
     finally:
         t1.join(timeout=2); t2.join(timeout=2)
-        try:
-            daemon.store.release(
-                task_id,run_id,int(lease["owner_epoch"]),
-                result_head=lease["current_head"],
-                outcome="cancelled" if revoked else ("completed" if proc.returncode==0 else "failed"),
-            )
-        except Exception:
-            pass
+
+    finalization_error=None
+    try:
+        daemon.store.release(
+            task_id,run_id,int(lease["owner_epoch"]),
+            result_head=lease["current_head"],
+            outcome="cancelled" if revoked else ("completed" if proc.returncode==0 else "failed"),
+        )
+    except Exception as ex:
+        finalization_error=f"{type(ex).__name__}: {ex}"
 
     return GovernedRunResult(
         task_id=task_id,
@@ -246,4 +275,5 @@ def supervise_governed_run(
         stdout_tail=out.value(),
         stderr_tail=err.value(),
         duration_seconds=round(time.time()-started,3),
+        finalization_error=finalization_error,
     )
