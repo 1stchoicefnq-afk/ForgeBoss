@@ -13,10 +13,18 @@
  */
 
 const { spawn, spawnSync } = require("child_process");
+const fs = require("fs");
 const os = require("os");
+const path = require("path");
 
 const DEFAULT_OUTPUT_LIMIT = 50000;
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_OUTPUT_LIMIT = 1000000;
+const MAX_TIMEOUT_MS = 60 * 60 * 1000;
+const MAX_ARGS = 512;
+const MAX_ARG_BYTES = 65536;
+const MAX_ENV_ENTRIES = 256;
+const MAX_ENV_BYTES = 65536;
 const KILL_ESCALATION_MS = 1500;
 const TRUNCATION_MARKER = "\n[...TRUNCATED DUE TO LENGTH...]\n";
 const PROCESS_EXIT_POLL_MS = 25;
@@ -141,32 +149,120 @@ function killProcessTree(child, signal = "SIGTERM") {
   }
 }
 
-function validateRequest(request) {
-  if (!request || typeof request !== "object") throw new TypeError("request must be an object");
-  if (typeof request.executable !== "string" || !request.executable.trim()) {
-    throw new TypeError("executable is required");
+function canonicalFile(value, label) {
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(label + " is required");
+  if (!path.isAbsolute(value)) throw new TypeError(label + " must be an absolute path");
+  let resolved;
+  try {
+    resolved = fs.realpathSync.native ? fs.realpathSync.native(value) : fs.realpathSync(value);
+  } catch (error) {
+    throw new TypeError(label + " is unavailable: " + error.code);
   }
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch (error) {
+    throw new TypeError(label + " cannot be inspected: " + error.code);
+  }
+  if (!stat.isFile()) throw new TypeError(label + " must be a file");
+  return resolved;
+}
+
+function canonicalDir(value, label) {
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(label + " is required");
+  if (!path.isAbsolute(value)) throw new TypeError(label + " must be an absolute path");
+  let resolved;
+  try {
+    resolved = fs.realpathSync.native ? fs.realpathSync.native(value) : fs.realpathSync(value);
+  } catch (error) {
+    throw new TypeError(label + " is unavailable: " + error.code);
+  }
+  if (!fs.statSync(resolved).isDirectory()) throw new TypeError(label + " must be a directory");
+  return resolved;
+}
+
+function validateEnv(value) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("env must be an object");
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new TypeError("env must be a plain object");
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_ENV_ENTRIES) throw new TypeError("env has too many entries");
+  let total = 0;
+  const seen = new Set();
+  const out = {};
+  for (const [key, val] of entries) {
+    if (!key || key.includes("\0") || key.includes("=")) {
+      throw new TypeError("env contains an invalid key");
+    }
+    if (typeof val !== "string" || val.includes("\0")) {
+      throw new TypeError("env values must be NUL-free strings");
+    }
+    const identity = os.platform() === "win32" ? key.toLowerCase() : key;
+    if (seen.has(identity)) throw new TypeError("env contains duplicate platform-equivalent keys");
+    seen.add(identity);
+    total += Buffer.byteLength(key, "utf8") + Buffer.byteLength(val, "utf8") + 2;
+    if (total > MAX_ENV_BYTES) throw new TypeError("env is too large");
+    out[key] = val;
+  }
+  return out;
+}
+
+function validateRequest(request) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new TypeError("request must be an object");
+  }
+  const executable = canonicalFile(request.executable, "executable");
+  const cwd = canonicalDir(request.cwd, "cwd");
+
   if (!Array.isArray(request.args) || request.args.some((v) => typeof v !== "string")) {
     throw new TypeError("args must be a string array");
   }
-  if (typeof request.cwd !== "string" || !request.cwd) throw new TypeError("cwd is required");
-  if (request.env === undefined) request.env = {};
-  if (!request.env || typeof request.env !== "object" || Array.isArray(request.env)) {
-    throw new TypeError("env must be an object");
+  if (request.args.length > MAX_ARGS) throw new TypeError("args has too many entries");
+  let argBytes = 0;
+  const args = request.args.map((value) => {
+    if (value.includes("\0")) throw new TypeError("args must not contain NUL");
+    argBytes += Buffer.byteLength(value, "utf8") + 1;
+    if (argBytes > MAX_ARG_BYTES) throw new TypeError("args are too large");
+    return value;
+  });
+
+  const env = validateEnv(request.env);
+
+  if (
+    request.signal !== undefined
+    && (
+      !request.signal
+      || typeof request.signal !== "object"
+      || typeof request.signal.addEventListener !== "function"
+      || typeof request.signal.removeEventListener !== "function"
+      || typeof request.signal.aborted !== "boolean"
+    )
+  ) {
+    throw new TypeError("signal must be an AbortSignal");
   }
+
   const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new TypeError("timeoutMs must be a positive integer");
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new TypeError("timeoutMs must be a positive integer within the broker cap");
   }
   const maxOutput = request.maxOutput ?? DEFAULT_OUTPUT_LIMIT;
-  if (!Number.isInteger(maxOutput) || maxOutput < TRUNCATION_MARKER.length) {
-    throw new TypeError("maxOutput is invalid");
+  if (
+    !Number.isInteger(maxOutput)
+    || maxOutput < TRUNCATION_MARKER.length
+    || maxOutput > MAX_OUTPUT_LIMIT
+  ) {
+    throw new TypeError("maxOutput is outside the broker cap");
   }
-  return { timeoutMs, maxOutput };
+  return { timeoutMs, maxOutput, executable, cwd, args, env };
 }
 
 async function runProcess(request) {
-  const { timeoutMs, maxOutput } = validateRequest(request);
+  const { timeoutMs, maxOutput, executable, cwd, args, env } = validateRequest(request);
   const startedAt = Date.now();
   const stdout = new BoundedOutputBuffer(maxOutput);
   const stderr = new BoundedOutputBuffer(maxOutput);
@@ -189,9 +285,9 @@ async function runProcess(request) {
   });
 
   try {
-    child = spawn(request.executable, request.args, {
-      cwd: request.cwd,
-      env: { ...request.env },
+    child = spawn(executable, args, {
+      cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       detached: true,
@@ -227,11 +323,6 @@ async function runProcess(request) {
   if (timeoutTimer.unref) timeoutTimer.unref();
 
   if (request.signal) {
-    if (typeof request.signal.addEventListener !== "function") {
-      clearTimeout(timeoutTimer);
-      killProcessTree(child, "SIGKILL");
-      throw new TypeError("signal must be an AbortSignal");
-    }
     abortHandler = () => terminate("abort");
     if (request.signal.aborted) abortHandler();
     else request.signal.addEventListener("abort", abortHandler, { once: true });
