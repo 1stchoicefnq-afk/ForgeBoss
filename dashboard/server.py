@@ -255,7 +255,7 @@ def prepare_template_cleanup():
     save_status(stage="REPO_HYGIENE",message="Inspecting PR template case collision; no GitHub writes")
     log("=== REPOSITORY HYGIENE: PR TEMPLATE CASE COLLISION ===")
     p=subprocess.run([runtime_python(),str(ROOT/"forgeboss"/"tournament"/"prepare_template_cleanup.py")],
-        cwd=str(ROOT),capture_output=True,text=True,timeout=300)
+        cwd=str(ROOT),capture_output=True,text=True,timeout=300,creationflags=CREATE_NO_WINDOW)
     for line in (p.stdout+p.stderr).splitlines(): log(line)
     if p.returncode:
         save_status(stage="SAFE_STOP",message="PR template hygiene inspection failed; nothing changed remotely")

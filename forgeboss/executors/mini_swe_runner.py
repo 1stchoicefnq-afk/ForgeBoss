@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib, json, os, sys, traceback, subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -73,6 +74,22 @@ def _exception_detail(ex: BaseException) -> str:
 def _hidden_run(args:list[str], **kwargs):
     kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
     return subprocess.run(args, **kwargs)
+
+@contextmanager
+def _windows_hidden_children():
+    """Force third-party console children to stay invisible on Windows."""
+    if os.name != "nt":
+        yield
+        return
+    original = subprocess.Popen
+    def hidden_popen(*args, **kwargs):
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0) or 0) | CREATE_NO_WINDOW
+        return original(*args, **kwargs)
+    subprocess.Popen = hidden_popen
+    try:
+        yield
+    finally:
+        subprocess.Popen = original
 
 def _guard_subprocess(args:list[str]):
     engine_root=Path(__file__).resolve().parents[2]
@@ -196,7 +213,11 @@ IMMUTABLE RULES:
 Required acceptance intent:
 {json.dumps(packet.get('acceptance_criteria',[]))}
 """
-        agent.run(task)
+        # mini-SWE's Docker environment owns some subprocess calls internally.
+        # Enforce CREATE_NO_WINDOW at the subprocess.Popen boundary for the
+        # complete third-party execution window so docker.exe/cmd.exe cannot flash.
+        with _windows_hidden_children():
+            agent.run(task)
         result["cost_usd"]=float(getattr(agent,"cost",0.0) or 0.0)
         result["calls"]=int(getattr(agent,"n_calls",0) or 0)
         post=_guard_subprocess([
