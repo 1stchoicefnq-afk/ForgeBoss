@@ -284,7 +284,7 @@ Releases/projects should maintain sufficient component provenance to produce an 
 
 Authority/security-critical dependencies should be pinned to reviewed versions. Dependency updates must be reviewed/tested rather than silently rolling to an unknown latest version.
 
-Executable Worker Packs/plugins/extensions should be versioned and hash/signature verified where the distribution mechanism supports it. Installation never grants runtime capability automatically.
+Executable Worker Packs/plugins/extensions should be pinned to an exact identity/version and cryptographically hash-verified at minimum; signatures should additionally be verified where the distribution mechanism supports them. Installation never grants runtime capability automatically.
 
 ## Backup, recovery and updates
 
