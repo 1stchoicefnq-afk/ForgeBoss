@@ -15,6 +15,7 @@ from forgeboss.control.governed_launcher import (
 )
 from forgeboss.control.store import ControlStore
 from forgeboss.policy.reuse_review_authority import issue_reuse_review_receipt
+from forgeboss.policy.task_governance_authority import sign_governed_task_authority
 
 
 class FakeDaemon:
@@ -94,6 +95,9 @@ class GovernedLauncherTests(unittest.TestCase):
             "reuseReviewReceiptSha256": "2" * 64,
             "smallRepairExemptionSha256": None,
         })
+        governed["governanceAuthorityReceipt"] = sign_governed_task_authority(
+            governed, self.daemon.policy_secret
+        )
         self.store.create_task(governed)
         self.packet = self.root / "packet.json"
         self.write_packet()
@@ -216,6 +220,27 @@ class GovernedLauncherTests(unittest.TestCase):
                     allowed_tools=["python"], budget_usd=0.25,
             )
         self.assertFalse(called["claim"])
+
+    @mock.patch("forgeboss.control.governed_launcher.issue_lease")
+    def test_forged_direct_store_governed_row_cannot_launch(self, issue_mock):
+        forged = dict(self.task)
+        forged["taskId"] = "FORGED"
+        forged.update({
+            "governanceMode": "reuse-v1",
+            "workKind": "substantial-subsystem",
+            "reuseReviewSha256": "1" * 64,
+            "reuseReviewReceiptSha256": "2" * 64,
+            "smallRepairExemptionSha256": None,
+            "governanceAuthorityReceipt": "hmac-sha256:" + ("0" * 64),
+        })
+        self.store.create_task(forged)
+        with self.assertRaisesRegex(GovernedLauncherError, "task authority is invalid"):
+            prepare_governed_launch(
+                self.daemon, task_id="FORGED", packet_path=self.packet,
+                workspace_path=self.workspace, adapter="mini-swe",
+                allowed_tools=["python"], budget_usd=0.25,
+            )
+        issue_mock.assert_not_called()
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
     def test_non_governed_task_is_refused(self, issue_mock):
