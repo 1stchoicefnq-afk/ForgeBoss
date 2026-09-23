@@ -44,6 +44,19 @@ EXPECTED_STRUCTURED_RECORDS = (
     "STATUS",
     "RELEASE_PROOF",
 )
+EXPECTED_TOP_LEVEL_KEYS = frozenset({
+    "schema",
+    "ruleset_id",
+    "ruleset_version",
+    "status",
+    "applies_to",
+    "precedence",
+    "rules",
+    "required_structured_records",
+    "note",
+})
+EXPECTED_RULE_KEYS = frozenset({"id", "name", "law"})
+PINNED_CANONICAL_SHA256 = "d7cf4789cfc780a6daef6279bd7390ba9591758328fad9ac55b36e90e180df0e"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -57,7 +70,9 @@ class PermanentRuleset:
     precedence: tuple[str, ...]
     rules: Mapping[str, Mapping[str, object]]
     required_structured_records: tuple[str, ...]
+    note: str
     sha256: str
+    canonical_sha256: str
     source_path: str
 
 
@@ -81,26 +96,47 @@ def _string_tuple(value: object, label: str) -> tuple[str, ...]:
     return out
 
 
-def _freeze(value: object) -> object:
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
-    return value
-
-
 def _expected_digest(value: str | None) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise PermanentRulesError("expected_sha256 must be a string")
+        raise PermanentRulesError("expected_canonical_sha256 must be a string")
     value = value.strip().lower()
     if not _SHA256.fullmatch(value):
-        raise PermanentRulesError("expected_sha256 must be 64 lowercase/uppercase hexadecimal characters")
+        raise PermanentRulesError(
+            "expected_canonical_sha256 must be 64 hexadecimal characters"
+        )
     return value
 
 
-def load_permanent_rules(path: str | Path, *, expected_sha256: str | None = None) -> PermanentRuleset:
+def _reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PermanentRulesError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str):
+    raise PermanentRulesError(f"non-standard JSON constant is forbidden: {value}")
+
+
+def _canonical_bytes(document: Mapping[str, object]) -> bytes:
+    return json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def load_permanent_rules(
+    path: str | Path,
+    *,
+    expected_canonical_sha256: str | None = None,
+) -> PermanentRuleset:
     source = Path(path)
     if not source.is_file():
         raise PermanentRulesError(f"permanent rules file is missing: {source}")
@@ -110,25 +146,47 @@ def load_permanent_rules(path: str | Path, *, expected_sha256: str | None = None
     except OSError as ex:
         raise PermanentRulesError(f"cannot read permanent rules: {source}") from ex
 
-    digest = hashlib.sha256(raw).hexdigest()
-    expected = _expected_digest(expected_sha256)
-    if expected is not None and digest != expected:
-        raise PermanentRulesError(f"permanent rules SHA-256 mismatch: expected {expected}, got {digest}")
+    raw_digest = hashlib.sha256(raw).hexdigest()
 
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except PermanentRulesError:
+        raise
     except (UnicodeDecodeError, json.JSONDecodeError) as ex:
         raise PermanentRulesError("permanent rules are not valid UTF-8 JSON") from ex
 
     if not isinstance(document, dict):
         raise PermanentRulesError("permanent rules root must be an object")
 
+    actual_top_keys = frozenset(document)
+    if actual_top_keys != EXPECTED_TOP_LEVEL_KEYS:
+        missing = sorted(EXPECTED_TOP_LEVEL_KEYS - actual_top_keys)
+        extra = sorted(actual_top_keys - EXPECTED_TOP_LEVEL_KEYS)
+        raise PermanentRulesError(
+            f"permanent rules top-level contract mismatch: missing={missing!r} extra={extra!r}"
+        )
+
+    canonical_digest = hashlib.sha256(_canonical_bytes(document)).hexdigest()
+    expected = _expected_digest(expected_canonical_sha256)
+    if expected is not None and canonical_digest != expected:
+        raise PermanentRulesError(
+            "permanent rules canonical SHA-256 mismatch: "
+            f"expected {expected}, got {canonical_digest}"
+        )
+
     if type(document.get("schema")) is not int or document["schema"] != EXPECTED_SCHEMA:
-        raise PermanentRulesError(f"unsupported permanent rules schema: {document.get('schema')!r}")
+        raise PermanentRulesError(
+            f"unsupported permanent rules schema: {document.get('schema')!r}"
+        )
 
     ruleset_id = _text(document.get("ruleset_id"), "ruleset_id")
     version = _text(document.get("ruleset_version"), "ruleset_version")
     status = _text(document.get("status"), "status")
+    note = _text(document.get("note"), "note")
     if ruleset_id != EXPECTED_RULESET_ID:
         raise PermanentRulesError(f"unexpected ruleset_id: {ruleset_id}")
     if version != EXPECTED_RULESET_VERSION:
@@ -152,6 +210,13 @@ def load_permanent_rules(path: str | Path, *, expected_sha256: str | None = None
     for entry in raw_rules:
         if not isinstance(entry, dict):
             raise PermanentRulesError("each rule must be an object")
+        actual_rule_keys = frozenset(entry)
+        if actual_rule_keys != EXPECTED_RULE_KEYS:
+            missing = sorted(EXPECTED_RULE_KEYS - actual_rule_keys)
+            extra = sorted(actual_rule_keys - EXPECTED_RULE_KEYS)
+            raise PermanentRulesError(
+                f"permanent rule field mismatch: missing={missing!r} extra={extra!r}"
+            )
         rule_id = _text(entry.get("id"), "rule.id")
         name = _text(entry.get("name"), f"{rule_id}.name")
         law = _text(entry.get("law"), f"{rule_id}.law")
@@ -164,10 +229,14 @@ def load_permanent_rules(path: str | Path, *, expected_sha256: str | None = None
         missing = [rule_id for rule_id in EXPECTED_RULE_IDS if rule_id not in indexed]
         extra = [rule_id for rule_id in indexed if rule_id not in EXPECTED_RULE_IDS]
         raise PermanentRulesError(
-            f"permanent rule contract mismatch: missing={missing!r} extra={extra!r} order={actual_ids!r}"
+            f"permanent rule contract mismatch: missing={missing!r} "
+            f"extra={extra!r} order={actual_ids!r}"
         )
 
-    records = _string_tuple(document.get("required_structured_records"), "required_structured_records")
+    records = _string_tuple(
+        document.get("required_structured_records"),
+        "required_structured_records",
+    )
     if records != EXPECTED_STRUCTURED_RECORDS:
         missing = [name for name in EXPECTED_STRUCTURED_RECORDS if name not in records]
         extra = [name for name in records if name not in EXPECTED_STRUCTURED_RECORDS]
@@ -184,16 +253,18 @@ def load_permanent_rules(path: str | Path, *, expected_sha256: str | None = None
         precedence=precedence,
         rules=MappingProxyType(dict(indexed)),
         required_structured_records=records,
-        sha256=digest,
+        note=note,
+        sha256=raw_digest,
+        canonical_sha256=canonical_digest,
         source_path=str(source.resolve()),
     )
 
 
-def load_default_rules(repo_root: str | Path, *, expected_sha256: str | None = None) -> PermanentRuleset:
+def load_default_rules(repo_root: str | Path) -> PermanentRuleset:
     root = Path(repo_root)
     return load_permanent_rules(
         root / "docs" / "bootstrap" / "PERMANENT_RULES.json",
-        expected_sha256=expected_sha256,
+        expected_canonical_sha256=PINNED_CANONICAL_SHA256,
     )
 
 
@@ -204,4 +275,6 @@ def require_rule(ruleset: PermanentRuleset, rule_id: str) -> Mapping[str, object
     try:
         return ruleset.rules[clean]
     except KeyError as ex:
-        raise PermanentRulesError(f"required permanent rule is unavailable: {clean}") from ex
+        raise PermanentRulesError(
+            f"required permanent rule is unavailable: {clean}"
+        ) from ex
