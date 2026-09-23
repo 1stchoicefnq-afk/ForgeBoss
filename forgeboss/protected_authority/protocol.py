@@ -5,7 +5,7 @@ from typing import Any,Mapping
 
 MAX_REQUEST_BYTES=128*1024;MAX_TEXT=64*1024;SCHEMA=2
 OPERATIONS={'read_github_control','publish_report_comment','publish_reviewed_draft_pr','authorize_self_build_launch','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}
-_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_MONEY=re.compile(r'^[0-9]{1,6}(?:\.[0-9]{1,6})?$');_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+_REPO=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$');_HEX64=re.compile(r'^[0-9a-f]{64}$');_OID=re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');_MONEY=re.compile(r'^[0-9]{1,6}(?:\.[0-9]{1,6})?;_PEER=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$');_REF=re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,199})$');_SECRET_KEY=re.compile(r'(?:token|secret|private[_-]?key|pem|jwt|credential|password)',re.I);_RUN_ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 class AuthorityError(RuntimeError):
     def __init__(self,code:str,message:str='protected authority request denied'):
         super().__init__(f"{message} [{code}]");self.code=code
@@ -261,36 +261,10 @@ def _payload(op,raw):
         o['baseRef']=_ref(o['baseRef'],'BASE_REF_INVALID');o['headRef']=_ref(o['headRef'],'HEAD_REF_INVALID')
         if o['baseRef']==o['headRef']:raise AuthorityError('PR_REF_COLLISION')
         o['title']=_text(o['title'],'PR_TITLE_INVALID',256);o['body']=_text(o['body'],'PR_BODY_INVALID');o['reviewDigest']=_text(o['reviewDigest'],'REVIEW_DIGEST_INVALID',64,_HEX64,True);return o
-    if op=='authorize_self_build_launch':
-        o=_exact(raw,('launch',),'PAYLOAD_INVALID')
-        if not isinstance(o['launch'],Mapping):raise AuthorityError('LAUNCH_PAYLOAD_INVALID')
-        x=_exact(o['launch'],(
-            'schema','repository','controlRevision','taskId','runId','ownerEpoch','builderId',
-            'assignmentGeneration','assignmentSha256','branch','worktreePath','runtimeId',
-            'allowedPaths','packetSha256','budgetUsd','globalBudgetRunId',
-            'globalBudgetReservationId','expiresAt'
-        ),'LAUNCH_PAYLOAD_INVALID')
-        if x['schema']!=1:raise AuthorityError('LAUNCH_PAYLOAD_INVALID')
-        x['repository']=_text(x['repository'],'REPOSITORY_INVALID',201,_REPO)
-        x['controlRevision']=_int(x['controlRevision'],'CONTROL_REVISION_INVALID')
-        x['taskId']=_text(x['taskId'],'TASK_ID_INVALID',128,_PEER)
-        x['runId']=_text(x['runId'],'RUN_ID_INVALID',128,_PEER)
-        x['ownerEpoch']=_int(x['ownerEpoch'],'OWNER_EPOCH_INVALID')
-        x['builderId']=_text(x['builderId'],'BUILDER_ID_INVALID',128,_PEER)
-        x['assignmentGeneration']=_int(x['assignmentGeneration'],'ASSIGNMENT_GENERATION_INVALID')
-        x['assignmentSha256']=_text(x['assignmentSha256'],'ASSIGNMENT_SHA_INVALID',64,_HEX64,True)
-        x['branch']=_ref(x['branch'],'BRANCH_INVALID')
-        x['worktreePath']=_text(x['worktreePath'],'WORKTREE_PATH_INVALID',4096)
-        x['runtimeId']=_text(x['runtimeId'],'RUNTIME_ID_INVALID',128,_PEER)
-        if not isinstance(x['allowedPaths'],list) or not x['allowedPaths']:raise AuthorityError('ALLOWED_PATHS_INVALID')
-        x['allowedPaths']=[_text(v,'ALLOWED_PATH_INVALID',4096) for v in x['allowedPaths']]
-        x['packetSha256']=_text(x['packetSha256'],'PACKET_SHA_INVALID',64,_HEX64,True)
-        x['budgetUsd']=_text(x['budgetUsd'],'BUDGET_INVALID',32,_MONEY)
-        x['globalBudgetRunId']=_text(x['globalBudgetRunId'],'GLOBAL_BUDGET_RUN_ID_INVALID',64,_RUN_ID)
-        x['globalBudgetReservationId']=_text(x['globalBudgetReservationId'],'GLOBAL_BUDGET_RESERVATION_ID_INVALID',128,_PEER)
-        if isinstance(x['expiresAt'],bool) or not isinstance(x['expiresAt'],(int,float)) or not math.isfinite(float(x['expiresAt'])):raise AuthorityError('LAUNCH_EXPIRY_INVALID')
-        x['expiresAt']=float(x['expiresAt'])
-        return {'launch':x}
+    if op=='verify_launch_authority':
+        o=_exact(raw,('envelope','envelopeDigest'),'PAYLOAD_INVALID')
+        if not isinstance(o['envelope'],Mapping):raise AuthorityError('LAUNCH_ENVELOPE_INVALID')
+        o['envelope']=_jsonable(o['envelope']);o['envelopeDigest']=_text(o['envelopeDigest'],'ENVELOPE_DIGEST_INVALID',64,_HEX64,True);return o
     if op=='prepare_self_build':
         o=_exact(raw,('sourceRoot','baseSha','runId'),'PAYLOAD_INVALID')
         o['sourceRoot']=_text(o['sourceRoot'],'SOURCE_ROOT_INVALID',4096)
