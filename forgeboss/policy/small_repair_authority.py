@@ -8,6 +8,12 @@ import time
 from typing import Mapping, Sequence
 
 from forgeboss.control.envelope import canonical
+from forgeboss.control.scheduler import _canonical_path as _store_canonical_path
+from forgeboss.control.store import (
+    WorkspaceCollisionError,
+    _git_object_id,
+    _repository_identity,
+)
 from forgeboss.policy.reuse_review import BuildReadiness, evaluate_build_readiness
 
 
@@ -18,9 +24,6 @@ class SmallRepairAuthorityError(RuntimeError):
 TOKEN_SCHEMA = 1
 TOKEN_TYPE = "small-repair-exemption"
 MAX_TTL_SECONDS = 60 * 60
-_GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
-_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
-_REPO = re.compile(r"^[A-Za-z0-9._-]+$")
 _TOKEN_KEYS = frozenset({
     "schema",
     "type",
@@ -94,16 +97,12 @@ def _canonical_path(value: object) -> str:
     raw = _text(value, "allowedPaths item").replace("\\", "/")
     if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw) or raw.startswith("//"):
         raise SmallRepairAuthorityError("allowedPaths must be repository-relative")
-    parts: list[str] = []
-    for part in raw.split("/"):
-        if part in ("", "."):
-            continue
-        if part == "..":
-            raise SmallRepairAuthorityError("allowedPaths must not escape the repository")
-        parts.append(part)
-    if not parts:
+    if any(part == ".." for part in raw.split("/")):
+        raise SmallRepairAuthorityError("allowedPaths must not contain parent traversal")
+    canonical_path = _store_canonical_path(raw)
+    if not canonical_path:
         raise SmallRepairAuthorityError("allowedPaths contains an empty/root path")
-    return "/".join(parts)
+    return canonical_path
 
 
 def _paths(value: object) -> tuple[str, ...]:
