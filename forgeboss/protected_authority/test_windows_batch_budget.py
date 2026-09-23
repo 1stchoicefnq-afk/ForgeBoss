@@ -35,6 +35,12 @@ class WindowsBatchBudgetPortableTests(unittest.TestCase):
         self.assertEqual(out[1].code,"IPC_PREAUTH_TIMEOUT")
         self.assertEqual(srv.handles,[101,102])
 
+    def test_windows_server_source_flushes_before_disconnect(self):
+        import inspect
+        source=inspect.getsource(WindowsNamedPipeServer._serve_handle)
+        self.assertIn("FlushFileBuffers",source)
+        self.assertLess(source.index("FlushFileBuffers"),source.index("DisconnectNamedPipe"))
+
     def test_authority_error_message_contains_machine_code(self):
         err=AuthorityError("EXACT_TEST_CODE")
         self.assertEqual(err.code,"EXACT_TEST_CODE")
