@@ -33,6 +33,14 @@ class PreparedGovernedLaunch:
     executor_lease_token: str
 
 
+def _freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({str(k): _freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
 def _packet(path: str | Path) -> tuple[Path, dict]:
     p = Path(path)
     try:
@@ -113,19 +121,14 @@ def prepare_governed_launch(
         raise GovernedLauncherError("packet exact head differs from canonical task head")
 
     run_id = uuid.uuid4().hex
+    repo_root = getattr(daemon, "repo_root", None)
+    worktree_root = getattr(daemon, "worktree_root", None)
+    if repo_root is None or worktree_root is None:
+        raise GovernedLauncherError("trusted daemon roots are unavailable")
     try:
-        identity = resolve_runner_identity(adapter, repo_root=daemon.ROOT if hasattr(daemon, "ROOT") else Path(__file__).resolve().parents[2])
-    except GovernedLaunchError:
-        # ForgeBossDaemon exposes ROOT at module level rather than instance state.
-        from forgeboss.control import daemon as daemon_module
-        try:
-            identity = resolve_runner_identity(adapter, repo_root=daemon_module.ROOT)
-        except GovernedLaunchError as ex:
-            raise GovernedLauncherError(str(ex)) from ex
-
-    from forgeboss.control import daemon as daemon_module
-    worktree_root = daemon_module.WORKTREE_ROOT
-    repo_root = daemon_module.ROOT
+        identity = resolve_runner_identity(adapter, repo_root=repo_root)
+    except GovernedLaunchError as ex:
+        raise GovernedLauncherError(str(ex)) from ex
 
     try:
         launch_attestation = issue_governed_launch_attestation(
@@ -227,7 +230,7 @@ def prepare_governed_launch(
         authoritative_head=authoritative_head,
         argv=argv,
         env=env,
-        launch_envelope=MappingProxyType(dict(envelope)),
+        launch_envelope=_freeze(envelope),
         executor_lease_path=str(executor_lease["lease"]),
         executor_lease_token=str(executor_lease["token"]),
     )
