@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse,hashlib,json,math,os,re,secrets,shutil,subprocess,time
+import argparse,hashlib,json,math,os,re,secrets,shutil,sqlite3,subprocess,time
 from contextlib import contextmanager
 from pathlib import Path,PurePosixPath
 ROOT=Path(__file__).resolve().parents[2]
@@ -498,18 +498,72 @@ def _control_authority(raw,lease,workspace,executor):
     if epoch<=0:raise SecurityError("control envelope ownerEpoch invalid")
     runtime=env.get("runtime")
     if not isinstance(runtime,dict) or str(runtime.get("adapter") or "")!=executor:raise SecurityError("control envelope runtime differs from executor")
+    attested_fields=("runnerPath","runnerSha256","interpreterPath","interpreterSha256")
+    if any(not runtime.get(name) for name in attested_fields):raise SecurityError("control envelope missing governed runtime identity")
+    try:
+        from forgeboss.control.governed_launch import resolve_runner_identity
+        identity=resolve_runner_identity(executor,repo_root=ROOT)
+    except Exception as e:raise SecurityError("unable to resolve governed runtime identity: "+str(e)) from e
+    expected_runtime={
+        "runnerPath":identity.runner_path,
+        "runnerSha256":identity.runner_sha256,
+        "interpreterPath":identity.interpreter_path,
+        "interpreterSha256":identity.interpreter_sha256,
+    }
+    for name,value in expected_runtime.items():
+        if runtime.get(name)!=value:raise SecurityError("control envelope governed runtime identity mismatch: "+name)
+    packet_sha=str(env.get("packetSha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}",packet_sha):raise SecurityError("control envelope packet SHA-256 missing or invalid")
+    if packet_sha!=str(lease.get("packet_sha256") or "").lower():raise SecurityError("control envelope packet differs from executor lease")
     budget=_positive_budget(env.get("budgetUsd"));ea=[norm(x) for x in env.get("allowedPaths",[])];la=[norm(x) for x in lease.get("allowed_files",[])]
     if [x.casefold() for x in ea]!=[x.casefold() for x in la]:raise SecurityError("control envelope allowedPaths differ from executor lease")
     unsigned=json.dumps(env,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
     return {"taskId":task,"runId":run,"ownerEpoch":epoch,"budgetUsd":budget,"worktreePath":str(work),"runtime":runtime,"expiresAt":float(env["expiresAt"]),"allowedPaths":ea,"envelopeSha256":hashlib.sha256(unsigned).hexdigest()}
-def issue(packet_path,workspace,executor,ttl=1200):
+def _assert_live_control_lease(authority,executor,db_path=None,now=None):
+    if not isinstance(authority,dict):raise SecurityError("control authority is invalid")
+    db=Path(db_path) if db_path is not None else ROOT/"state"/"forgebossd"/"forgeboss.db"
+    try:db=db.resolve(strict=True)
+    except Exception as e:raise SecurityError("ForgeBoss control DB unavailable: "+str(e)) from e
+    if not db.is_file():raise SecurityError("ForgeBoss control DB unavailable")
+    current=time.time() if now is None else float(now)
+    try:
+        conn=sqlite3.connect(db.as_uri()+"?mode=ro",uri=True,timeout=5)
+        conn.row_factory=sqlite3.Row
+        try:
+            row=conn.execute("""SELECT wl.owner_run_id,wl.owner_epoch,wl.released_at,wl.expires_at,wl.worktree_path,
+              t.status,t.cancel_requested_at,t.assigned_runtime,t.governance_mode
+              FROM workspace_leases wl JOIN tasks t ON t.task_id=wl.task_id
+              WHERE wl.task_id=?""",(authority["taskId"],)).fetchone()
+        finally:conn.close()
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to verify live ForgeBoss control lease: "+str(e)) from e
+    if not row:raise SecurityError("live ForgeBoss control lease missing")
+    if str(row["owner_run_id"])!=str(authority["runId"]):raise SecurityError("live control run identity mismatch")
+    if int(row["owner_epoch"])!=int(authority["ownerEpoch"]):raise SecurityError("live control owner epoch mismatch")
+    if row["released_at"] is not None:raise SecurityError("live control lease already released")
+    if float(row["expires_at"])<=current:raise SecurityError("live control lease expired")
+    if str(row["status"])!="running":raise SecurityError("governed task is not running")
+    if row["cancel_requested_at"] is not None:raise SecurityError("governed task cancellation requested")
+    if str(row["assigned_runtime"] or "")!=str(executor):raise SecurityError("live control runtime identity mismatch")
+    if str(row["governance_mode"] or "")!="reuse-v1":raise SecurityError("task is not governed by reuse-v1")
+    try:
+        if Path(row["worktree_path"]).resolve()!=Path(authority["worktreePath"]).resolve():
+            raise SecurityError("live control workspace mismatch")
+    except SecurityError:raise
+    except Exception as e:raise SecurityError("unable to verify live control workspace: "+str(e)) from e
+    return True
+
+def issue_lease(packet_path,workspace,executor,ttl=1200):
     pp=Path(packet_path);work=Path(workspace).resolve();packet=json.loads(pp.read_text(encoding="utf-8"));allowed,context=validate_packet(packet)
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} write-capable execution is quarantined until OS/network isolation is verified")
     with _WorkspaceFence(work):
         assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
         lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
         lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
-    print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
+    return {"ok":True,"lease":str(lp),"token":token}
+
+def issue(packet_path,workspace,executor,ttl=1200):
+    print(json.dumps(issue_lease(packet_path,workspace,executor,ttl)));return 0
 def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
     if time.time()>float(lease.get("expires_at",0)):raise SecurityError("executor lease expired")
@@ -533,6 +587,7 @@ def paid_start_authority(lease_path,token,packet_path,workspace,executor,control
         lease=_verify_unlocked(lease_path,token,packet_path,workspace,executor)
         if lease.get("paid_consumed") is True:raise SecurityError("paid executor authority already consumed")
         authority=_control_authority(control_envelope,lease,workspace,executor);budget=authority["budgetUsd"]
+        _assert_live_control_lease(authority,executor)
         if cli_budget is not None and _positive_budget(cli_budget)!=budget:raise SecurityError("runner budget differs from signed control authority")
         ch=changed(lease.get("git_metadata"),git_metadata_snapshot(Path(workspace).resolve()))
         if ch:raise SecurityError("Git metadata changed at paid-start boundary: "+json.dumps(ch))

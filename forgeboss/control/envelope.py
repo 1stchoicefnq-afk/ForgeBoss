@@ -26,6 +26,9 @@ def secret_file(root:Path):
 def policy_secret_file(root:Path):
     return _secret_file(root,"policy-approval-secret.bin","forgeboss policy approval")
 
+def launch_secret_file(root:Path):
+    return _secret_file(root,"governed-launch-secret.bin","forgeboss governed launch")
+
 def sign_envelope(payload,secret:bytes):
     body=dict(payload)
     body.pop("signature",None)
@@ -37,7 +40,7 @@ def verify_envelope(payload,secret:bytes,now=None):
     now=time.time() if now is None else float(now)
     if not isinstance(payload,dict):raise ValueError("envelope must be object")
     allowed={"envelopeVersion","taskId","repository","baseSha","branch","worktreePath","runId","attempt","ownerEpoch","runtime",
-             "allowedPaths","deniedPaths","allowedTools","contextBundleHash","transcript","events","budgetUsd","expiresAt","protocolVersion","signature"}
+             "allowedPaths","deniedPaths","allowedTools","packetSha256","contextBundleHash","transcript","events","budgetUsd","expiresAt","protocolVersion","signature"}
     extra=set(payload)-allowed
     if extra:raise ValueError("unexpected envelope keys: "+",".join(sorted(extra)))
     required={"envelopeVersion","taskId","repository","baseSha","worktreePath","runId","ownerEpoch","runtime","allowedPaths","allowedTools","expiresAt","protocolVersion","signature"}

@@ -3,11 +3,12 @@ import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
 from pathlib import Path
 from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
-from .envelope import secret_file,policy_secret_file,sign_envelope,verify_envelope,canonical
+from .envelope import secret_file,policy_secret_file,launch_secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
+from forgeboss.control.governed_launch import GovernedLaunchError,verify_governed_launch_attestation
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -23,8 +24,13 @@ class ForgeBossDaemon:
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
         self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
-        if self.secret_path==self.policy_secret_path or hmac.compare_digest(self.secret,self.policy_secret):
-            raise RuntimeError("policy approval key must be distinct from daemon authentication key")
+        self.launch_secret_path,self.launch_secret=launch_secret_file(ROOT)
+        paths={str(self.secret_path.resolve()),str(self.policy_secret_path.resolve()),str(self.launch_secret_path.resolve())}
+        if len(paths)!=3:
+            raise RuntimeError("daemon, policy, and governed-launch keys must use distinct files")
+        pairs=((self.secret,self.policy_secret),(self.secret,self.launch_secret),(self.policy_secret,self.launch_secret))
+        if any(hmac.compare_digest(a,b) for a,b in pairs):
+            raise RuntimeError("daemon, policy, and governed-launch key material must be distinct")
         self.connect_nonces={}
         self.started=time.time()
         self.idempotency={}
@@ -106,11 +112,7 @@ class ForgeBossDaemon:
             def do():
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
-                if task.get("governance_mode")=="reuse-v1":
-                    raise ProtocolError(
-                        "GOVERNED_LAUNCH_ATTESTATION_REQUIRED",
-                        "governed tasks cannot claim a workspace through caller-supplied runtime identity; use the future attested governed-launch path",
-                    )
+                verified_launch=None
                 if str(p.get("repository") or "")!=str(task["repository"]):raise ProtocolError("TASK_BINDING_MISMATCH","repository differs from task")
                 if str(p.get("baseSha") or "")!=str(task["base_sha"]):raise ProtocolError("TASK_BINDING_MISMATCH","baseSha differs from task")
                 try:allowed,_=validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
@@ -119,6 +121,31 @@ class ForgeBossDaemon:
                 if any(a.casefold() not in task_keys for a in allowed):raise ProtocolError("SCOPE_ESCALATION","workspace claim exceeds task allowedPaths")
                 tools=p.get("allowedTools",[])
                 if not isinstance(tools,list) or any(str(x) not in SAFE_TOOL_IDS for x in tools):raise ProtocolError("TOOL_DENIED","unapproved tool id")
+                if task.get("governance_mode")=="reuse-v1":
+                    token=p.get("governedLaunchAttestation")
+                    if token is None:
+                        raise ProtocolError("GOVERNED_LAUNCH_ATTESTATION_REQUIRED","governed task requires a trusted launch attestation")
+                    try:
+                        verified_launch=verify_governed_launch_attestation(
+                            token,
+                            task_id=p.get("taskId"),
+                            repository=p.get("repository"),
+                            base_sha=p.get("baseSha"),
+                            run_id=p.get("runId"),
+                            adapter=p.get("runtimeId"),
+                            provider=p.get("provider"),
+                            model=p.get("model"),
+                            packet_sha256=p.get("packetSha256"),
+                            repo_root=ROOT,
+                            workspace_path=p.get("worktreePath"),
+                            worktree_root=WORKTREE_ROOT,
+                            allowed_paths=allowed,
+                            allowed_tools=tools,
+                            budget_usd=p.get("budgetUsd",0),
+                            secret=self.launch_secret,
+                        )
+                    except GovernedLaunchError as ex:
+                        raise ProtocolError("GOVERNED_LAUNCH_ATTESTATION_INVALID",str(ex)) from ex
                 try:
                     candidate=Path(p["worktreePath"]).resolve(strict=False)
                     if os.path.commonpath([str(WORKTREE_ROOT),str(candidate)])!=str(WORKTREE_ROOT):raise SecurityError("worktreePath escapes ForgeBoss worktree root")
@@ -135,8 +162,17 @@ class ForgeBossDaemon:
                   "envelopeVersion":1,"protocolVersion":1,"taskId":p["taskId"],"repository":p["repository"],
                   "baseSha":p["baseSha"],"branch":p.get("branch"),"worktreePath":lease["worktree_path"],"runId":p["runId"],
                   "attempt":int(p.get("attempt",1)),"ownerEpoch":int(lease["owner_epoch"]),
-                  "runtime":{"adapter":p.get("runtimeId") or "unknown","provider":p.get("provider"),"model":p.get("model")},
+                  "runtime":{
+                    "adapter":p.get("runtimeId") or "unknown",
+                    "provider":p.get("provider"),
+                    "model":p.get("model"),
+                    "runnerPath":verified_launch.identity.runner_path if verified_launch else None,
+                    "runnerSha256":verified_launch.identity.runner_sha256 if verified_launch else None,
+                    "interpreterPath":verified_launch.identity.interpreter_path if verified_launch else None,
+                    "interpreterSha256":verified_launch.identity.interpreter_sha256 if verified_launch else None,
+                  },
                   "allowedPaths":allowed,"deniedPaths":p.get("deniedPaths",[]),"allowedTools":tools,
+                  "packetSha256":p.get("packetSha256"),
                   "contextBundleHash":p.get("contextBundleHash"),"transcript":p.get("transcript",{}),"events":p.get("events",{}),
                   "budgetUsd":float(lease["budget_reserved"]),"expiresAt":float(lease["expires_at"])
                 }
