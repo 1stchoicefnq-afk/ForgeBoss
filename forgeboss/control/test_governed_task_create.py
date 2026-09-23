@@ -210,8 +210,12 @@ class GovernedTaskCreateTests(unittest.TestCase):
             self.store.create_task(p)
         self.assertIsNone(self.store.get_task("T2"))
 
-    def test_protocol_mutation_set_contains_governed_create(self):
-        self.assertIn("task.create_governed", self.mod.__dict__["parse_frame"].__globals__["MUTATIONS"])
+    def test_protocol_and_client_share_governed_mutation_set(self):
+        from forgeboss.control.client import Client
+        protocol_mutations = self.mod.__dict__["parse_frame"].__globals__["MUTATIONS"]
+        client_mutations = Client.call.__globals__["MUTATIONS"]
+        self.assertIs(protocol_mutations, client_mutations)
+        self.assertIn("task.create_governed", client_mutations)
 
 
 if __name__ == "__main__":
