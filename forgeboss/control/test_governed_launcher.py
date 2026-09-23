@@ -21,9 +21,10 @@ LAUNCH_SECRET = b"l" * 32
 
 
 class FakeLeaseIssuer:
-    def __init__(self, repo_root: Path, *, fail: bool = False):
+    def __init__(self, repo_root: Path, *, fail: bool = False, corrupt_packet: bool = False):
         self.repo_root = repo_root
         self.fail = fail
+        self.corrupt_packet = corrupt_packet
         self.calls = []
         self.last_path = None
 
@@ -34,9 +35,31 @@ class FakeLeaseIssuer:
         state = self.repo_root / "state" / "executor-security"
         state.mkdir(parents=True, exist_ok=True)
         path = state / "lease-test.json"
-        path.write_text("{}", encoding="utf-8")
+        token = "lease-token-" + "x" * 40
+        packet_bytes = Path(packet).read_bytes()
+        packet_sha = hashlib.sha256(packet_bytes).hexdigest()
+        if self.corrupt_packet:
+            packet_sha = "f" * 64
+        packet_doc = json.loads(packet_bytes.decode("utf-8"))
+        lease = {
+            "schema": 3,
+            "executor": executor,
+            "workspace": str(Path(workspace).resolve()),
+            "packet_sha256": packet_sha,
+            "allowed_files": list(packet_doc["allowed_files"]),
+            "allowed_keys": [str(x).casefold() for x in packet_doc["allowed_files"]],
+            "issued_at": time.time(),
+            "expires_at": time.time() + ttl,
+            "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            "baseline": {},
+            "git_metadata": {},
+            "isolation_verified": True,
+            "paid_consumed": False,
+            "paid_authority": None,
+        }
+        path.write_text(json.dumps(lease), encoding="utf-8")
         self.last_path = path
-        return {"ok": True, "lease": str(path), "token": "lease-token-123"}
+        return {"ok": True, "lease": str(path), "token": token}
 
 
 class FakeClient:
@@ -69,10 +92,13 @@ class FakeClient:
                 raise RuntimeError("forced claim failure")
             identity = resolve_runner_identity("mini-swe", repo_root=self.repo_root)
             lease = {
+                "task_id": params["taskId"],
                 "owner_run_id": params["runId"],
                 "owner_epoch": 1,
                 "worktree_path": params["worktreePath"],
                 "budget_reserved": params["budgetUsd"],
+                "current_head": params["currentHead"],
+                "released_at": None,
                 "expires_at": time.time() + 1200,
             }
             env = {
@@ -261,6 +287,21 @@ class GovernedLauncherTests(unittest.TestCase):
                 self.assertEqual(issuer.calls, [])
         self.write_packet()
 
+    def test_duplicate_json_keys_in_packet_fail_closed_before_lease(self):
+        self.packet_path.write_text(
+            '{"objective":"Build the exact governed subsystem.",'
+            '"objective":"Different",'
+            '"expected_head_revision":"' + self.base + '",'
+            '"allowed_files":["src/a.py","tests/a.test.py"],'
+            '"context_files":[]}',
+            encoding="utf-8",
+        )
+        issuer = FakeLeaseIssuer(self.repo)
+        with self.assertRaisesRegex(GovernedLauncherError, "duplicate JSON object key"):
+            self.prepare(lease_issuer=issuer)
+        self.assertEqual(issuer.calls, [])
+        self.write_packet()
+
     def test_alias_scope_spelling_is_rejected_even_if_canonical_identity_matches(self):
         task = dict(self.task)
         task["allowed_paths_json"] = json.dumps(["SRC/A.PY.", "tests/a.test.py"])
@@ -333,6 +374,19 @@ class GovernedLauncherTests(unittest.TestCase):
         self.assertFalse(issuer.last_path.exists())
         self.assertEqual(len(client.releases), 1)
         self.assertEqual(client.releases[0]["outcome"], "queued")
+
+    def test_corrupt_executor_lease_is_rejected_before_workspace_claim(self):
+        client = FakeClient(
+            task=self.task,
+            repo_root=self.repo,
+            daemon_secret=DAEMON_SECRET,
+        )
+        issuer = FakeLeaseIssuer(self.repo, corrupt_packet=True)
+        with self.assertRaisesRegex(GovernedLauncherError, "packet hash mismatch"):
+            self.prepare(client=client, lease_issuer=issuer)
+        self.assertEqual([name for name, _, _ in client.calls], ["task.get"])
+        self.assertIsNone(client.last_claim)
+        self.assertFalse(issuer.last_path.exists())
 
     def test_executor_lease_failure_happens_before_workspace_claim(self):
         client = FakeClient(
