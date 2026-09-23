@@ -7,6 +7,7 @@ from .envelope import secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
+from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -61,11 +62,38 @@ class ForgeBossDaemon:
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
-        if m=="task.create":
+        if m in ("task.create","task.create_governed"):
             def create():
                 try:validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
                 except SecurityError as ex:raise ProtocolError("SCOPE_DENIED",str(ex))
-                return self.store.create_task(p)
+                if m=="task.create":
+                    return self.store.create_task(p)
+                try:
+                    readiness=evaluate_authorized_reuse_readiness(
+                        task_id=p.get("taskId"),
+                        repository=p.get("repository"),
+                        base_sha=p.get("baseSha"),
+                        objective=p.get("purpose"),
+                        allowed_paths=p.get("allowedPaths",[]),
+                        secret=self.secret,
+                        small_repair_exemption=p.get("smallRepairExemption"),
+                        subsystem=p.get("subsystem"),
+                        reuse_review=p.get("reuseReview"),
+                        reuse_review_receipt=p.get("reuseReviewReceipt"),
+                    )
+                except ReuseReviewAuthorityError as ex:
+                    raise ProtocolError("REUSE_AUTHORITY_INVALID",str(ex)) from ex
+                if not readiness.ready:
+                    raise ProtocolError("REUSE_GATE_BLOCKED",str(readiness.blocker))
+                governed=dict(p)
+                governed["governanceMode"]="reuse-v1"
+                governed["workKind"]=readiness.work_kind
+                def digest(value):
+                    return hashlib.sha256(canonical(value)).hexdigest() if value is not None else None
+                governed["reuseReviewSha256"]=digest(p.get("reuseReview"))
+                governed["reuseReviewReceiptSha256"]=digest(p.get("reuseReviewReceipt"))
+                governed["smallRepairExemptionSha256"]=digest(p.get("smallRepairExemption"))
+                return self.store.create_task(governed)
             return self._idem(req,create)
         if m=="task.get":
             t=self.store.get_task(p["taskId"])

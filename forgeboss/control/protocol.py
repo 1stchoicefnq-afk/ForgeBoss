@@ -4,7 +4,7 @@ import json
 PROTOCOL_MIN=1
 PROTOCOL_MAX=1
 MAX_FRAME_BYTES=256*1024
-MUTATIONS={"task.create","workspace.claim","workspace.heartbeat","workspace.release","worker.admit"}
+MUTATIONS={"task.create","task.create_governed","workspace.claim","workspace.heartbeat","workspace.release","worker.admit"}
 
 class ProtocolError(RuntimeError):
     def __init__(self,code,message):
