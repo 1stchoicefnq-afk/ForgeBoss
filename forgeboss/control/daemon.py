@@ -21,6 +21,8 @@ SAFE_TOOL_IDS={"git","node","npm","python","pytest","docker"}
 class ForgeBossDaemon:
     def __init__(self):
         WORKTREE_ROOT.mkdir(parents=True,exist_ok=True)
+        self.repo_root=ROOT
+        self.worktree_root=WORKTREE_ROOT
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
         self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
