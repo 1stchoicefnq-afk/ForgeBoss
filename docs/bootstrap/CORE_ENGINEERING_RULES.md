@@ -57,6 +57,29 @@ These rules describe the minimum project-engineering behavior ForgeBoss should a
 48. The end user should not need a separate AI chat, Git client, PowerShell/terminal workflow or coding-agent UI to use ForgeBoss's normal product path.
 49. Release proving must produce an explicit outcome such as READY, NEEDS_REPAIR, BLOCKED or PROOF_INCOMPLETE.
 50. Missing or unverifiable evidence must never be translated into READY.
+51. The user owns their project/source and must have a practical export/import path.
+52. Uninstall or account changes must not silently destroy user project source/data.
+53. Authoritative project/runtime state must have a tested backup/restore strategy appropriate to its deployment mode.
+54. Data retention/deletion and telemetry behavior must be explicit; hidden telemetry/collection is forbidden.
+55. Worker/tool network egress must be policy-controlled and least-necessary for the approved task.
+56. Secrets must use an appropriate secure store, least-privilege scoping and log/evidence masking.
+57. Releases/projects must maintain sufficient third-party provenance for an SBOM or equivalent dependency inventory.
+58. Authority/security-critical dependencies must be pinned to reviewed versions/identities.
+59. Dependency upgrades must be reviewed and tested; do not silently follow an unreviewed latest version.
+60. Executable Worker Packs/plugins/extensions must be identity/version/hash/signature verified where the distribution model supports it.
+61. Installing a plugin/extension/pack never grants capabilities automatically; declared capabilities remain subject to ForgeBoss authority.
+62. ForgeBoss application updates must be authenticated/versioned and have known-good rollback/recovery behavior.
+63. Projects must be isolated from one another for private context, secrets, workspace and evidence unless explicit sharing is authorised.
+64. Cloud/team features must enforce tenant/account/team isolation server-side.
+65. Material actions/approvals/authority changes/releases/destructive operations belong in a canonical audit trail.
+66. Cancellation/stop revokes future stale authority; a cancelled/superseded worker cannot later resume mutation without fresh authority.
+67. Schema/state migrations require forward validation and a rollback/recovery strategy appropriate to the risk.
+68. ForgeBoss itself maintains an accessibility baseline for normal user workflows.
+69. Local/degraded operation should continue where practical when optional cloud/provider services are unavailable.
+70. Before destructive project-state migrations, create or verify an appropriate backup/export where practical.
+71. Rulesets/projects/Worker Packs/adapters/state schemas must declare compatibility/version expectations.
+72. Cost estimates/bounds should be shown before materially expensive work where practical, and actual recorded spend shown afterward.
+73. Hard owner/project/run spend ceilings cannot be bypassed by models, workers, tools or providers.
 
 ## Permanent reuse-before-build rule
 
