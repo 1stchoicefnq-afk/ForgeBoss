@@ -152,6 +152,7 @@ def supervise_governed_run(
     provider: str,
     model: str,
     budget_usd: float,
+    container_image: str,
     credential_env: dict[str, str] | None = None,
     poll_seconds: float = 0.25,
 ) -> GovernedRunResult:
@@ -192,6 +193,7 @@ def supervise_governed_run(
         provider=provider,
         model=model,
         packet_sha256=packet_sha,
+        container_image=container_image,
         repo_root=Path(__file__).resolve().parents[2],
         workspace_path=workspace,
         worktree_root=Path(os.environ.get("FORGEBOSS_WORKTREE_ROOT") or (Path(__file__).resolve().parents[2]/"state"/"forgebossd"/"worktrees")).resolve(),
@@ -219,6 +221,7 @@ def supervise_governed_run(
             "provider":provider,
             "model":model,
             "packetSha256":packet_sha,
+            "containerImage":container_image,
             "budgetUsd":budget_usd,
             "governedLaunchAttestation":attestation,
         }
@@ -254,6 +257,7 @@ def supervise_governed_run(
         "FORGEBOSS_EXECUTOR_LEASE":executor_lease["lease"],
         "FORGEBOSS_EXECUTOR_LEASE_TOKEN":executor_lease["token"],
         "FORGEBOSS_MINISWE_MODEL":model,
+        "FORGEBOSS_MINISWE_IMAGE":container_image,
     }
     env.update(provider_credentials)
 
