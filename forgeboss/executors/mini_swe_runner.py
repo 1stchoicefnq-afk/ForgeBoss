@@ -93,6 +93,15 @@ def main() -> int:
             "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
             "--launch-bundle",launch_bundle,"--budget",str(budget),
         ])
+    elif os.environ.get("FORGEBOSS_GOVERNED_TASK")=="YES":
+        control_envelope=os.environ.get("FORGEBOSS_CONTROL_ENVELOPE","")
+        if not control_envelope:
+            return _persist_early_failure(result,"governed control envelope missing",13)
+        v=_guard_subprocess([
+            "paid-start","--lease",lease,"--token",lease_token,
+            "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+            "--control-envelope",control_envelope,"--budget",str(budget),
+        ])
     else:
         v=_guard_subprocess([
             "verify","--lease",lease,"--token",lease_token,
