@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
@@ -84,9 +84,9 @@ class PreparedGovernedLaunch:
     budget_usd: str
     owner_epoch: int
     argv: tuple[str, ...]
-    authority_env: Mapping[str, str]
-    executor_lease_path: str
-    launch_envelope: Mapping[str, object]
+    authority_env: Mapping[str, str] = field(repr=False)
+    executor_lease_path: str = field(repr=False)
+    launch_envelope: Mapping[str, object] = field(repr=False)
 
 
 def _text(value: object, label: str) -> str:
