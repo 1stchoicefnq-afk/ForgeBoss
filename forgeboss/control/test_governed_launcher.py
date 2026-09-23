@@ -243,6 +243,20 @@ class GovernedLauncherTests(unittest.TestCase):
         issue_mock.assert_not_called()
 
     @mock.patch("forgeboss.control.governed_launcher.issue_lease")
+    def test_cancelled_or_nonqueued_governed_task_is_refused_before_preflight(self, issue_mock):
+        self.store.db.execute(
+            "UPDATE tasks SET status='cancelled',cancel_requested_at=? WHERE task_id=?",
+            (time.time(), self.task["taskId"]),
+        )
+        with self.assertRaisesRegex(GovernedLauncherError, "not launchable"):
+            prepare_governed_launch(
+                self.daemon, task_id=self.task["taskId"], packet_path=self.packet,
+                workspace_path=self.workspace, adapter="mini-swe",
+                allowed_tools=["python"], budget_usd=0.25,
+            )
+        issue_mock.assert_not_called()
+
+    @mock.patch("forgeboss.control.governed_launcher.issue_lease")
     def test_non_governed_task_is_refused(self, issue_mock):
         legacy = {
             "taskId": "LEGACY",
