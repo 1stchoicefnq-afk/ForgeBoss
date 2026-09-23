@@ -46,33 +46,43 @@ def _initial_result(packet_path:str|os.PathLike[str],workspace:str,model_name:st
         "postflight":None,
     }
 
+def _persist_early_failure(result:dict,message:str,code:int)->int:
+    result["error"]=message
+    try:_persist_result(result)
+    except Exception as evidence_error:
+        print("FORGEBOSS RESULT EVIDENCE ERROR: "+str(evidence_error),file=sys.stderr)
+    print("FORGEBOSS SAFE STOP: "+message,file=sys.stderr)
+    print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
+    return code
+
 def main() -> int:
     if len(sys.argv)<4:
         print("usage: mini_swe_runner.py PACKET.json WORKSPACE BUDGET_USD",file=sys.stderr);return 2
-    if os.environ.get("FORGEBOSS_ALLOW_PAID_EXECUTOR")!="YES":
-        print("FORGEBOSS SAFE STOP: paid executor gate is not enabled.");return 3
 
     packet=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     workspace=str(Path(sys.argv[2]).resolve())
     budget=float(sys.argv[3])
     model_name=os.environ.get("FORGEBOSS_MINISWE_MODEL","openai/gpt-5.6-luna")
-
     result=_initial_result(sys.argv[1],workspace,model_name)
+
+    if os.environ.get("FORGEBOSS_ALLOW_PAID_EXECUTOR")!="YES":
+        return _persist_early_failure(result,"paid executor gate is not enabled",3)
     guard=Path(__file__).resolve().parents[1]/"security"/"executor_guard.py"
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
-        print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
+        return _persist_early_failure(result,"unified executor lease missing",13)
     if os.environ.get("FORGEBOSS_SELF_BUILD_MODE")=="YES":
         launch_bundle=os.environ.get("FORGEBOSS_PROTECTED_LAUNCH_BUNDLE","")
         if not launch_bundle:
-            print("FORGEBOSS SAFE STOP: protected self-build launch bundle missing.",file=sys.stderr);return 13
+            return _persist_early_failure(result,"protected self-build launch bundle missing",13)
         v=subprocess.run([sys.executable,str(guard),"protected-paid-start","--lease",lease,"--token",lease_token,
                           "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
                           "--launch-bundle",launch_bundle,"--budget",str(budget)],capture_output=True,text=True)
     else:
         v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
     if v.returncode:
-        print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
+        detail=(v.stdout or v.stderr or "protected paid-start guard denied").strip()[-2000:]
+        return _persist_early_failure(result,"protected paid-start guard denied: "+detail,13)
     env_obj=None
     try:
         from minisweagent.agents.default import DefaultAgent
