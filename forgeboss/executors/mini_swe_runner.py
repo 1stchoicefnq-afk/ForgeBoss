@@ -2,6 +2,10 @@ from __future__ import annotations
 import json, os, sys, traceback, subprocess
 from contextlib import nullcontext
 from pathlib import Path
+
+_FORGEBOSS_ROOT = Path(__file__).resolve().parents[2]
+if str(_FORGEBOSS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_FORGEBOSS_ROOT))
 from forgeboss.security.executor_guard import paid_start_authority
 
 def main() -> int:
