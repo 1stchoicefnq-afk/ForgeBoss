@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
 from forgeboss.control.self_build_freeze import SelfBuildFreezeError,freeze_candidate
-from forgeboss.control.process_supervisor import ProcessSupervisor
+from forgeboss.control.process_supervisor import ProcessSupervisor,SupervisorError
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 
 
@@ -267,6 +267,28 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(result["stopped"])
         self.assertEqual(self.client.revoked[-1]["task_id"],"task-b")
         self.assertTrue(result["docker_evidence"]["container_empty"])
+
+    def test_complete_worker_surfaces_persisted_worker_error(self):
+        class FailedComplete(Supervisor):
+            def complete(self,worker_id,expected_generation,*,timeout=5.0):
+                raise SupervisorError("WORKER_COMPLETION_UNPROVEN","worker-exit-nonzero")
+        sup=FailedComplete()
+        launcher=self.launcher(sup)
+        out=launcher.launch_initial(self.prepared)
+        first=out["workers"][0]
+        Path(first["result_file"]).parent.mkdir(parents=True,exist_ok=True)
+        Path(first["result_file"]).write_text(json.dumps({
+            "schema":1,"executor":"mini-swe","model":"test","cost_usd":0.0,"calls":0,
+            "completed":False,"error":"protected paid-start guard denied: fixture",
+            "task_id":"task-a","builder_id":"builder-a","run_id":"fl1-run",
+            "expected_head_revision":"a"*40,"workspace":str(self.worka.resolve()),
+            "packet_sha256":first["packet_sha256"],"postflight":None,
+        }),encoding="utf-8")
+        with self.assertRaises(SelfBuildLaunchError) as cm:
+            launcher.complete_worker(prepared_run=self.prepared,launched_run=out,builder_id="builder-a")
+        self.assertEqual(cm.exception.code,"WORKER_COMPLETION_UNPROVEN")
+        self.assertIn("builder-a",str(cm.exception))
+        self.assertIn("protected paid-start guard denied",str(cm.exception))
 
     def test_complete_worker_freezes_then_records_protected_handoff(self):
         out=self.launcher(freeze_fn=lambda **kw:{
