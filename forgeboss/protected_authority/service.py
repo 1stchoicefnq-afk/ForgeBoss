@@ -62,12 +62,11 @@ class ProtectedAuthorityService:
         self.journal.consume(r['requestId'],r['requestDigest']);private=[]
         try:
             op=r['operation']
-            if op=='verify_launch_authority':
-                trust=self.secrets_provider.launch_trust_root();private.append(trust);result=self.backend.verify_launch_authority(repository=r['repository'],control_revision=r['controlRevision'],payload=r['payload'],trust_root=trust)
-            elif op in {'prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
+            if op in {'authorize_self_build_launch','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
                 if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
                 try:
-                    if op=='prepare_self_build':result=self.self_build_runtime.prepare(r['payload'])
+                    if op=='authorize_self_build_launch':result=self.self_build_runtime.authorize_launch(r['payload']['launch'],repository=r['repository'],control_revision=r['controlRevision'])
+                    elif op=='prepare_self_build':result=self.self_build_runtime.prepare(r['payload'])
                     elif op=='prepare_self_build_replacement':result=self.self_build_runtime.prepare_replacement(r['payload'])
                     elif op=='compose_self_build_successor':result=self.self_build_runtime.compose_successor(r['payload'])
                     elif op=='activate_self_build_successor':result=self.self_build_runtime.activate_successor(r['payload'])
@@ -93,10 +92,10 @@ class ProtectedAuthorityService:
         receipt={'schema':3,'operation':r['operation'],'requestId':r['requestId'],'peerId':r['peerId'],'peerPrincipal':peer_context.principal,'repository':r['repository'],'controlRevision':r['controlRevision'],'requestDigest':r['requestDigest'],'resultDigest':canonical_digest(public),'servicePrincipal':self.service_principal}
         signed=self.receipt_signer.sign(receipt);return {**signed,'result':public}
 
-def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,launch_trust_file:str,receipt_signing_key_file:str,allowed_repositories,trusted_storage_principals:set[str]|None=None,github_enabled:bool=True)->ProtectedAuthorityService:
+def create_production_service(*,protected_root:str,expected_service_principal:str,peer_principals:dict[str,str],peer_public_keys:dict[str,str],github_app_id:int,github_installation_id:int,github_private_key_file:str,receipt_signing_key_file:str,allowed_repositories,trusted_storage_principals:set[str]|None=None,github_enabled:bool=True)->ProtectedAuthorityService:
     root=Path(protected_root);boundary=PlatformMachineBoundary(expected_service_principal=expected_service_principal,peer_principals=peer_principals,peer_public_keys=peer_public_keys,trusted_storage_principals=trusted_storage_principals);root=assert_machine_anchored_root(boundary,root)
     repos=_canonical_repository_map(allowed_repositories)
-    secrets=FileSecretProvider(root=root,private_key_path=Path(github_private_key_file),launch_trust_path=Path(launch_trust_file),boundary=boundary);signer=ReceiptSigner.from_file(root=root,path=Path(receipt_signing_key_file),boundary=boundary);backend=GitHubAppBackend(app_id=github_app_id,installation_id=github_installation_id)
+    secrets=FileSecretProvider(root=root,private_key_path=Path(github_private_key_file),boundary=boundary);signer=ReceiptSigner.from_file(root=root,path=Path(receipt_signing_key_file),boundary=boundary);backend=GitHubAppBackend(app_id=github_app_id,installation_id=github_installation_id)
     receipt_pin=base64.b64encode(signer.public_raw).decode('ascii')
     runtime=SelfBuildRuntime(protected_root=root,boundary=boundary,receipt_public_key_b64=receipt_pin)
     return ProtectedAuthorityService(protected_root=root,boundary=boundary,secrets_provider=secrets,backend=backend,receipt_signer=signer,allowed_repositories=repos.values(),self_build_runtime=runtime,github_enabled=github_enabled)
