@@ -371,6 +371,29 @@ class GovernedTaskCreateTests(unittest.TestCase):
             self.daemon.dispatch(req2, True)
         self.assertEqual(ctx2.exception.code, "GOVERNED_LAUNCH_ATTESTATION_INVALID")
 
+    def test_governed_claim_rechecks_task_state_and_cancellation(self):
+        p, _ = self._create_governed_substantial("T-GOV-STATE")
+        self.store.db.execute(
+            "UPDATE tasks SET status='running' WHERE task_id=?",
+            (p["taskId"],),
+        )
+        req = self._claim_request(p["taskId"], "mini-swe")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_TASK_STATE_INVALID")
+        self.assertIsNone(self.store.get_lease(p["taskId"]))
+
+        p2, _ = self._create_governed_substantial("T-GOV-CANCEL")
+        self.store.db.execute(
+            "UPDATE tasks SET cancel_requested_at=? WHERE task_id=?",
+            (time.time(), p2["taskId"]),
+        )
+        req2 = self._claim_request(p2["taskId"], "mini-swe")
+        with self.assertRaises(self.mod.ProtocolError) as ctx2:
+            self.daemon.dispatch(req2, True)
+        self.assertEqual(ctx2.exception.code, "GOVERNED_TASK_CANCELLED")
+        self.assertIsNone(self.store.get_lease(p2["taskId"]))
+
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
