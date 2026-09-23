@@ -196,12 +196,14 @@ class ControlStore:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True
-                row=self.db.execute("SELECT cancel_requested_at FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                row=self.db.execute("SELECT cancel_requested_at,status FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not row: raise KeyError("task not found")
                 existing=row["cancel_requested_at"]
                 if existing is not None:
                     self.db.execute("COMMIT");begun=False
                     return {"taskId":task_id,"cancelRequestedAt":float(existing),"alreadyRequested":True}
+                if str(row["status"]) not in ("queued","running"):
+                    raise PermissionError("task is already terminal and cannot be cancelled")
                 now=time.time()
                 cur=self.db.execute("UPDATE tasks SET cancel_requested_at=?,updated_at=? WHERE task_id=? AND cancel_requested_at IS NULL",(now,now,task_id))
                 if cur.rowcount!=1: raise RuntimeError("task cancellation state changed during request")
@@ -296,7 +298,7 @@ class ControlStore:
                     except Exception:pass
                 raise
 
-    def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released",expected_head=None):
+    def release(self,task_id,run_id,owner_epoch,result_head=None,outcome="released",expected_head=None,respect_cancel=False):
         with self._lock:
             begun=False
             try:
@@ -306,16 +308,20 @@ class ControlStore:
                 if float(row["expires_at"])<=now: raise PermissionError("writer authority lost: lease expired")
                 old_head=str(row["current_head"])
                 if expected_head is not None and old_head!=str(expected_head): raise PermissionError("writer authority lost: expected head mismatch")
+                task_state=self.db.execute("SELECT status,cancel_requested_at FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not task_state: raise PermissionError("task authority lost during release")
+                effective_outcome="cancelled" if respect_cancel and task_state["cancel_requested_at"] is not None else outcome
                 final_head=old_head if result_head is None else str(result_head)
                 cur=self.db.execute("""UPDATE workspace_leases SET released_at=?,current_head=?
                   WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL AND expires_at>? AND current_head=?""",(now,final_head,task_id,run_id,int(owner_epoch),now,old_head))
                 if cur.rowcount!=1: raise PermissionError("writer authority lost during release")
-                cur=self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'",(outcome,now,run_id,task_id,int(owner_epoch)))
+                cur=self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'",(effective_outcome,now,run_id,task_id,int(owner_epoch)))
                 if cur.rowcount!=1: raise PermissionError("run authority lost during release")
-                cur=self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=?,updated_at=? WHERE task_id=? AND status='running'",(outcome,final_head,now,task_id))
+                cur=self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=?,updated_at=? WHERE task_id=? AND status='running'",(effective_outcome,final_head,now,task_id))
                 if cur.rowcount!=1: raise PermissionError("task authority lost during release")
-                self._event_locked("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":final_head},task_id,run_id)
+                self._event_locked("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":effective_outcome,"requestedOutcome":outcome,"resultHead":final_head},task_id,run_id)
                 self.db.execute("COMMIT");begun=False
+                return {"outcome":effective_outcome,"resultHead":final_head}
             except Exception:
                 if begun:
                     try:self.db.execute("ROLLBACK")

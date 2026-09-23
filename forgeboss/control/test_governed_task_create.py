@@ -287,6 +287,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
                 "provider": "openai",
                 "model": "openai/gpt-5.6-luna",
                 "packetSha256": "b" * 64,
+                "containerImage": "node@sha256:" + "d" * 64,
                 "budgetUsd": 0.25,
             },
         }
@@ -312,6 +313,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             provider=q["provider"],
             model=q["model"],
             packet_sha256=q["packetSha256"],
+            container_image=q["containerImage"],
             repo_root=self.mod.ROOT,
             workspace_path=q["worktreePath"],
             worktree_root=self.mod.WORKTREE_ROOT,
@@ -335,6 +337,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(env["packetSha256"], q["packetSha256"])
         self.assertEqual(env["runtime"]["provider"], q["provider"])
         self.assertEqual(env["runtime"]["model"], q["model"])
+        self.assertEqual(env["runtime"]["containerImage"], q["containerImage"])
 
     def test_governed_launch_token_cannot_rebind_runtime_or_run(self):
         p, _ = self._create_governed_substantial("T-GOV-BIND")
@@ -349,6 +352,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
             provider=q["provider"],
             model=q["model"],
             packet_sha256=q["packetSha256"],
+            container_image=q["containerImage"],
             repo_root=self.mod.ROOT,
             workspace_path=q["worktreePath"],
             worktree_root=self.mod.WORKTREE_ROOT,

@@ -112,6 +112,7 @@ class ForgeBossDaemon:
             def cancel():
                 try:return self.store.request_cancel(p["taskId"])
                 except KeyError as ex:raise ProtocolError("TASK_NOT_FOUND","task not found") from ex
+                except PermissionError as ex:raise ProtocolError("TASK_TERMINAL",str(ex)) from ex
             return self._idem(req,cancel)
         if m=="workspace.claim":
             def do():
@@ -141,6 +142,7 @@ class ForgeBossDaemon:
                             provider=p.get("provider"),
                             model=p.get("model"),
                             packet_sha256=p.get("packetSha256"),
+                            container_image=p.get("containerImage"),
                             repo_root=ROOT,
                             workspace_path=p.get("worktreePath"),
                             worktree_root=WORKTREE_ROOT,
@@ -175,6 +177,7 @@ class ForgeBossDaemon:
                     "runnerSha256":verified_launch.identity.runner_sha256 if verified_launch else None,
                     "interpreterPath":verified_launch.identity.interpreter_path if verified_launch else None,
                     "interpreterSha256":verified_launch.identity.interpreter_sha256 if verified_launch else None,
+                    "containerImage":verified_launch.container_image if verified_launch else None,
                   },
                   "allowedPaths":allowed,"deniedPaths":p.get("deniedPaths",[]),"allowedTools":tools,
                   "packetSha256":p.get("packetSha256"),

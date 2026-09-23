@@ -324,6 +324,15 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
             self.assertIn("git:effective-config",snap)
         finally:td.cleanup()
 
+    def test_verify_rejects_allowed_source_change_after_lease_before_execution(self):
+        td,work=self._ordinary()
+        try:
+            lease=self._lease(work)
+            (work/"allowed.txt").write_text("injected-before-start",encoding="utf-8")
+            with self.assertRaisesRegex(guard.SecurityError,"workspace changed after executor lease before execution"):
+                self._verify(work,lease)
+        finally:td.cleanup()
+
     def test_verify_unchanged_git_metadata_passes(self):
         td,work=self._ordinary()
         try:
