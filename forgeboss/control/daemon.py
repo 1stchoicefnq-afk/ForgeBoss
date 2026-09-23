@@ -1,12 +1,13 @@
 from __future__ import annotations
-import argparse, hashlib, json, os, socketserver, threading, time, uuid
+import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
 from pathlib import Path
-from .store import ControlStore,BudgetReservationError
+from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
-from .envelope import secret_file,sign_envelope,verify_envelope,canonical
+from .envelope import secret_file,policy_secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
+from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -21,6 +22,9 @@ class ForgeBossDaemon:
         WORKTREE_ROOT.mkdir(parents=True,exist_ok=True)
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
+        self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
+        if self.secret_path==self.policy_secret_path or hmac.compare_digest(self.secret,self.policy_secret):
+            raise RuntimeError("policy approval key must be distinct from daemon authentication key")
         self.connect_nonces={}
         self.started=time.time()
         self.idempotency={}
@@ -56,16 +60,43 @@ class ForgeBossDaemon:
                 self.connect_nonces={k:v for k,v in self.connect_nonces.items() if now-v<60}
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
-            return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":3,
-                    "capabilities":["tasks","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+            return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
+                    "capabilities":["tasks","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
-        if m=="task.create":
+        if m in ("task.create","task.create_governed"):
             def create():
                 try:validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
                 except SecurityError as ex:raise ProtocolError("SCOPE_DENIED",str(ex))
-                return self.store.create_task(p)
+                if m=="task.create":
+                    return self.store.create_task(p)
+                try:
+                    readiness=evaluate_authorized_reuse_readiness(
+                        task_id=p.get("taskId"),
+                        repository=p.get("repository"),
+                        base_sha=p.get("baseSha"),
+                        objective=p.get("purpose"),
+                        allowed_paths=p.get("allowedPaths",[]),
+                        secret=self.policy_secret,
+                        small_repair_exemption=p.get("smallRepairExemption"),
+                        subsystem=p.get("subsystem"),
+                        reuse_review=p.get("reuseReview"),
+                        reuse_review_receipt=p.get("reuseReviewReceipt"),
+                    )
+                except ReuseReviewAuthorityError as ex:
+                    raise ProtocolError("REUSE_AUTHORITY_INVALID",str(ex)) from ex
+                if not readiness.ready:
+                    raise ProtocolError("REUSE_GATE_BLOCKED",str(readiness.blocker))
+                governed=dict(p)
+                governed["governanceMode"]="reuse-v1"
+                governed["workKind"]=readiness.work_kind
+                def digest(value):
+                    return hashlib.sha256(canonical(value)).hexdigest() if value is not None else None
+                governed["reuseReviewSha256"]=digest(p.get("reuseReview"))
+                governed["reuseReviewReceiptSha256"]=digest(p.get("reuseReviewReceipt"))
+                governed["smallRepairExemptionSha256"]=digest(p.get("smallRepairExemption"))
+                return self.store.create_task(governed)
             return self._idem(req,create)
         if m=="task.get":
             t=self.store.get_task(p["taskId"])
@@ -75,6 +106,11 @@ class ForgeBossDaemon:
             def do():
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("governance_mode")=="reuse-v1":
+                    raise ProtocolError(
+                        "GOVERNED_LAUNCH_ATTESTATION_REQUIRED",
+                        "governed tasks cannot claim a workspace through caller-supplied runtime identity; use the future attested governed-launch path",
+                    )
                 if str(p.get("repository") or "")!=str(task["repository"]):raise ProtocolError("TASK_BINDING_MISMATCH","repository differs from task")
                 if str(p.get("baseSha") or "")!=str(task["base_sha"]):raise ProtocolError("TASK_BINDING_MISMATCH","baseSha differs from task")
                 try:allowed,_=validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})

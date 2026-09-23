@@ -5,7 +5,7 @@ from pathlib import Path
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 from forgeboss.control.scheduler import _canonical_path
 
-SCHEMA_VERSION=3
+SCHEMA_VERSION=4
 class BudgetReservationError(RuntimeError):
     def __init__(self,code,message): super().__init__(message);self.code=code
 class WorkspaceCollisionError(RuntimeError):
@@ -91,6 +91,30 @@ def _validated_budget_request(task,requested):
     if value>remaining: raise BudgetReservationError("BUDGET_EXCEEDED",f"workspace claim budget {value} exceeds remaining task budget {remaining}")
     return float(value),float(spent+value)
 
+def _governance_fields(task):
+    mode=task.get("governanceMode")
+    governed_keys=("workKind","subsystem","reuseReviewSha256","reuseReviewReceiptSha256","smallRepairExemptionSha256")
+    if mode is None:
+        if any(task.get(name) is not None for name in governed_keys):
+            raise ValueError("governance evidence requires governanceMode")
+        return (None,None,None,None,None,None)
+    if mode!="reuse-v1": raise ValueError("unsupported governanceMode")
+    work_kind=task.get("workKind")
+    if work_kind not in ("small-repair","substantial-subsystem"): raise ValueError("governed task workKind invalid")
+    subsystem=task.get("subsystem")
+    if not isinstance(subsystem,str) or not subsystem.strip() or subsystem!=subsystem.strip(): raise ValueError("governed task subsystem required")
+    def digest(name):
+        value=task.get(name)
+        if value is None:return None
+        if not isinstance(value,str) or not re.fullmatch(r"[0-9a-f]{64}",value): raise ValueError(f"{name} must be lowercase SHA-256")
+        return value
+    review=digest("reuseReviewSha256");receipt=digest("reuseReviewReceiptSha256");exemption=digest("smallRepairExemptionSha256")
+    if work_kind=="small-repair":
+        if not exemption or review is not None or receipt is not None: raise ValueError("small-repair governance evidence invalid")
+    else:
+        if not review or not receipt or exemption is not None: raise ValueError("substantial governance evidence invalid")
+    return (mode,work_kind,subsystem,review,receipt,exemption)
+
 def _ttl(value):
     if isinstance(value,bool): raise ValueError("ttl_seconds must be finite positive")
     try: x=float(value)
@@ -110,7 +134,7 @@ class ControlStore:
         with self._lock:
             self.db.executescript("""
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,purpose TEXT NOT NULL,base_sha TEXT NOT NULL,branch TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,current_step TEXT,assigned_runtime TEXT,allowed_paths_json TEXT NOT NULL DEFAULT '[]',required_tests_json TEXT NOT NULL DEFAULT '[]',budget_allocated REAL NOT NULL DEFAULT 0,budget_spent REAL NOT NULL DEFAULT 0,cancel_requested_at REAL,result_head TEXT,terminal_outcome TEXT,governance_mode TEXT,work_kind TEXT,subsystem TEXT,reuse_review_sha256 TEXT,reuse_review_receipt_sha256 TEXT,small_repair_exemption_sha256 TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS task_runs(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),attempt INTEGER NOT NULL,owner_epoch INTEGER NOT NULL,runtime_id TEXT,status TEXT NOT NULL,started_at REAL NOT NULL,finished_at REAL);
             CREATE TABLE IF NOT EXISTS task_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id TEXT,event_type TEXT NOT NULL,payload_json TEXT NOT NULL,state_version INTEGER NOT NULL,created_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS workspace_leases(task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),worktree_path TEXT NOT NULL,branch TEXT,owner_run_id TEXT NOT NULL,owner_epoch INTEGER NOT NULL,claimed_at REAL NOT NULL,heartbeat_at REAL NOT NULL,expires_at REAL NOT NULL,released_at REAL,current_head TEXT NOT NULL,budget_reserved REAL NOT NULL DEFAULT 0);
@@ -121,6 +145,16 @@ class ControlStore:
             """)
             cols={str(r[1]) for r in self.db.execute("PRAGMA table_info(workspace_leases)")}
             if "budget_reserved" not in cols: self.db.execute("ALTER TABLE workspace_leases ADD COLUMN budget_reserved REAL NOT NULL DEFAULT 0")
+            task_cols={str(r[1]) for r in self.db.execute("PRAGMA table_info(tasks)")}
+            for name,decl in (
+                ("governance_mode","TEXT"),
+                ("work_kind","TEXT"),
+                ("subsystem","TEXT"),
+                ("reuse_review_sha256","TEXT"),
+                ("reuse_review_receipt_sha256","TEXT"),
+                ("small_repair_exemption_sha256","TEXT"),
+            ):
+                if name not in task_cols:self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
             self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
 
     def _state_version(self):
@@ -136,13 +170,16 @@ class ControlStore:
 
     def create_task(self,t):
         _scope_authorities(t.get("allowedPaths",[]));_repository_identity(t.get("repository"));base_sha=_git_object_id(t.get("baseSha"))
+        governance=_governance_fields(t)
         with self._lock:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
-                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,created_at,updated_at)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),now,now))
-                self._event_locked("task.created",{"status":"queued"},t["taskId"])
+                self.db.execute("""INSERT INTO tasks(task_id,repository,purpose,base_sha,branch,status,allowed_paths_json,required_tests_json,budget_allocated,governance_mode,work_kind,subsystem,reuse_review_sha256,reuse_review_receipt_sha256,small_repair_exemption_sha256,created_at,updated_at)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)""",(t["taskId"],t["repository"],t["purpose"],base_sha,t.get("branch"),json.dumps(t.get("allowedPaths",[])),json.dumps(t.get("requiredTests",[])),float(t.get("budgetUsd",0)),*governance,now,now))
+                event={"status":"queued"}
+                if governance[0] is not None:event.update({"governanceMode":governance[0],"workKind":governance[1],"subsystem":governance[2],"reuseReviewSha256":governance[3],"reuseReviewReceiptSha256":governance[4],"smallRepairExemptionSha256":governance[5]})
+                self._event_locked("task.created",event,t["taskId"])
                 self.db.execute("COMMIT");begun=False
             except Exception:
                 if begun:
