@@ -89,7 +89,7 @@ def _payload(op,raw):
             'globalBudgetReservationId','expiresAt'
         ),'LAUNCH_PAYLOAD_INVALID')
         if x['schema']!=1:raise AuthorityError('LAUNCH_PAYLOAD_INVALID')
-        x['repository']=_text(x['repository'],'REPOSITORY_INVALID',201,_REPO,True)
+        x['repository']=_text(x['repository'],'REPOSITORY_INVALID',201,_REPO)
         x['controlRevision']=_int(x['controlRevision'],'CONTROL_REVISION_INVALID')
         x['taskId']=_text(x['taskId'],'TASK_ID_INVALID',128,_PEER)
         x['runId']=_text(x['runId'],'RUN_ID_INVALID',128,_PEER)
