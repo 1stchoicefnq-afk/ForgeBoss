@@ -164,6 +164,12 @@ class ProtectedPolicyVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtectedPolicyReceiptError, "TTL"):
             self.verify(self.response(ttl=3601))
 
+    def test_nonfinite_or_invalid_current_time_fails_closed(self):
+        for value in (float("nan"), float("inf"), float("-inf"), "not-a-time"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ProtectedPolicyReceiptError, "current time is invalid"):
+                    self.verify(self.response(), now=value)
+
     def test_reuse_expectations_cannot_be_supplied_to_small_repair(self):
         with self.assertRaisesRegex(ProtectedPolicyReceiptError, "must not carry"):
             self.verify(self.response(), subsystem="terminal-execution", review_sha256="b" * 64)
