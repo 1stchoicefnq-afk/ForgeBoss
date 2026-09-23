@@ -120,27 +120,24 @@ class ProtectedAuthorityClient:
             elif got!=want: raise AuthorityError("SERVICE_RECEIPT_BINDING_MISMATCH")
         return response
 
-    def verify_launch_authority(self,*,envelope:Mapping[str,Any],envelope_digest:str)->dict:
-        response=self.call("verify_launch_authority",{"envelope":dict(envelope),"envelopeDigest":envelope_digest})
-        result=response.get("result") or {}
-        if result.get("verified") is not True or result.get("envelopeDigest")!=envelope_digest:
-            raise AuthorityError("LAUNCH_AUTHORITY_NOT_VERIFIED")
-        return response
+    def authorize_self_build_launch(self,launch:Mapping[str,Any])->dict:
+        """Ask the protected runtime to authorize an exact prepared launch.
 
-    def attest_launch_payload(self,signed_payload:Mapping[str,Any])->dict:
-        """Sign an exact launch payload, have the protected service verify it,
-        and return the service-attested bundle consumed by executor_guard."""
-        signed=dict(signed_payload)
-        digest=canonical_digest(signed)
-        try:
-            signature=base64.b64encode(
-                self.peer_private_key.sign(bytes.fromhex(digest))
-            ).decode("ascii")
-        except Exception as ex:
-            raise AuthorityError("LAUNCH_SIGNING_FAILED") from ex
-        envelope={"signed":signed,"signature":signature}
-        response=self.verify_launch_authority(envelope=envelope,envelope_digest=digest)
-        return {"schema":1,"envelope":envelope,"authorityResponse":response}
+        The peer key authenticates this request only. It is NOT a launch trust
+        key. The service independently binds the requested launch to protected
+        Store assignment, workspace, budget and known-good identity before its
+        distinct receipt signer approves it.
+        """
+        launch=dict(launch)
+        digest=canonical_digest(launch)
+        response=self.call("authorize_self_build_launch",{"launch":launch})
+        result=response.get("result") or {}
+        if result.get("verified") is not True or result.get("launchDigest")!=digest:
+            raise AuthorityError("LAUNCH_AUTHORITY_NOT_VERIFIED")
+        return {"schema":2,"launch":launch,"authorityResponse":response}
+
+    def attest_launch_payload(self,_signed_payload:Mapping[str,Any])->dict:
+        raise AuthorityError("LEGACY_SELF_SIGNED_LAUNCH_DISABLED")
 
     def prepare_self_build(self,*,source_root:str,base_sha:str,run_id:str)->dict:
         return self.call("prepare_self_build",{"sourceRoot":source_root,"baseSha":base_sha,"runId":run_id})
