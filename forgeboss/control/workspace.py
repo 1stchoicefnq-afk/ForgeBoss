@@ -127,6 +127,14 @@ def _candidate_under_root(workspace: str | os.PathLike[str], workspace_root: str
     return root, candidate
 
 
+def _create_stage_dir(path: Path) -> None:
+    """Create a protected staging directory without Windows 0o700 ACL synthesis."""
+    if os.name == "nt":
+        path.mkdir()
+    else:
+        path.mkdir(mode=0o700)
+
+
 def _fsync_dir(path: Path) -> None:
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -443,10 +451,7 @@ def provision_workspace(source_repo, workspace, workspace_root, base_sha, task_b
         # Windows must inherit the already-hardened protected parent ACL. CPython
         # 3.13 mkdir(mode=0o700) can synthesize an OWNER RIGHTS ACL that Docker
         # Desktop's Linux backend cannot traverse for bind mounts.
-        if os.name == "nt":
-            stage.mkdir()
-        else:
-            stage.mkdir(mode=0o700)
+        _create_stage_dir(stage)
         _fsync_dir(root); record["identity"] = _path_identity(stage); record["state"] = "provisioning"; _write_record(state, root, target, record)
         with tempfile.TemporaryDirectory(prefix="forgeboss-git-template-", dir=str(root)) as template:
             _run_git(git, ["-c", "protocol.file.allow=always", "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--no-tags", f"--template={Path(template)}", source["source_root"], str(stage)], cwd=root)
