@@ -13,7 +13,7 @@ import uuid
 
 from forgeboss.control.client import Client
 from forgeboss.control.envelope import (
-     launch_secret_file,
+    launch_secret_file,
     secret_file,
     verify_envelope,
 )
@@ -140,8 +140,11 @@ def _packet(path: str | Path, task: Mapping[str, object]) -> tuple[Path, dict[st
         raise GovernedLauncherError("packet must bind expected_head_revision or exact_head")
     if len(set(present)) != 1:
         raise GovernedLauncherError("packet contains conflicting head identities")
-    packet_head = _git_object_id(present[0])
-    current_head = _git_object_id(task.get("result_head") or task.get("base_sha"))
+    try:
+        packet_head = _git_object_id(present[0])
+        current_head = _git_object_id(task.get("result_head") or task.get("base_sha"))
+    except Exception as ex:
+        raise GovernedLauncherError("packet/task head identity is invalid") from ex
     if packet_head != current_head:
         raise GovernedLauncherError("packet head differs from canonical task head")
 
@@ -274,10 +277,13 @@ def prepare_governed_launch(
         raise GovernedLauncherError("task cancellation has been requested")
 
     repository_raw = _text(task.get("repository"), "canonical task repository")
-    _repository_identity(repository_raw)
-    base_sha = _git_object_id(task.get("base_sha"))
-    current_head = _git_object_id(task.get("result_head") or base_sha)
-    task_scope = tuple(sorted(_scope_authorities(task.get("allowed_paths_json"))))
+    try:
+        _repository_identity(repository_raw)
+        base_sha = _git_object_id(task.get("base_sha"))
+        current_head = _git_object_id(task.get("result_head") or base_sha)
+        task_scope = tuple(sorted(_scope_authorities(task.get("allowed_paths_json"))))
+    except Exception as ex:
+        raise GovernedLauncherError("canonical task authority state is invalid") from ex
     if not task_scope:
         raise GovernedLauncherError("canonical task has empty writable scope")
 
@@ -286,7 +292,10 @@ def prepare_governed_launch(
         raise GovernedLauncherError("requested launch budget exceeds canonical task remaining budget")
 
     packet, packet_document, packet_sha256, packet_allowed = _packet(packet_path, task)
-    workspace = Path(canonical_worktree_path(workspace_path, worktree_root))
+    try:
+        workspace = Path(canonical_worktree_path(workspace_path, worktree_root))
+    except Exception as ex:
+        raise GovernedLauncherError("workspace path is outside the trusted worktree root") from ex
     try:
         workspace = workspace.resolve(strict=True)
     except OSError as ex:
@@ -372,7 +381,10 @@ def prepare_governed_launch(
         if Decimal(str(lease.get("budget_reserved"))) != requested_budget:
             raise GovernedLauncherError("workspace claim returned different budget reservation")
 
-        verified = verify_envelope(envelope, bytes(daemon_secret))
+        try:
+            verified = verify_envelope(envelope, bytes(daemon_secret))
+        except Exception as ex:
+            raise GovernedLauncherError("daemon-signed launch envelope verification failed") from ex
         expected_runtime = {
             "adapter": R0_ADAPTER,
             "provider": clean_provider,
@@ -470,7 +482,11 @@ def prepare_governed_launch(
             except Exception:
                 pass
         _cleanup_executor_lease(lease_obj, repo_root)
-        raise
+        if isinstance(ex := __import__("sys").exc_info()[1], GovernedLauncherError):
+            raise
+        raise GovernedLauncherError(
+            f"trusted launch preparation failed: {type(ex).__name__}: {ex}"
+        ) from ex
 
 
 def prepare_local_governed_launch(
