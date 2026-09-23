@@ -83,6 +83,68 @@ function rewriteWindowsNulRedirects(command) {
   return command.replace(/([<>]\s*)nul(?![\w.])/gi, "$1/dev/null");
 }
 
+function windowsSystemFile(relativePath, label) {
+  const rootRaw = process.env.SystemRoot || process.env.WINDIR;
+  if (typeof rootRaw !== "string" || !rootRaw.trim() || !path.isAbsolute(rootRaw)) {
+    throw new Error("Windows SystemRoot is unavailable for " + label);
+  }
+  const root = fs.realpathSync.native
+    ? fs.realpathSync.native(rootRaw)
+    : fs.realpathSync(rootRaw);
+  const candidate = path.join(root, relativePath);
+  const resolved = canonicalFile(candidate, label);
+  const rel = path.relative(root, resolved);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(label + " escaped Windows SystemRoot");
+  }
+  return resolved;
+}
+
+function sweepWindowsDescendants(rootPid) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) {
+    return { ok: false, error: "invalid root pid" };
+  }
+  try {
+    const powershell = windowsSystemFile(
+      path.join("System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      "Windows PowerShell",
+    );
+    const script = canonicalFile(
+      path.join(__dirname, "windows_process_tree.ps1"),
+      "Windows process-tree cleanup script",
+    );
+    const result = spawnSync(
+      powershell,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+        "-RootPid",
+        String(rootPid),
+      ],
+      {
+        stdio: "ignore",
+        windowsHide: true,
+        timeout: 10000,
+        shell: false,
+      },
+    );
+    if (!result.error && result.status === 0) return { ok: true, error: null };
+    return {
+      ok: false,
+      error: result.error
+        ? result.error.name + ": " + result.error.message
+        : "Windows descendant sweep exit " + String(result.status),
+    };
+  } catch (error) {
+    return { ok: false, error: error.name + ": " + error.message };
+  }
+}
+
 function isProcessTreeAlive(child) {
   if (!child || !child.pid) return false;
   if (os.platform() === "win32") {
@@ -114,6 +176,9 @@ function installExitSweep() {
     for (const child of liveChildren) {
       try {
         killProcessTree(child, "SIGKILL");
+        if (os.platform() === "win32" && child && child.pid) {
+          sweepWindowsDescendants(child.pid);
+        }
       } catch {
       }
     }
@@ -124,16 +189,26 @@ function killProcessTree(child, signal = "SIGTERM") {
   if (!child || !child.pid) return false;
 
   if (os.platform() === "win32") {
-    const result = spawnSync(
-      "taskkill.exe",
+    let taskkill;
+    try {
+      taskkill = windowsSystemFile(
+        path.join("System32", "taskkill.exe"),
+        "Windows taskkill",
+      );
+    } catch {
+      taskkill = null;
+    }
+    const result = taskkill ? spawnSync(
+      taskkill,
       ["/pid", String(child.pid), "/t", "/f"],
       {
         stdio: "ignore",
         windowsHide: true,
         timeout: 5000,
+        shell: false,
       },
-    );
-    if (!result.error && result.status === 0) return true;
+    ) : null;
+    if (result && !result.error && result.status === 0) return true;
   } else {
     try {
       process.kill(-child.pid, signal);
@@ -272,6 +347,7 @@ async function runProcess(request) {
   let escalationTimer = null;
   let timeoutTimer = null;
   let abortHandler = null;
+  let cleanupError = null;
 
   const resultBase = () => ({
     pid: child && child.pid ? child.pid : null,
@@ -282,6 +358,8 @@ async function runProcess(request) {
     stdout: stdout.format(),
     stderr: stderr.format(),
     durationMs: Date.now() - startedAt,
+    cleanupOk: cleanupError === null,
+    cleanupError,
   });
 
   try {
@@ -354,6 +432,12 @@ async function runProcess(request) {
       killProcessTree(child, "SIGKILL");
       await waitForProcessTreeExit(child, KILL_ESCALATION_MS);
     }
+    if (isProcessTreeAlive(child)) {
+      cleanupError = "POSIX process group survived broker cleanup";
+    }
+  } else if (os.platform() === "win32" && child && child.pid) {
+    const swept = sweepWindowsDescendants(child.pid);
+    if (!swept.ok) cleanupError = swept.error || "Windows descendant cleanup failed";
   }
   liveChildren.delete(child);
 
@@ -375,6 +459,7 @@ module.exports = {
   TRUNCATION_MARKER,
   isProcessTreeAlive,
   killProcessTree,
+  sweepWindowsDescendants,
   rewriteWindowsNulRedirects,
   runProcess,
 };

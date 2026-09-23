@@ -122,6 +122,36 @@ test("runProcess reaps same-group background descendants on POSIX", { skip: os.p
   assert.equal(gone, true, "background descendant survived broker cleanup");
 });
 
+test("runProcess reaps background descendants on Windows", { skip: os.platform() !== "win32" }, async () => {
+  const script = [
+    "const cp=require('child_process')",
+    "const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true})",
+    "console.log(child.pid)",
+  ].join(";");
+  const result = await runProcess({
+    executable: process.execPath,
+    args: ["-e", script],
+    cwd: CWD,
+    env: {},
+    timeoutMs: 5000,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.cleanupOk, true, result.cleanupError || "cleanup failed");
+  const pid = Number(result.stdout.trim());
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  let gone = false;
+  for (let i = 0; i < 150; i += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      gone = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(gone, true, "Windows descendant survived broker cleanup");
+});
+
 test("runProcess rejects unavailable or relative executable before spawn", async () => {
   const fake = path.join(CWD, "definitely-does-not-exist-forgeboss-executable");
   await assert.rejects(
