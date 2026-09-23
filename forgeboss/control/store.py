@@ -204,31 +204,56 @@ class ControlStore:
                 if task.get("cancel_requested_at") is not None:
                     self.db.execute("COMMIT");begun=False
                     return self.get_task(task_id)
+
                 lease=self.db.execute("""SELECT * FROM workspace_leases
                   WHERE task_id=? AND released_at IS NULL""",(task_id,)).fetchone()
-                revoked_run_id=None;revoked_epoch=None
+                revoked_run_id=None;revoked_epoch=None;active_run_state_mismatch=False
                 if lease is not None:
                     revoked_run_id=str(lease["owner_run_id"]);revoked_epoch=int(lease["owner_epoch"])
+                    active_match=self.db.execute("""SELECT COUNT(*) AS n FROM task_runs
+                      WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'""",
+                      (revoked_run_id,task_id,revoked_epoch)).fetchone()["n"]
+                    active_run_state_mismatch=int(active_match)!=1
                     cur=self.db.execute("""UPDATE workspace_leases SET released_at=?
                       WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL""",
                       (now,task_id,revoked_run_id,revoked_epoch))
                     if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_RACE","workspace authority changed during cancellation")
-                    cur=self.db.execute("""UPDATE task_runs SET status='cancelled',finished_at=?
-                      WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'""",
-                      (now,revoked_run_id,task_id,revoked_epoch))
-                    if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_STATE_INVALID","active lease has no matching running task run")
-                self.db.execute("UPDATE worker_instances SET status='cancelled',last_seen_at=? WHERE task_id=?",(now,task_id))
+
                 cur=self.db.execute("""UPDATE tasks SET cancel_requested_at=?,status='cancelled',revision=revision+1,
                   current_step='cancelled',terminal_outcome='cancelled',updated_at=?
                   WHERE task_id=? AND revision=? AND cancel_requested_at IS NULL""",
                   (now,now,task_id,int(task["revision"])))
                 if cur.rowcount!=1:raise TaskCancellationError("TASK_CANCEL_RACE","task authority changed during cancellation")
-                self._event_locked("task.cancelled",{
+
+                diagnostics=[]
+                cancelled_run_count=0
+                try:
+                    cur=self.db.execute("""UPDATE task_runs SET status='cancelled',finished_at=?
+                      WHERE task_id=? AND status='running'""",(now,task_id))
+                    cancelled_run_count=int(cur.rowcount)
+                except Exception as ex:
+                    diagnostics.append("task_runs:"+type(ex).__name__)
+                try:
+                    self.db.execute("UPDATE worker_instances SET status='cancelled',last_seen_at=? WHERE task_id=?",(now,task_id))
+                except Exception as ex:
+                    diagnostics.append("worker_instances:"+type(ex).__name__)
+
+                payload={
                     "status":"cancelled",
                     "revokedRunId":revoked_run_id,
                     "revokedOwnerEpoch":revoked_epoch,
+                    "cancelledRunCount":cancelled_run_count,
+                    "activeRunStateMismatch":active_run_state_mismatch,
                     "budgetSpent":float(task.get("budget_spent") or 0.0),
-                },task_id,revoked_run_id)
+                    "diagnostics":diagnostics,
+                }
+                try:
+                    self._event_locked("task.cancelled",payload,task_id,revoked_run_id)
+                except Exception as ex:
+                    diagnostics.append("audit:"+type(ex).__name__)
+                    self.db.execute("""UPDATE tasks SET current_step='cancelled-audit-pending',updated_at=?
+                      WHERE task_id=? AND cancel_requested_at IS NOT NULL""",(now,task_id))
+
                 self.db.execute("COMMIT");begun=False
                 return self.get_task(task_id)
             except Exception:
