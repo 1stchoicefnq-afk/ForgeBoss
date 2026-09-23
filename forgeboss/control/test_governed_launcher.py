@@ -271,6 +271,10 @@ class GovernedLauncherTests(unittest.TestCase):
             prepared.authority_env["X"] = "Y"
         with self.assertRaises(TypeError):
             prepared.launch_envelope["runtime"]["model"] = "changed"
+        shown = repr(prepared)
+        self.assertNotIn("secret-key", shown)
+        self.assertNotIn("lease-token", shown)
+        self.assertNotIn("FORGEBOSS_CONTROL_ENVELOPE", shown)
 
     def test_packet_objective_head_and_scope_mismatches_fail_before_lease(self):
         cases = [
