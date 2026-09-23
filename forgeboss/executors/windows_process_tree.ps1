@@ -11,7 +11,8 @@ $knownParents.Add($RootPid) | Out-Null
 
 function Get-Descendants {
     param(
-        [System.Collections.Generic.HashSet[int]]$Known
+        [System.Collections.Generic.HashSet[int]]$Known,
+        [int]$Root
     )
 
     $rows = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
@@ -21,6 +22,13 @@ function Get-Descendants {
     }
 
     $targets = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($row in $rows) {
+        $pid = [int]$row.ProcessId
+        if ($pid -ne $Root -and $Known.Contains($pid)) {
+            $targets.Add($pid) | Out-Null
+        }
+    }
+
     $changed = $true
     while ($changed) {
         $changed = $false
@@ -42,7 +50,7 @@ function Get-Descendants {
 }
 
 for ($round = 0; $round -lt 6; $round++) {
-    $snapshot = Get-Descendants -Known $knownParents
+    $snapshot = Get-Descendants -Known $knownParents -Root $RootPid
     $targets = @($snapshot.Targets)
 
     if ($targets.Count -eq 0) {
@@ -65,7 +73,7 @@ for ($round = 0; $round -lt 6; $round++) {
     Start-Sleep -Milliseconds 50
 }
 
-$final = Get-Descendants -Known $knownParents
+$final = Get-Descendants -Known $knownParents -Root $RootPid
 if (@($final.Targets).Count -gt 0) {
     exit 9
 }
