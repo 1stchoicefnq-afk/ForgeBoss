@@ -187,6 +187,10 @@ class WindowsNamedPipeServer:
         try:
             self._connect(h,deadline);connected=True;raw=self._read_request(h,deadline);ctx=windows_pipe_peer_context(handle_value(h));out=self.service.handle_json(raw,peer_context=ctx);written=wintypes.DWORD(0)
             if not api.kernel32.WriteFile(h,out,len(out),ctypes.byref(written),None) or written.value!=len(out):raise AuthorityError('IPC_WRITE_FAILED')
+            # Microsoft requires the server to flush before disconnecting so the
+            # client can consume the complete message. Disconnecting immediately
+            # after WriteFile can surface as IPC_READ_FAILED/ERROR_BROKEN_PIPE.
+            if not api.kernel32.FlushFileBuffers(h):raise AuthorityError('IPC_FLUSH_FAILED')
             return out
         finally:
             if connected:
