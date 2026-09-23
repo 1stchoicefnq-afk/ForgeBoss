@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import sys
 import tempfile
@@ -134,11 +135,10 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(self.event_count("T1"), 0)
 
     def test_governed_create_rejects_runtime_rules_identity_change(self):
-        altered = mock.Mock()
-        altered.canonical_sha256 = "0" * 64
-        for attr in ("ruleset_id", "ruleset_version"):
-            setattr(altered, attr, getattr(self.daemon.permanent_rules, attr))
-        altered.rules = self.daemon.permanent_rules.rules
+        altered = replace(
+            self.daemon.permanent_rules,
+            canonical_sha256="0" * 64,
+        )
         with mock.patch.object(self.mod, "load_default_rules", return_value=altered):
             with self.assertRaises(self.mod.ProtocolError) as ctx:
                 self.daemon.dispatch(self.request(self.params()), True)
