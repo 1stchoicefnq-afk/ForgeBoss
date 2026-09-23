@@ -16,6 +16,7 @@ from typing import Iterable
 
 from .workspace_state import ProtectedWorkspaceState, ProtectedWorkspaceStateError
 
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 STAGE_PREFIX = ".forgeboss-stage-"
 QUARANTINE_VERSION = 7
 
@@ -315,7 +316,7 @@ def _clean_git_env() -> dict[str, str]:
 
 def _run_git(git: Path, args: Iterable[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run([str(git), *map(str, args)], cwd=str(cwd) if cwd else None, env=_clean_git_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120, check=False)
+        result = subprocess.run([str(git), *map(str, args)], cwd=str(cwd) if cwd else None, env=_clean_git_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120, check=False, creationflags=CREATE_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired) as ex:
         raise WorkspaceProvisionError("GIT_EXECUTION_FAILED", str(ex)) from ex
     if check and result.returncode:
@@ -439,7 +440,14 @@ def provision_workspace(source_repo, workspace, workspace_root, base_sha, task_b
     generation = uuid.uuid4().hex; stage = root / f"{STAGE_PREFIX}{hashlib.sha256(str(target).encode()).hexdigest()[:16]}-{generation}"
     record = {"version": QUARANTINE_VERSION, "generation": generation, "target": str(target), "stage": str(stage), "identity": None, "contentOid": requested, "state": "preparing", "updatedAt": time.time()}
     try:
-        stage.mkdir(mode=0o700); _fsync_dir(root); record["identity"] = _path_identity(stage); record["state"] = "provisioning"; _write_record(state, root, target, record)
+        # Windows must inherit the already-hardened protected parent ACL. CPython
+        # 3.13 mkdir(mode=0o700) can synthesize an OWNER RIGHTS ACL that Docker
+        # Desktop's Linux backend cannot traverse for bind mounts.
+        if os.name == "nt":
+            stage.mkdir()
+        else:
+            stage.mkdir(mode=0o700)
+        _fsync_dir(root); record["identity"] = _path_identity(stage); record["state"] = "provisioning"; _write_record(state, root, target, record)
         with tempfile.TemporaryDirectory(prefix="forgeboss-git-template-", dir=str(root)) as template:
             _run_git(git, ["-c", "protocol.file.allow=always", "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--no-tags", f"--template={Path(template)}", source["source_root"], str(stage)], cwd=root)
         for remote in [x for x in _git_text(git, ["remote"], cwd=stage).splitlines() if x.strip()]: _run_git(git, ["remote", "remove", remote], cwd=stage)
