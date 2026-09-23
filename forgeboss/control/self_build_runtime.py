@@ -6,6 +6,8 @@ import os
 import tempfile
 import re
 import subprocess
+import math
+import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -123,6 +125,121 @@ class SelfBuildRuntime:
         if not isinstance(run_id,str) or not run_id or len(run_id)>64 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" for c in run_id):
             raise SelfBuildRuntimeError("RUN_ID_INVALID","self-build run id invalid")
         return self.run_root/(run_id+".json")
+
+    def authorize_launch(self,launch:dict,*,repository:str,control_revision:int)->dict:
+        """Authorize one exact prepared paid-worker launch from protected state.
+
+        Peer authentication proves who asked. This method independently proves
+        that what was asked for is the live Store assignment, workspace, budget
+        reservation and exact known-good source identity. No controller-held key
+        is accepted as launch authority.
+        """
+        self._assert_service()
+        if not isinstance(launch,dict):
+            raise SelfBuildRuntimeError("LAUNCH_PAYLOAD_INVALID","launch payload must be an object")
+        try:
+            global_run=str(launch["globalBudgetRunId"])
+            task_id=str(launch["taskId"])
+            worker_run=str(launch["runId"])
+            owner_epoch=int(launch["ownerEpoch"])
+            builder_id=str(launch["builderId"])
+            expires=float(launch["expiresAt"])
+        except Exception as ex:
+            raise SelfBuildRuntimeError("LAUNCH_PAYLOAD_INVALID","launch identity is invalid") from ex
+        if not math.isfinite(expires) or expires<=time.time() or expires>time.time()+900:
+            raise SelfBuildRuntimeError("LAUNCH_EXPIRY_INVALID","launch expiry is outside the protected window")
+        path=self._run_path(global_run)
+        if not path.is_file():
+            raise SelfBuildRuntimeError("RUN_NOT_FOUND","protected self-build run not found")
+        self._assert_path(path)
+        try:record=json.loads(path.read_text(encoding="utf-8"))
+        except Exception as ex:raise SelfBuildRuntimeError("RUN_STATE_INVALID","protected self-build run is unreadable") from ex
+        prepared=record.get("prepared") if isinstance(record,dict) else None
+        if not isinstance(prepared,dict):
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","protected self-build run has no prepared authority")
+        items=list(prepared.get("builders") or [])
+        replacement=record.get("replacement")
+        if isinstance(replacement,dict):items.append(replacement)
+        item=next((x for x in items if isinstance(x,dict) and x.get("task_id")==task_id and x.get("builder_id")==builder_id),None)
+        if item is None:
+            raise SelfBuildRuntimeError("LAUNCH_ASSIGNMENT_NOT_PREPARED","requested launch is not a protected prepared assignment")
+        authority=item.get("authority") or {}
+        packet=item.get("packet")
+        if not isinstance(authority,dict) or not isinstance(packet,dict):
+            raise SelfBuildRuntimeError("RUN_STATE_INVALID","prepared assignment authority is invalid")
+        packet_bytes=(json.dumps(packet,sort_keys=True,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode("utf-8")
+        packet_sha=hashlib.sha256(packet_bytes).hexdigest()
+        expected={
+            "schema":1,
+            "repository":authority.get("repository"),
+            "controlRevision":int(authority.get("control_revision") or 0),
+            "taskId":item.get("task_id"),
+            "runId":authority.get("run_id"),
+            "ownerEpoch":int(authority.get("owner_epoch") or 0),
+            "builderId":item.get("builder_id"),
+            "assignmentGeneration":int(authority.get("assignment_generation") or 0),
+            "assignmentSha256":authority.get("assignment_sha256"),
+            "branch":authority.get("branch"),
+            "worktreePath":str(Path(item.get("worktree") or "").resolve()),
+            "runtimeId":"mini-swe",
+            "allowedPaths":list(packet.get("allowed_files") or []),
+            "packetSha256":packet_sha,
+            "budgetUsd":str(authority.get("budget_usd")),
+            "globalBudgetRunId":global_run,
+            "globalBudgetReservationId":authority.get("global_budget_reservation_id"),
+        }
+        actual=dict(launch);actual.pop("expiresAt",None)
+        if str(actual.get("repository","")).casefold()!=str(repository).casefold():
+            raise SelfBuildRuntimeError("LAUNCH_REPOSITORY_MISMATCH","launch repository differs from authenticated request")
+        if int(actual.get("controlRevision") or 0)!=int(control_revision):
+            raise SelfBuildRuntimeError("LAUNCH_CONTROL_REVISION_MISMATCH","launch control revision differs from authenticated request")
+        normalized=dict(actual);normalized["repository"]=expected["repository"]
+        if normalized!=expected:
+            raise SelfBuildRuntimeError("LAUNCH_BINDING_MISMATCH","launch request differs from protected prepared authority")
+        try:
+            durable=self.store.assignment_identity(task_id,worker_run,owner_epoch)
+            self.store.assert_writer(task_id,worker_run,owner_epoch,expected_head=prepared.get("base_sha"))
+        except Exception as ex:
+            raise SelfBuildRuntimeError("LAUNCH_ASSIGNMENT_STALE","durable writer authority is no longer valid") from ex
+        identity=durable.get("identity") or {}
+        checks={
+            "builderPrincipal":builder_id,
+            "assignmentGeneration":int(authority["assignment_generation"]),
+            "assignmentPolicySha256":authority["assignment_sha256"],
+            "repository":authority["repository"],
+            "baseSha":prepared.get("base_sha"),
+            "branch":authority["branch"],
+            "worktreePath":str(Path(item["worktree"]).resolve()),
+            "budgetRunId":global_run,
+        }
+        for key,want in checks.items():
+            got=identity.get(key)
+            if key=="repository":
+                if str(got).casefold()!=str(want).casefold():
+                    raise SelfBuildRuntimeError("LAUNCH_ASSIGNMENT_STALE","durable assignment repository changed")
+            elif got!=want:
+                raise SelfBuildRuntimeError("LAUNCH_ASSIGNMENT_STALE","durable assignment identity changed: "+key)
+        pointer=self._pointer();current=pointer.get("current") if isinstance(pointer,dict) else None
+        if not isinstance(current,dict) or current.get("verified") is not True:
+            raise SelfBuildRuntimeError("KNOWN_GOOD_UNVERIFIED","protected known-good identity is not verified")
+        if str(current.get("revision") or "").lower()!=str(prepared.get("base_sha") or "").lower():
+            raise SelfBuildRuntimeError("KNOWN_GOOD_SHA_MISMATCH","protected known-good revision changed before launch")
+        if Path(str(current.get("codeRoot") or "")).resolve()!=Path(str(prepared.get("source_root") or "")).resolve():
+            raise SelfBuildRuntimeError("KNOWN_GOOD_ROOT_MISMATCH","protected known-good source root changed before launch")
+        source_identity={
+            "revision":current.get("revision"),
+            "manifestSha256":current.get("manifestSha256"),
+            "identitySha256":current.get("identitySha256"),
+            "treeSha256":current.get("treeSha256"),
+            "codeRoot":current.get("codeRoot"),
+        }
+        launch_digest=hashlib.sha256(json.dumps(launch,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
+        return {
+            "verified":True,
+            "launchDigest":launch_digest,
+            "sourceIdentity":source_identity,
+            "trustGrade":"OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP",
+        }
 
     def prepare(self,payload:dict)->dict:
         try:
