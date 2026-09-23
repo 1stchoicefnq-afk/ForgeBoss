@@ -6,6 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
+import sys
+
+import forgeboss.executors.mini_swe_runner as mini_runner
 
 from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess
 
@@ -93,6 +97,53 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
         env.pop("FORGEBOSS_RESULT_FILE",None)
         with patch.dict(os.environ,env,clear=True):
             self.assertIsNone(_persist_result({"completed":False}))
+
+    def test_governed_mode_requires_control_envelope_before_model_import(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);work=root/"work";work.mkdir();packet=root/"packet.json"
+            packet.write_text(json.dumps({"task_id":"t","builder_id":"b","run_id":"r"}),encoding="utf-8")
+            env={
+                "FORGEBOSS_ALLOW_PAID_EXECUTOR":"YES",
+                "FORGEBOSS_EXECUTOR_LEASE":"lease.json",
+                "FORGEBOSS_EXECUTOR_LEASE_TOKEN":"token",
+                "FORGEBOSS_GOVERNED_TASK":"YES",
+            }
+            with patch.dict(os.environ,env,clear=True),patch.object(sys,"argv",["mini_swe_runner.py",str(packet),str(work),"0.25"]):
+                self.assertEqual(mini_runner.main(),13)
+
+    def test_governed_mode_calls_paid_start_with_exact_control_envelope_and_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);work=root/"work";work.mkdir();packet=root/"packet.json"
+            packet.write_text(json.dumps({"task_id":"t","builder_id":"b","run_id":"r"}),encoding="utf-8")
+            env={
+                "FORGEBOSS_ALLOW_PAID_EXECUTOR":"YES",
+                "FORGEBOSS_EXECUTOR_LEASE":"lease.json",
+                "FORGEBOSS_EXECUTOR_LEASE_TOKEN":"token",
+                "FORGEBOSS_GOVERNED_TASK":"YES",
+                "FORGEBOSS_CONTROL_ENVELOPE":"SIGNED-CONTROL-ENVELOPE",
+            }
+            denied=SimpleNamespace(returncode=13,stdout='{"ok":false}',stderr="")
+            with patch.dict(os.environ,env,clear=True),patch.object(sys,"argv",["mini_swe_runner.py",str(packet),str(work),"0.25"]),patch.object(mini_runner,"_guard_subprocess",return_value=denied) as guard:
+                self.assertEqual(mini_runner.main(),13)
+            args=guard.call_args.args[0]
+            self.assertEqual(args[0],"paid-start")
+            self.assertIn("--control-envelope",args)
+            self.assertEqual(args[args.index("--control-envelope")+1],"SIGNED-CONTROL-ENVELOPE")
+            self.assertEqual(args[args.index("--budget")+1],"0.25")
+
+    def test_legacy_nonself_mode_still_uses_verify_not_paid_start(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);work=root/"work";work.mkdir();packet=root/"packet.json"
+            packet.write_text(json.dumps({"task_id":"t","builder_id":"b","run_id":"r"}),encoding="utf-8")
+            env={
+                "FORGEBOSS_ALLOW_PAID_EXECUTOR":"YES",
+                "FORGEBOSS_EXECUTOR_LEASE":"lease.json",
+                "FORGEBOSS_EXECUTOR_LEASE_TOKEN":"token",
+            }
+            denied=SimpleNamespace(returncode=13,stdout='{"ok":false}',stderr="")
+            with patch.dict(os.environ,env,clear=True),patch.object(sys,"argv",["mini_swe_runner.py",str(packet),str(work),"0.25"]),patch.object(mini_runner,"_guard_subprocess",return_value=denied) as guard:
+                self.assertEqual(mini_runner.main(),13)
+            self.assertEqual(guard.call_args.args[0][0],"verify")
 
 
 if __name__=="__main__":
