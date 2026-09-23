@@ -247,6 +247,14 @@ class GovernedTaskCreateTests(unittest.TestCase):
             self.store.create_task(p)
         self.assertIsNone(self.store.get_task("T2"))
 
+    def test_store_rejects_governance_evidence_without_governance_mode(self):
+        p = self.params(task_id="T3")
+        p["workKind"] = "small-repair"
+        p["smallRepairExemptionSha256"] = "1" * 64
+        with self.assertRaisesRegex(ValueError, "requires governanceMode"):
+            self.store.create_task(p)
+        self.assertIsNone(self.store.get_task("T3"))
+
     def test_protocol_and_client_share_governed_mutation_set(self):
         from forgeboss.control.client import Client
         protocol_mutations = self.mod.__dict__["parse_frame"].__globals__["MUTATIONS"]
