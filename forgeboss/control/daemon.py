@@ -8,6 +8,7 @@ from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
+from forgeboss.policy.permanent_rules import PermanentRulesError,load_default_rules,require_rule
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -17,9 +18,18 @@ PORT=18765
 WORKTREE_ROOT=Path(os.environ.get("FORGEBOSS_WORKTREE_ROOT") or (STATE/"worktrees")).resolve()
 SAFE_TOOL_IDS={"git","node","npm","python","pytest","docker"}
 GOVERNED_RUNTIME_IDS={"mini-swe"}
+GOVERNED_RULE_IDS=(
+    "FB-PERM-003","FB-PERM-004","FB-PERM-019","FB-PERM-021","FB-PERM-024",
+    "FB-PERM-025","FB-PERM-030","FB-PERM-031","FB-PERM-040","FB-PERM-041","FB-PERM-042",
+)
+
+def _require_governed_rules(rules):
+    for rule_id in GOVERNED_RULE_IDS:require_rule(rules,rule_id)
+    return rules
 
 class ForgeBossDaemon:
     def __init__(self):
+        self.permanent_rules=_require_governed_rules(load_default_rules(ROOT))
         WORKTREE_ROOT.mkdir(parents=True,exist_ok=True)
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
@@ -30,6 +40,22 @@ class ForgeBossDaemon:
         self.started=time.time()
         self.idempotency={}
         self.lock=threading.RLock()
+
+    def _rules_status(self):
+        return {
+            "rulesetId":self.permanent_rules.ruleset_id,
+            "rulesetVersion":self.permanent_rules.ruleset_version,
+            "canonicalSha256":self.permanent_rules.canonical_sha256,
+        }
+
+    def _assert_permanent_rules(self):
+        try:
+            current=_require_governed_rules(load_default_rules(ROOT))
+        except PermanentRulesError as ex:
+            raise ProtocolError("PERMANENT_RULES_INVALID",str(ex)) from ex
+        if current.canonical_sha256!=self.permanent_rules.canonical_sha256:
+            raise ProtocolError("PERMANENT_RULES_CHANGED","permanent rules identity changed after daemon startup")
+        return current
 
     def _idem(self,req,fn):
         key=req.get("idempotencyKey")
@@ -62,16 +88,18 @@ class ForgeBossDaemon:
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
+                    "permanentRules":self._rules_status(),
                     "capabilities":["tasks","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
-            return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
+            return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"permanentRules":self._rules_status(),"state":self.store.snapshot()}
         if m in ("task.create","task.create_governed"):
             def create():
                 try:validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})
                 except SecurityError as ex:raise ProtocolError("SCOPE_DENIED",str(ex))
                 if m=="task.create":
                     return self.store.create_task(p)
+                self._assert_permanent_rules()
                 try:
                     readiness=evaluate_authorized_reuse_readiness(
                         task_id=p.get("taskId"),
