@@ -157,7 +157,7 @@ class SelfBuildLauncher:
         })
         return env
 
-    def launch_worker(self,prepared_run:dict,item:dict)->dict:
+    def _prepare_worker_launch(self,prepared_run:dict,item:dict)->dict:
         run_id=str(prepared_run.get("run_id") or "")
         builder_id=str(item.get("builder_id") or "")
         if not run_id or not builder_id:
@@ -168,7 +168,9 @@ class SelfBuildLauncher:
         _atomic_json(paths["packet"],item["packet"])
         packet_sha=_packet_sha(paths["packet"])
         lease=self.issue_lease_fn(str(paths["packet"]),item["worktree"],"mini-swe",1200)
-        # The lease token is intentionally never written into packet/bundle/result/run state.
+        # Expensive packet snapshot + protected attestation happens before either
+        # initial worker is started, so the concurrency proof is not defeated by
+        # serial prelaunch preparation latency.
         signed=self._launch_payload(item,packet_sha,self.clock()+600.0)
         bundle=self.client.attest_launch_payload(signed)
         _atomic_json(paths["bundle"],bundle)
@@ -177,8 +179,15 @@ class SelfBuildLauncher:
             str(self.python),str(self.runner),str(paths["packet"]),
             str(Path(item["worktree"]).resolve()),str(item["authority"]["budget_usd"]),
         ]
+        return {
+            "run_id":run_id,"builder_id":builder_id,"item":item,"paths":paths,
+            "packet_sha":packet_sha,"env":env,"argv":argv,
+        }
+
+    def _start_prepared_worker(self,prepared:dict)->dict:
+        run_id=prepared["run_id"];builder_id=prepared["builder_id"];item=prepared["item"];paths=prepared["paths"]
         try:
-            assignment=self.supervisor.launch(builder_id,argv,cwd=item["worktree"],env=env)
+            assignment=self.supervisor.launch(builder_id,prepared["argv"],cwd=item["worktree"],env=prepared["env"])
         except Exception as ex:
             try:self.client.revoke_self_build_worker(
                 run_id=run_id,task_id=item["task_id"],
@@ -187,7 +196,7 @@ class SelfBuildLauncher:
             )
             except Exception:pass
             raise SelfBuildLaunchError("WORKER_LAUNCH_FAILED",str(ex)) from ex
-        public={
+        return {
             "builder_id":builder_id,
             "task_id":item["task_id"],
             "generation":assignment.generation,
@@ -196,25 +205,63 @@ class SelfBuildLauncher:
             "started_at":assignment.started_at,
             "containment_id":assignment.containment_id,
             "worktree":item["worktree"],
-            "packet_sha256":packet_sha,
+            "packet_sha256":prepared["packet_sha"],
             "packet_file":str(paths["packet"]),
             "launch_bundle_file":str(paths["bundle"]),
             "result_file":str(paths["result"]),
             "budget_usd":str(item["authority"]["budget_usd"]),
         }
-        return public
+
+    def _initial_launch_failure(self,prepared_run:dict,launched:list[dict],live:list)->dict:
+        rows=[]
+        by_id={x.get("builder_id"):x for x in launched}
+        for current in live:
+            public=by_id.get(current.worker_id) or {}
+            result=None
+            result_file=public.get("result_file")
+            if result_file and Path(result_file).is_file():
+                try:result=json.loads(Path(result_file).read_text(encoding="utf-8"))
+                except Exception:result={"completed":False,"error":"result evidence unreadable"}
+            rows.append({
+                "builder_id":current.worker_id,
+                "generation":current.generation,
+                "pid":current.pid,
+                "state":current.state,
+                "exit_code":current.exit_code,
+                "containment_id":current.containment_id,
+                "result_file":result_file,
+                "result":result,
+            })
+        evidence={
+            "schema":1,"run_id":str(prepared_run.get("run_id") or ""),
+            "error_code":"CONCURRENCY_NOT_PROVEN",
+            "message":"both initial builders were not simultaneously RUNNING",
+            "workers":rows,"captured_at":self.clock(),
+        }
+        target=self.run_root/evidence["run_id"]/"initial-launch-failure.json"
+        _atomic_json(target,evidence)
+        return evidence
+
+    def launch_worker(self,prepared_run:dict,item:dict)->dict:
+        return self._start_prepared_worker(self._prepare_worker_launch(prepared_run,item))
 
     def launch_initial(self,prepared_run:dict)->dict:
         builders=list(prepared_run.get("builders") or [])
         if len(builders)!=2:
             raise SelfBuildLaunchError("INITIAL_BUILDER_COUNT_INVALID","first FL1 run requires exactly two initial builders")
-        launched=[]
+        staged=[];launched=[]
         try:
+            # Stage both non-paid launch envelopes/leases first. Only after both
+            # are ready do we start the two worker processes back-to-back.
             for item in builders:
-                launched.append(self.launch_worker(prepared_run,item))
+                staged.append(self._prepare_worker_launch(prepared_run,item))
+            for prepared in staged:
+                launched.append(self._start_prepared_worker(prepared))
             live=[self.supervisor.get(x["builder_id"],refresh=True) for x in launched]
             if any(x.state!="RUNNING" for x in live):
-                raise SelfBuildLaunchError("CONCURRENCY_NOT_PROVEN","both initial builders were not simultaneously RUNNING")
+                evidence=self._initial_launch_failure(prepared_run,launched,live)
+                summary=", ".join(f'{x["builder_id"]}={x["state"]}/exit={x["exit_code"]}' for x in evidence["workers"])
+                raise SelfBuildLaunchError("CONCURRENCY_NOT_PROVEN","both initial builders were not simultaneously RUNNING; "+summary)
             proof_at=self.clock()
             return {
                 "schema":1,"run_id":prepared_run["run_id"],"base_sha":prepared_run["base_sha"],
