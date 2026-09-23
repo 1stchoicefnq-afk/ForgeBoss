@@ -238,6 +238,11 @@ def create_successor_workspace(
     branch_check = _git(live, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
     if branch_check.returncode == 0:
         raise SelfBuildWorkspaceError(f"successor branch already exists: {branch}")
+    if branch_check.returncode != 1:
+        detail = (branch_check.stderr or branch_check.stdout or "").strip()
+        raise SelfBuildWorkspaceError(
+            f"cannot prove successor branch is absent: exit={branch_check.returncode} {detail[:800]}"
+        )
 
     try:
         harden_private_dir(wt_root)
@@ -247,8 +252,6 @@ def create_successor_workspace(
             f"cannot harden self-build state/worktree roots: {exc}"
         ) from exc
 
-    worktree_created = False
-    branch_created = False
     hooks_parent = st_root / "hooks"
     try:
         harden_private_dir(hooks_parent)
@@ -272,9 +275,6 @@ def create_successor_workspace(
                 timeout=120,
                 hooks_dir=hooks_dir,
             )
-            worktree_created = True
-            branch_created = True
-
             effective = Path(
                 _git_ok(
                     workspace,
@@ -339,9 +339,19 @@ def create_successor_workspace(
             receipt["receipt_path"] = str(receipt_path.resolve())
             return receipt
     except Exception:
-        if worktree_created:
+        # The mutating Git process may have timed out after creating state but
+        # before returning success. Discover and clean actual state instead of
+        # trusting success flags that might never have been set.
+        if workspace.exists() and not is_linklike(workspace):
             _git(live, "worktree", "remove", "--force", str(workspace), timeout=120)
-        if branch_created:
+        branch_after = _git(
+            live,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{branch}",
+        )
+        if branch_after.returncode == 0:
             _git(live, "branch", "-D", branch, timeout=60)
         if workspace.exists() or is_linklike(workspace):
             _safe_external_path(workspace, live)
