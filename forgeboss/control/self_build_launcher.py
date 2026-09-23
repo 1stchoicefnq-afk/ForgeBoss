@@ -269,12 +269,44 @@ class SelfBuildLauncher:
                 "concurrent_proof":{"at":proof_at,"builders":[x["builder_id"] for x in launched],"states":[x.state for x in live]},
                 "workers":launched,
             }
-        except BaseException:
-            for public,item in zip(reversed(launched),reversed(builders[:len(launched)])):
+        except BaseException as ex:
+            # Persist a useful initial-launch report even when the failure occurs
+            # before the simultaneous-RUNNING proof has been established.
+            diagnostic=self.run_root/str(prepared_run.get("run_id") or "")/"initial-launch-failure.json"
+            if not diagnostic.is_file():
+                rows=[]
+                for public in launched:
+                    try:
+                        current=self.supervisor.get(public["builder_id"],refresh=True)
+                        state=current.state;exit_code=current.exit_code;pid=current.pid;containment=current.containment_id
+                    except Exception as status_error:
+                        state="STATUS_UNAVAILABLE";exit_code=None;pid=public.get("pid");containment=public.get("containment_id")
+                        status_error_text=f"{type(status_error).__name__}: {status_error}"
+                    else:
+                        status_error_text=None
+                    result=None
+                    result_file=public.get("result_file")
+                    if result_file and Path(result_file).is_file():
+                        try:result=json.loads(Path(result_file).read_text(encoding="utf-8"))
+                        except Exception:result={"completed":False,"error":"result evidence unreadable"}
+                    rows.append({
+                        "builder_id":public.get("builder_id"),"generation":public.get("generation"),
+                        "pid":pid,"state":state,"exit_code":exit_code,"containment_id":containment,
+                        "result_file":result_file,"result":result,"status_error":status_error_text,
+                    })
+                _atomic_json(diagnostic,{
+                    "schema":1,"run_id":str(prepared_run.get("run_id") or ""),
+                    "error_code":str(getattr(ex,"code",type(ex).__name__)),
+                    "message":str(ex),"workers":rows,"captured_at":self.clock(),
+                })
+            for public in reversed(launched):
                 try:
                     self.supervisor.stop(public["builder_id"],public["generation"],timeout=5.0)
                     self.container_cleanup_fn(run_id=prepared_run["run_id"],builder_id=public["builder_id"])
                 except Exception:pass
+            # Preparation created protected authority for both initial tasks, so
+            # revoke both on any failed launch attempt, even if one was never started.
+            for item in builders:
                 try:self.client.revoke_self_build_worker(
                     run_id=prepared_run["run_id"],task_id=item["task_id"],
                     worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
@@ -298,239 +330,3 @@ class SelfBuildLauncher:
     def status(self,launched_run:dict)->dict:
         rows=[]
         for worker in launched_run.get("workers") or []:
-            current=self.supervisor.get(worker["builder_id"],refresh=True)
-            result_path=Path(worker["result_file"])
-            result=None
-            if result_path.is_file():
-                try:
-                    parsed=json.loads(result_path.read_text(encoding="utf-8"))
-                    if isinstance(parsed,dict):result=parsed
-                except Exception:result={"completed":False,"error":"result evidence unreadable"}
-            rows.append({
-                **worker,
-                "state":current.state,
-                "exit_code":current.exit_code,
-                "result":result,
-            })
-        return {**launched_run,"workers":rows}
-
-    @staticmethod
-    def _prepared_item(prepared_run:dict,builder_id:str):
-        containers=[]
-        if isinstance(prepared_run,dict):
-            containers.append(prepared_run)
-            nested=prepared_run.get("prepared")
-            if isinstance(nested,dict):containers.append(nested)
-        for container in containers:
-            for item in list(container.get("builders") or []):
-                if item.get("builder_id")==builder_id:return item
-            replacement=container.get("replacement")
-            if isinstance(replacement,dict) and replacement.get("builder_id")==builder_id:return replacement
-        return None
-
-    def _load_candidate_evidence(self,path:Path,*,item:dict)->dict|None:
-        if not path.is_file():return None
-        try:value=json.loads(path.read_text(encoding="utf-8"))
-        except Exception as ex:raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence unreadable") from ex
-        if not isinstance(value,dict) or value.get("schema")!=1:
-            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence schema invalid")
-        digest=value.get("evidence_digest")
-        unsigned={k:v for k,v in value.items() if k!="evidence_digest"}
-        expected=hashlib.sha256(json.dumps(unsigned,sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
-        if digest!=expected:
-            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence digest mismatch")
-        if value.get("task_id")!=item.get("task_id") or value.get("builder_id")!=item.get("builder_id"):
-            raise SelfBuildLaunchError("CANDIDATE_EVIDENCE_INVALID","candidate evidence identity mismatch")
-        return value
-
-    def complete_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str)->dict:
-        public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
-        item=self._prepared_item(prepared_run,builder_id)
-        if public is None or item is None:
-            raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
-        paths=self._paths(str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),builder_id)
-        if paths["handoff"].is_file():
-            try:return json.loads(paths["handoff"].read_text(encoding="utf-8"))
-            except Exception as ex:raise SelfBuildLaunchError("HANDOFF_EVIDENCE_INVALID","handoff evidence unreadable") from ex
-
-        try:
-            process=self.supervisor.complete(builder_id,int(public["generation"]),timeout=10.0)
-        except SupervisorError as ex:
-            raise SelfBuildLaunchError(ex.code,str(ex)) from ex
-        process_evidence=process.as_dict()
-        docker_evidence=self.container_cleanup_fn(
-            run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
-            builder_id=builder_id,
-        )
-        process_evidence["dockerContainmentEmpty"]=docker_evidence.get("container_empty") is True
-        candidate=self._load_candidate_evidence(paths["candidate"],item=item)
-        if candidate is None:
-            try:
-                result=load_result_file(public["result_file"],state_root=self.state_root)
-                candidate=self.freeze_fn(
-                    item=item,public=public,result=result,process_evidence=process_evidence,
-                    python_executable=self.python,
-                )
-            except SelfBuildFreezeError as ex:
-                raise SelfBuildLaunchError(ex.code,str(ex)) from ex
-            _atomic_json(paths["candidate"],candidate)
-
-        response=self.client.record_self_build_handoff(
-            run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
-            task_id=item["task_id"],
-            worker_run_id=item["authority"]["run_id"],
-            owner_epoch=item["owner_epoch"],
-            evidence=candidate,
-        )
-        handoff={
-            "schema":1,
-            "run_id":str(launched_run.get("run_id") or prepared_run.get("run_id") or ""),
-            "builder_id":builder_id,
-            "task_id":item["task_id"],
-            "base_sha":candidate["base_sha"],
-            "candidate_sha":candidate["candidate_sha"],
-            "candidate_evidence":candidate,
-            "process_evidence":process_evidence,
-            "protected_handoff_receipt":response,
-            "review_status":"FROZEN_AWAITING_INDEPENDENT_REVIEW",
-        }
-        _atomic_json(paths["handoff"],handoff)
-        return handoff
-
-    def review_candidate(self,*,prepared_run:dict,launched_run:dict,builder_id:str)->dict:
-        item=self._prepared_item(prepared_run,builder_id)
-        if item is None:raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared run")
-        run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or "")
-        response=self.client.review_self_build_candidate(
-            run_id=run_id,task_id=item["task_id"],worker_run_id=item["authority"]["run_id"],
-            owner_epoch=item["owner_epoch"],
-        )
-        _atomic_json(self._paths(run_id,builder_id)["review"],response)
-        return response
-
-    def accept_reviewed_candidate(self,*,prepared_run:dict,launched_run:dict,builder_id:str)->dict:
-        item=self._prepared_item(prepared_run,builder_id)
-        if item is None:raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared run")
-        run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or "")
-        response=self.client.accept_self_build_candidate(
-            run_id=run_id,task_id=item["task_id"],worker_run_id=item["authority"]["run_id"],
-            owner_epoch=item["owner_epoch"],
-        )
-        _atomic_json(self._paths(run_id,builder_id)["acceptance"],response)
-        return response
-
-    def finish_review_accept_compose(self,*,prepared_run:dict,launched_run:dict,
-                                     builder_ids=("builder-a","builder-b2"),stop_requested=None,
-                                     timeout:float=1200.0,poll_seconds:float=0.5)->dict:
-        ids=tuple(builder_ids)
-        if ids!=("builder-a","builder-b2"):
-            raise SelfBuildLaunchError("FINISH_BUILDER_SET_INVALID","Finish Line 1 must finish exactly A + B2")
-        if isinstance(timeout,bool) or not isinstance(timeout,(int,float)) or timeout<=0 or timeout>3600:
-            raise SelfBuildLaunchError("FINISH_TIMEOUT_INVALID","finish timeout invalid")
-        if isinstance(poll_seconds,bool) or not isinstance(poll_seconds,(int,float)) or poll_seconds<=0 or poll_seconds>10:
-            raise SelfBuildLaunchError("FINISH_POLL_INVALID","finish poll interval invalid")
-        checker=stop_requested if callable(stop_requested) else (lambda:False)
-        run_id=str(launched_run.get("run_id") or prepared_run.get("run_id") or "")
-        if not run_id:
-            raise SelfBuildLaunchError("PREPARED_RUN_INVALID","self-build run id missing")
-        replacement=prepared_run.get("replacement")
-        if not isinstance(replacement,dict) or replacement.get("builder_id")!="builder-b2":
-            raise SelfBuildLaunchError("REPLACEMENT_REQUIRED","B2 replacement must exist before finish")
-        launched_ids={str(x.get("builder_id") or "") for x in (launched_run.get("workers") or [])}
-        if not set(ids).issubset(launched_ids):
-            raise SelfBuildLaunchError("FINISH_WORKER_MISSING","A and B2 must both be launched before finish")
-
-        pending=set(ids);handoffs={};reviews={};acceptances={};accepted=set()
-        deadline=time.monotonic()+float(timeout)
-        failure=None
-        try:
-            while pending:
-                if checker():
-                    raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested during self-build finish")
-                if time.monotonic()>=deadline:
-                    raise SelfBuildLaunchError("FINISH_TIMEOUT","self-build workers did not finish within the bounded window")
-                progressed=False
-                for builder_id in ids:
-                    if builder_id not in pending:continue
-                    try:
-                        handoffs[builder_id]=self.complete_worker(
-                            prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id,
-                        )
-                    except SelfBuildLaunchError as ex:
-                        if ex.code=="WORKER_STILL_RUNNING":continue
-                        raise
-                    pending.remove(builder_id);progressed=True
-                if pending and not progressed:time.sleep(float(poll_seconds))
-
-            for builder_id in ids:
-                if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before independent review")
-                response=self.review_candidate(prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id)
-                reviews[builder_id]=response
-                result=response.get("result") or {}
-                if result.get("status")!="PASS":
-                    raise SelfBuildLaunchError("INDEPENDENT_REVIEW_FAILED",f"{builder_id} independent review did not PASS")
-
-            for builder_id in ids:
-                if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before candidate acceptance")
-                response=self.accept_reviewed_candidate(prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id)
-                acceptances[builder_id]=response
-                result=response.get("result") or {}
-                if result.get("status")!="ACCEPTED":
-                    raise SelfBuildLaunchError("CANDIDATE_ACCEPTANCE_FAILED",f"{builder_id} candidate was not accepted")
-                accepted.add(builder_id)
-
-            if checker():raise SelfBuildLaunchError("OWNER_STOP_REQUESTED","owner stop requested before successor composition")
-            composition=self.client.compose_self_build_successor(run_id=run_id)
-            successor=composition.get("result") or {}
-            if successor.get("status")!="COMPOSED_AWAITING_ACTIVATION":
-                raise SelfBuildLaunchError("SUCCESSOR_COMPOSITION_FAILED","protected successor composition did not complete")
-            return {
-                "schema":1,"run_id":run_id,"builders":list(ids),"handoffs":handoffs,
-                "reviews":reviews,"acceptances":acceptances,"successor":successor,
-                "protected_composition_receipt":composition,
-            }
-        except BaseException as ex:
-            failure=ex
-            for builder_id in ids:
-                if builder_id in accepted:continue
-                try:
-                    self.stop_worker(
-                        prepared_run=prepared_run,launched_run=launched_run,builder_id=builder_id,
-                        reason="self-build finish aborted before protected acceptance",
-                    )
-                except Exception:
-                    pass
-            raise
-
-    def activate_composed_successor(self,*,run_id:str)->dict:
-        if not isinstance(run_id,str) or not run_id:
-            raise SelfBuildLaunchError("RUN_ID_INVALID","self-build run id missing for activation")
-        response=self.client.activate_self_build_successor(run_id=run_id)
-        result=response.get("result") or {}
-        if result.get("status")!="ACTIVATED_KNOWN_GOOD":
-            raise SelfBuildLaunchError("SUCCESSOR_ACTIVATION_FAILED","protected successor activation did not complete")
-        _atomic_json(self.run_root/run_id/"activation.json",response)
-        return response
-
-    def stop_worker(self,*,prepared_run:dict,launched_run:dict,builder_id:str,reason:str)->dict:
-        public=next((x for x in launched_run.get("workers") or [] if x.get("builder_id")==builder_id),None)
-        prepared_items=list(prepared_run.get("builders") or [])
-        if isinstance(prepared_run.get("replacement"),dict):prepared_items.append(prepared_run["replacement"])
-        item=next((x for x in prepared_items if x.get("builder_id")==builder_id),None)
-        if public is None or item is None:
-            raise SelfBuildLaunchError("WORKER_NOT_IN_RUN","worker not found in prepared/launch run")
-        evidence=self.supervisor.stop(builder_id,int(public["generation"]),timeout=10.0)
-        if evidence.state!="STOPPED" or not evidence.containment_empty:
-            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","ProcessSupervisor could not prove host-process containment empty")
-        docker_evidence=self.container_cleanup_fn(
-            run_id=str(prepared_run.get("run_id") or ""),
-            builder_id=builder_id,
-        )
-        if docker_evidence.get("container_empty") is not True:
-            raise SelfBuildLaunchError("WORKER_STOP_UNPROVEN","Docker worker containment is not empty")
-        response=self.client.revoke_self_build_worker(
-            run_id=prepared_run["run_id"],task_id=item["task_id"],
-            worker_run_id=item["authority"]["run_id"],owner_epoch=item["owner_epoch"],
-            reason=reason,
-        )
-        return {"stopped":True,"builder_id":builder_id,"process_evidence":evidence.as_dict(),"docker_evidence":docker_evidence,"authority_receipt":response}
