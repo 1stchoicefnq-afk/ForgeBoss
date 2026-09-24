@@ -140,6 +140,7 @@ def main() -> int:
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
         from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
+        from forgeboss.security.host_tool_identity import resolve_trusted_host_executable, assert_trusted_host_executable
 
         class ForgeBossDockerEnvironment(DockerEnvironment):
             """Windows-safe, synchronous container cleanup for protected self-build."""
@@ -159,7 +160,10 @@ def main() -> int:
         mount=f"type=bind,src={workspace},dst=/workspace"
         run_id=str(packet.get("run_id") or "")
         builder_id=str(packet.get("builder_id") or "")
+        docker_identity=resolve_trusted_host_executable("docker")
+        assert_trusted_host_executable(docker_identity)
         env_obj=ForgeBossDockerEnvironment(
+            executable=docker_identity.path,
             image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
             env={"PYTHONDONTWRITEBYTECODE":"1","PYTHONUTF8":"1"},
