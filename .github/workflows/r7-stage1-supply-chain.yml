@@ -133,6 +133,9 @@ jobs:
       - name: Prove ForgeBoss hidden-child mechanism on Windows
         shell: pwsh
         run: python packaging/stage1/v28-template/Tools/prove_no_console.py --engine-root .
+      - name: Prove current Stage1 authority contract
+        shell: pwsh
+        run: python packaging/stage1/v28-template/Tools/prove_authority_contract.py --engine-root .
       - name: Parse every PowerShell file
         shell: pwsh
         run: |
@@ -161,8 +164,8 @@ jobs:
           Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ForgeBoss-Stage1-v28.4-R8.4-root-identity-candidate
+          name: ForgeBoss-Stage1-v28.5-R8.5-executed-root-receipt-candidate
           path: |
-            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.4-R8.4-ROOT-IDENTITY-CANDIDATE.zip
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.5-R8.5-EXECUTED-ROOT-RECEIPT-CANDIDATE.zip
             dist-v28/V28-PACKAGE-BUILD-REPORT.json
           if-no-files-found: error
