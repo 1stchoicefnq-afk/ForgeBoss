@@ -14,6 +14,8 @@ def main():
         from forgeboss.protected_authority.client import ProtectedAuthorityClient
         from forgeboss.protected_authority.protocol import AuthorityError
         root=Path(state["protectedRoot"]).resolve(strict=True);cfg=load(root/"authority-config.json")
+        if cfg.get("authorityApi")!="self_build_runtime_receipts_v1":
+            raise RuntimeError("AUTHORITY_API_CONFIG_MISMATCH")
         client_cfg=load(Path(state["clientRoot"])/"client-config.json")
         client=ProtectedAuthorityClient.from_files(
             peer_id=client_cfg["peerId"],repository=client_cfg["repository"],
@@ -24,7 +26,7 @@ def main():
         receipt=response.get("receipt") or {}
         if receipt.get("operation")!="self_build_current_known_good":
             raise RuntimeError("STAGE1_RECEIPT_OPERATION_MISMATCH")
-        print(json.dumps({"ok":True,"receiptVerified":True,"receiptOperation":receipt.get("operation"),
+        print(json.dumps({"ok":True,"authorityApi":cfg.get("authorityApi"),"receiptVerified":True,"receiptOperation":receipt.get("operation"),
               "trustGrade":result.get("trustGrade"),"revision":result.get("revision"),
               "phase":result.get("phase"),"generation":result.get("generation"),
               "manifestSha256":result.get("manifest_sha256"),"identitySha256":result.get("identity_sha256"),
