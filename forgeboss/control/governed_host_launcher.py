@@ -3,15 +3,20 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 
 from .governed_launch import runner_identity
 from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 
 
 class GovernedHostLaunchError(RuntimeError):
+    pass
+
+class GovernedHostLaunchCancelled(GovernedHostLaunchError):
     pass
 
 
@@ -137,6 +142,32 @@ def resolve_workspace_head(workspace: Path) -> str:
     return value
 
 
+def _signal_cancel(path: Path) -> None:
+    path=Path(path)
+    try:
+        fd=os.open(str(path),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+        try:
+            os.write(fd,b"cancel\n");os.fsync(fd)
+        finally:
+            os.close(fd)
+        harden_private_path(path)
+    except FileExistsError:
+        return
+
+
+def _finish_process(proc,grace_seconds=8):
+    try:
+        return proc.communicate(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        try:proc.terminate()
+        except Exception:pass
+        try:return proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:proc.kill()
+            except Exception:pass
+            return proc.communicate()
+
+
 def run_governed_worker(
     *,
     root: Path,
@@ -149,6 +180,7 @@ def run_governed_worker(
     expected_runner_sha256: str,
     budget_usd: float,
     model: str | None,
+    cancel_event=None,
     timeout_seconds: int = 1200,
 ) -> dict:
     if runtime_id != "mini-swe":
@@ -164,7 +196,9 @@ def run_governed_worker(
     runner = (root / rel).resolve(strict=True)
 
     packet = build_executor_packet(task, current_head)
-    packet_path = _write_private_packet(Path(state_dir), packet)
+    state_dir=Path(state_dir)
+    packet_path = _write_private_packet(state_dir, packet)
+    cancel_path=state_dir/("cancel-"+secrets.token_hex(16)+".signal")
     try:
         allowed_host_env = {
             "PATH","PATHEXT","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP",
@@ -180,6 +214,7 @@ def run_governed_worker(
         child_env["FORGEBOSS_CONTROL_ENVELOPE"] = json.dumps(
             launch_envelope, sort_keys=True, separators=(",", ":")
         )
+        child_env["FORGEBOSS_CANCEL_FILE"] = str(cancel_path)
         if model:
             child_env["FORGEBOSS_MINISWE_MODEL"] = str(model)
         for key in ("GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT"):
@@ -201,7 +236,11 @@ def run_governed_worker(
         if final_runner_sha != expected_runner_sha256:
             raise GovernedHostLaunchError("approved runner identity changed at spawn boundary")
 
-        proc = subprocess.run(
+        if cancel_event is not None and cancel_event.is_set():
+            _signal_cancel(cancel_path)
+            raise GovernedHostLaunchCancelled("governed run cancelled before worker spawn")
+
+        proc = subprocess.Popen(
             [
                 sys.executable,
                 str(runner),
@@ -211,19 +250,30 @@ def run_governed_worker(
             ],
             cwd=str(root),
             env=child_env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
         )
+        started=time.monotonic();cancelled=False;timed_out=False
+        while proc.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled=True;_signal_cancel(cancel_path);break
+            if time.monotonic()-started>=timeout_seconds:
+                timed_out=True;_signal_cancel(cancel_path);break
+            time.sleep(.1)
+        stdout,stderr=_finish_process(proc) if proc.poll() is None else proc.communicate()
+        if cancelled:
+            raise GovernedHostLaunchCancelled("governed run cancelled")
+        if timed_out:
+            raise GovernedHostLaunchError("governed worker exceeded host launch timeout")
         return {
             "returncode": int(proc.returncode),
-            "stdout_tail": (proc.stdout or "")[-4000:],
-            "stderr_tail": (proc.stderr or "")[-4000:],
+            "stdout_tail": (stdout or "")[-4000:],
+            "stderr_tail": (stderr or "")[-4000:],
             "result_head": resolve_workspace_head(workspace_path),
             "runner_relpath": rel,
             "runner_sha256": final_runner_sha,
         }
-    except subprocess.TimeoutExpired as ex:
-        raise GovernedHostLaunchError("governed worker exceeded host launch timeout") from ex
     finally:
+        cancel_path.unlink(missing_ok=True)
         packet_path.unlink(missing_ok=True)
