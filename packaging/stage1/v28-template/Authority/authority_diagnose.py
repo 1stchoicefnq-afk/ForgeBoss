@@ -21,8 +21,12 @@ def main():
             peer_private_key_file=client_cfg["peerKeyFile"],
             receipt_public_key_file=client_cfg["receiptPublicKeyFile"],pipe_name=client_cfg["pipeName"],timeout=3.0)
         response=client.self_build_current_known_good();result=response.get("result") or {}
-        print(json.dumps({"ok":True,"receiptVerified":True,"trustGrade":result.get("trustGrade"),
-              "revision":result.get("revision"),"phase":result.get("phase"),"generation":result.get("generation"),
+        receipt=response.get("receipt") or {}
+        if receipt.get("operation")!="self_build_current_known_good":
+            raise RuntimeError("STAGE1_RECEIPT_OPERATION_MISMATCH")
+        print(json.dumps({"ok":True,"receiptVerified":True,"receiptOperation":receipt.get("operation"),
+              "trustGrade":result.get("trustGrade"),"revision":result.get("revision"),
+              "phase":result.get("phase"),"generation":result.get("generation"),
               "manifestSha256":result.get("manifest_sha256"),"identitySha256":result.get("identity_sha256"),
               "treeSha256":result.get("tree_sha256")},sort_keys=True))
         return 0
