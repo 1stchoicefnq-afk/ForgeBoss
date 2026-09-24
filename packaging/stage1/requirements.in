@@ -4,3 +4,7 @@ pywebview>=5.4,<7
 mini-swe-agent==2.4.6
 litellm>=1.93.0,<2
 cryptography>=45,<48
+
+# pywebview imports proxy_tools on every platform. PyPI currently exposes only
+# this immutable sdist; pin the exact file rather than relying on index selection.
+proxy-tools @ https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz
