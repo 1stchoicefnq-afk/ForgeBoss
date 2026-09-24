@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import json
 import os
@@ -196,8 +197,8 @@ def _create_fixture_source(root: Path) -> None:
         # Large enough to make stop-during-copy testing practical without
         # creating an enormous fixture.
         conn.execute(
-            "INSERT INTO acceptance_padding(payload) VALUES(?)",
-            (sqlite3.Binary(os.urandom(16 * 1024 * 1024)),),
+            "INSERT INTO acceptance_padding(payload) VALUES(zeroblob(?))",
+            (128 * 1024 * 1024,),
         )
         conn.commit()
     finally:
@@ -324,7 +325,26 @@ def command_preflight(args) -> None:
     reloaded = getattr(importlib.import_module(module_name), class_name)
     if reloaded is not cls:
         raise WindowsControlAcceptanceError(
-            "registered pywin32 class string does not resolve to the live service class"
+            "pywin32 class string does not resolve to the live service class"
+        )
+
+    import winreg
+
+    registry_path = (
+        rf"SYSTEM\CurrentControlSet\Services\{SERVICE_NAME}\PythonClass"
+    )
+    try:
+        registered_class = winreg.QueryValue(
+            winreg.HKEY_LOCAL_MACHINE,
+            registry_path,
+        )
+    except OSError as ex:
+        raise WindowsControlAcceptanceError(
+            "installed service PythonClass registry value is unavailable"
+        ) from ex
+    if registered_class != class_string:
+        raise WindowsControlAcceptanceError(
+            "installed service PythonClass does not match the candidate service class"
         )
 
     desktop_sid = _current_user_sid()
@@ -338,6 +358,7 @@ def command_preflight(args) -> None:
         serviceSidUnrestricted=service.unrestricted,
         desktopSid=desktop_sid,
         serviceClass=class_string,
+        registeredServiceClass=registered_class,
     )
 
 
@@ -383,6 +404,85 @@ def command_provision(args) -> None:
         serviceSid=service.service_sid,
         sourceFixture=str(fixture.resolve()),
         sourceStillPresent=fixture.exists(),
+    )
+
+
+def command_stop_race(args) -> None:
+    _require_native_opt_in()
+    head = _git_head(args.expected_head)
+    private = default_private_root()
+    active = private / ACTIVE_STATE_FILE
+    candidate = private / CANDIDATE_DIR
+    if active.exists() or active.is_symlink() or candidate.exists() or candidate.is_symlink():
+        raise WindowsControlAcceptanceError(
+            "stop-race requires fresh pre-bootstrap state"
+        )
+
+    _start_service()
+    pipe_error = None
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_pipe_request, "bootstrap.activate")
+        deadline = time.monotonic() + 10.0
+        staging_seen = False
+        while time.monotonic() < deadline:
+            if any(private.glob(".migration-stage-*")):
+                staging_seen = True
+                break
+            if future.done():
+                break
+            time.sleep(0.01)
+
+        if not staging_seen:
+            if future.done():
+                try:
+                    future.result()
+                except Exception as ex:
+                    pipe_error = type(ex).__name__
+            raise WindowsControlAcceptanceError(
+                "bootstrap copy completed/failed before migration staging was observed; "
+                "use a fresh host and rerun the stop-race"
+            )
+
+        _stop_service()
+        try:
+            future.result(timeout=20)
+        except Exception as ex:
+            pipe_error = type(ex).__name__
+
+    if active.exists() or active.is_symlink():
+        raise WindowsControlAcceptanceError(
+            "ACTIVE-STATE committed even though service stop was observed during copy"
+        )
+
+    candidate_verified = False
+    if candidate.exists():
+        service = verify_unrestricted_service_sid(desktop_sid=_current_user_sid())
+        verify_candidate_copy(
+            private,
+            expected_service_sid=service.service_sid,
+            expected_desktop_sid=_current_user_sid(),
+            verify_source=True,
+        )
+        candidate_verified = True
+
+    # Restart must return to authority-free bootstrap mode. A completed verified
+    # candidate may be reused by the later bootstrap command; no active state exists.
+    _start_service()
+    health = _pipe_request("health")
+    if not health.get("ok"):
+        raise WindowsControlAcceptanceError(
+            "service did not return to bootstrap health after stop-race"
+        )
+
+    _emit(
+        "stop-race",
+        True,
+        candidateHead=head,
+        migrationStagingObserved=True,
+        activeStateCommitted=False,
+        verifiedCandidatePresent=candidate_verified,
+        pipeInterrupted=pipe_error,
+        bootstrapHealthAfterRestart=True,
     )
 
 
@@ -597,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight")
     sub.add_parser("provision")
+    sub.add_parser("stop-race")
     sub.add_parser("bootstrap")
     sub.add_parser("restart-verify")
     sub.add_parser("desktop-denial")
@@ -610,6 +711,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = {
         "preflight": command_preflight,
         "provision": command_provision,
+        "stop-race": command_stop_race,
         "bootstrap": command_bootstrap,
         "restart-verify": command_restart_verify,
         "desktop-denial": command_desktop_denial,
