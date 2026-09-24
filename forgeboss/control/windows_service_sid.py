@@ -78,7 +78,7 @@ def _open_service(win32service, *, access: int):
         raise
 
 
-def _close_service_handles(win32service, scm, service) -> None:
+def _close_service_handles(win32service, scm, service) -> tuple[Exception, ...]:
     errors = []
     try:
         if service is not None:
@@ -90,15 +90,13 @@ def _close_service_handles(win32service, scm, service) -> None:
             win32service.CloseServiceHandle(scm)
     except Exception as ex:
         errors.append(ex)
-    if errors:
-        raise ServiceSidConfigError(
-            "failed to close Windows service handles cleanly"
-        ) from errors[0]
+    return tuple(errors)
 
 
 def configure_unrestricted_service_sid() -> None:
     win32service, _ = _require_pywin32_service()
     scm = service = None
+    primary = None
     try:
         scm, service = _open_service(
             win32service,
@@ -113,17 +111,23 @@ def configure_unrestricted_service_sid() -> None:
             win32service.SERVICE_SID_TYPE_UNRESTRICTED,
         )
     except Exception as ex:
+        primary = ex
+    close_errors = _close_service_handles(win32service, scm, service)
+    if primary is not None:
         raise ServiceSidConfigError(
             "failed to configure ForgeBossControl service SID"
-        ) from ex
-    finally:
-        if scm is not None or service is not None:
-            _close_service_handles(win32service, scm, service)
+        ) from primary
+    if close_errors:
+        raise ServiceSidConfigError(
+            "configured service SID but failed to close Windows service handles cleanly"
+        ) from close_errors[0]
 
 
 def query_service_sid_type() -> int:
     win32service, _ = _require_pywin32_service()
     scm = service = None
+    primary = None
+    value = None
     try:
         scm, service = _open_service(
             win32service,
@@ -137,16 +141,20 @@ def query_service_sid_type() -> int:
             raise ServiceSidConfigError(
                 "Windows returned an invalid service SID type"
             )
-        return value
-    except ServiceSidConfigError:
-        raise
     except Exception as ex:
+        primary = ex
+    close_errors = _close_service_handles(win32service, scm, service)
+    if primary is not None:
+        if isinstance(primary, ServiceSidConfigError):
+            raise primary
         raise ServiceSidConfigError(
             "failed to query ForgeBossControl service SID type"
-        ) from ex
-    finally:
-        if scm is not None or service is not None:
-            _close_service_handles(win32service, scm, service)
+        ) from primary
+    if close_errors:
+        raise ServiceSidConfigError(
+            "queried service SID but failed to close Windows service handles cleanly"
+        ) from close_errors[0]
+    return value
 
 
 def resolve_service_sid(*, desktop_sid: str | None = None) -> str:
