@@ -157,15 +157,23 @@ def _signal_cancel(path: Path) -> None:
 
 def _finish_process(proc,grace_seconds=8):
     try:
-        return proc.communicate(timeout=grace_seconds)
+        proc.wait(timeout=grace_seconds);return
     except subprocess.TimeoutExpired:
         try:proc.terminate()
         except Exception:pass
-        try:return proc.communicate(timeout=3)
+        try:proc.wait(timeout=3);return
         except subprocess.TimeoutExpired:
             try:proc.kill()
             except Exception:pass
-            return proc.communicate()
+            proc.wait()
+
+
+def _tail_file(f,max_bytes=16384,max_chars=4000):
+    f.flush();f.seek(0,os.SEEK_END);size=f.tell()
+    f.seek(max(0,size-max_bytes),os.SEEK_SET)
+    data=f.read()
+    if isinstance(data,str):return data[-max_chars:]
+    return data.decode("utf-8","replace")[-max_chars:]
 
 
 def run_governed_worker(
@@ -240,40 +248,42 @@ def run_governed_worker(
             _signal_cancel(cancel_path)
             raise GovernedHostLaunchCancelled("governed run cancelled before worker spawn")
 
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(runner),
-                str(packet_path),
-                str(workspace_path),
-                str(float(budget_usd)),
-            ],
-            cwd=str(root),
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        started=time.monotonic();cancelled=False;timed_out=False
-        while proc.poll() is None:
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled=True;_signal_cancel(cancel_path);break
-            if time.monotonic()-started>=timeout_seconds:
-                timed_out=True;_signal_cancel(cancel_path);break
-            time.sleep(.1)
-        stdout,stderr=_finish_process(proc) if proc.poll() is None else proc.communicate()
-        if cancelled:
-            raise GovernedHostLaunchCancelled("governed run cancelled")
-        if timed_out:
-            raise GovernedHostLaunchError("governed worker exceeded host launch timeout")
-        return {
-            "returncode": int(proc.returncode),
-            "stdout_tail": (stdout or "")[-4000:],
-            "stderr_tail": (stderr or "")[-4000:],
-            "result_head": resolve_workspace_head(workspace_path),
-            "runner_relpath": rel,
-            "runner_sha256": final_runner_sha,
-        }
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(runner),
+                    str(packet_path),
+                    str(workspace_path),
+                    str(float(budget_usd)),
+                ],
+                cwd=str(root),
+                env=child_env,
+                stdout=stdout_file,
+                stderr=stderr_file,
+            )
+            started=time.monotonic();cancelled=False;timed_out=False
+            while proc.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled=True;_signal_cancel(cancel_path);break
+                if time.monotonic()-started>=timeout_seconds:
+                    timed_out=True;_signal_cancel(cancel_path);break
+                time.sleep(.1)
+            if proc.poll() is None:_finish_process(proc)
+            else:proc.wait()
+            stdout=_tail_file(stdout_file);stderr=_tail_file(stderr_file)
+            if cancelled:
+                raise GovernedHostLaunchCancelled("governed run cancelled")
+            if timed_out:
+                raise GovernedHostLaunchError("governed worker exceeded host launch timeout")
+            return {
+                "returncode": int(proc.returncode),
+                "stdout_tail": stdout,
+                "stderr_tail": stderr,
+                "result_head": resolve_workspace_head(workspace_path),
+                "runner_relpath": rel,
+                "runner_sha256": final_runner_sha,
+            }
     finally:
         cancel_path.unlink(missing_ok=True)
         packet_path.unlink(missing_ok=True)
