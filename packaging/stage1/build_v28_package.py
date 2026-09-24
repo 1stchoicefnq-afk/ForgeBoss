@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 PACKAGE_DIR_NAME = "ForgeBoss-Stage1-Turn-On-Pack"
-ZIP_NAME = "ForgeBoss-Stage1-Turn-On-Pack-v28.2-R8.2-EXACT-CHECKOUT-CANDIDATE.zip"
+ZIP_NAME = "ForgeBoss-Stage1-Turn-On-Pack-v28.3-R8.3-ROOT-VERIFY-CANDIDATE.zip"
 
 
 def sha256(path: Path) -> str:
@@ -42,7 +42,7 @@ def package_manifest(root: Path, *, engine_sha: str, engine_ref: str, builder_im
         files[rel]={"sha256":sha256(path),"sizeBytes":path.stat().st_size}
     return {
         "schema":2,
-        "packageVersion":"v28.2-r8.2",
+        "packageVersion":"v28.3-r8.3",
         "packageAuthority":"OWNER_DELIVERED_UNSIGNED_PACKAGE",
         "engineSha":engine_sha,
         "engineRef":engine_ref,
