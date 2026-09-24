@@ -32,6 +32,7 @@ try{
  AssertHash (Join-Path $s.launcherRoot 'prove_no_console.py') ([string]$s.launcherFiles.noConsole) 'no-console proof'
  Write-Host '[PASS] Package manifest + exact file-set + behaviour scan'
 
+ $env:FORGEBOSS_ENGINE_ROOT=(Resolve-Path -LiteralPath $s.engineRoot).Path
  & $RuntimePy -I -B (Join-Path $s.engineRoot 'packaging\stage1\stage1_gate.py') $Installed
  if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
  Write-Host '[PASS] Start and VERIFY share exact installed engine authority'
