@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import secrets
+import shutil
 import tempfile
 from typing import Iterable, Sequence
 
@@ -228,15 +229,13 @@ def _make_parent_dirs(source: Path, target: Path) -> list[Path]:
 def _copy_result_to_temp(
     result_root: Path,
     relative: str,
-    target: Path,
+    staging_root: Path,
     expected_sha256: str,
 ) -> Path:
     source = result_root / relative
     if not source.exists():
         raise SandboxApplyError(f"result file disappeared before apply: {relative}")
-    temp = target.with_name(
-        target.name + f".forgeboss-new-{os.getpid()}-{secrets.token_hex(6)}"
-    )
+    temp = staging_root / relative
     _copy_regular_file(source, temp, relative)
     actual = ManifestEntry(
         path=relative,
@@ -302,6 +301,8 @@ def apply_sandbox_result(
     packet_path: str | Path,
 ) -> SandboxApplyEvidence:
     source = Path(source_workspace).resolve(strict=True)
+    if source.parent == source:
+        raise SandboxApplyError("workspace root cannot be filesystem root")
     result_root = Path(sandbox.result_dir).resolve(strict=True)
     _assert_result_tree_safe(result_root)
 
@@ -335,7 +336,7 @@ def apply_sandbox_result(
         except SecurityError as ex:
             raise SandboxApplyError(f"live host authority is invalid: {ex}") from ex
 
-        current_entries, current_digest = capture_sanitized_manifest(source)
+        _, current_digest = capture_sanitized_manifest(source)
         if current_digest != sandbox.source_manifest_sha256:
             raise SandboxApplyError(
                 "host workspace drifted from the exact pre-run sandbox baseline"
@@ -360,87 +361,109 @@ def apply_sandbox_result(
         staged: dict[str, Path] = {}
         created_dirs: list[Path] = []
         applied: list[PlannedMutation] = []
+        rollback = Path(
+            tempfile.mkdtemp(
+                prefix=".forgeboss-rollback-",
+                dir=source.parent,
+            )
+        ).resolve(strict=True)
+        preserve_rollback = False
+        cleanup_error: Exception | None = None
 
-        with tempfile.TemporaryDirectory(
-            prefix=".forgeboss-rollback-",
-            dir=source.parent,
-        ) as rollback_raw:
-            rollback = Path(rollback_raw).resolve(strict=True)
+        try:
+            staging_root = rollback / "staged"
+            backup_root = rollback / "backup"
+            staging_root.mkdir()
+            backup_root.mkdir()
+
+            for mutation in mutations:
+                canonical = _scope_path(mutation.path)
+                relative = allowed[canonical]
+                target = _parent_chain_safe(source, relative)
+
+                if target.exists():
+                    backup = backup_root / relative
+                    _copy_regular_file(target, backup, relative)
+                    backups[mutation.path] = backup
+                else:
+                    backups[mutation.path] = None
+
+                if mutation.action != "delete":
+                    result_entry = result_map[canonical]
+                    staged[mutation.path] = _copy_result_to_temp(
+                        result_root,
+                        result_entry.path,
+                        staging_root,
+                        result_entry.sha256,
+                    )
+
+            # Nothing in the real workspace has changed yet.
+            _, latest_digest = capture_sanitized_manifest(source)
+            if latest_digest != sandbox.source_manifest_sha256:
+                raise SandboxApplyError(
+                    "host workspace changed after apply planning"
+                )
+            _assert_live_control_lease(authority, sandbox.executor)
+            _verify_unlocked(
+                Path(lease_path),
+                lease_token,
+                packet_path,
+                source,
+                sandbox.executor,
+            )
+
+            for mutation in mutations:
+                # Cancellation/release/expiry between any two files stops the
+                # transaction and triggers rollback of files already applied.
+                _assert_live_control_lease(authority, sandbox.executor)
+                canonical = _scope_path(mutation.path)
+                relative = allowed[canonical]
+                target = _parent_chain_safe(source, relative)
+
+                if mutation.action == "delete":
+                    target.unlink()
+                else:
+                    created_dirs.extend(_make_parent_dirs(source, target))
+                    os.replace(staged[mutation.path], target)
+                applied.append(mutation)
+
+            _assert_live_control_lease(authority, sandbox.executor)
+            _, after_digest = capture_sanitized_manifest(source)
+            if after_digest != actual_result_digest:
+                raise SandboxApplyError(
+                    "post-apply manifest does not equal exact sandbox result"
+                )
+
+            evidence = SandboxApplyEvidence(
+                task_id=sandbox.task_id,
+                run_id=sandbox.run_id,
+                owner_epoch=sandbox.owner_epoch,
+                executor=sandbox.executor,
+                changed_paths=tuple(m.path for m in mutations),
+                before_manifest_sha256=current_digest,
+                result_manifest_sha256=actual_result_digest,
+                after_manifest_sha256=after_digest,
+            )
+        except Exception as ex:
             try:
-                for mutation in mutations:
-                    relative = allowed[_scope_path(mutation.path)]
-                    target = _parent_chain_safe(source, relative)
-                    if target.exists():
-                        backup = rollback / relative
-                        _copy_regular_file(target, backup, relative)
-                        backups[mutation.path] = backup
-                    else:
-                        backups[mutation.path] = None
-
-                    if mutation.action != "delete":
-                        result_entry = result_map[_scope_path(mutation.path)]
-                        staged[mutation.path] = _copy_result_to_temp(
-                            result_root,
-                            result_entry.path,
-                            target,
-                            result_entry.sha256,
-                        )
-
-                # Recheck source and live authority immediately before mutation.
-                latest_entries, latest_digest = capture_sanitized_manifest(source)
-                if latest_digest != sandbox.source_manifest_sha256:
-                    raise SandboxApplyError(
-                        "host workspace changed after apply planning"
-                    )
-                _assert_live_control_lease(authority, sandbox.executor)
-                _verify_unlocked(
-                    Path(lease_path),
-                    lease_token,
-                    packet_path,
-                    source,
-                    sandbox.executor,
-                )
-
-                for mutation in mutations:
-                    _assert_live_control_lease(authority, sandbox.executor)
-                    relative = allowed[_scope_path(mutation.path)]
-                    target = _parent_chain_safe(source, relative)
-                    if mutation.action == "delete":
-                        target.unlink()
-                    else:
-                        created_dirs.extend(_make_parent_dirs(source, target))
-                        os.replace(staged[mutation.path], target)
-                    applied.append(mutation)
-
-                _assert_live_control_lease(authority, sandbox.executor)
-                after_entries, after_digest = capture_sanitized_manifest(source)
-                if after_digest != actual_result_digest:
-                    raise SandboxApplyError(
-                        "post-apply manifest does not equal exact sandbox result"
-                    )
-
-                return SandboxApplyEvidence(
-                    task_id=sandbox.task_id,
-                    run_id=sandbox.run_id,
-                    owner_epoch=sandbox.owner_epoch,
-                    executor=sandbox.executor,
-                    changed_paths=tuple(m.path for m in mutations),
-                    before_manifest_sha256=current_digest,
-                    result_manifest_sha256=actual_result_digest,
-                    after_manifest_sha256=after_digest,
-                )
-            except Exception as ex:
+                _restore(source, applied, backups, created_dirs)
+            except Exception as rollback_ex:
+                preserve_rollback = True
+                raise SandboxApplyError(
+                    "apply failed and rollback also failed; recovery material "
+                    f"preserved at {rollback}: {rollback_ex}"
+                ) from ex
+            raise
+        finally:
+            if not preserve_rollback:
                 try:
-                    _restore(source, applied, backups, created_dirs)
-                except Exception as rollback_ex:
-                    raise SandboxApplyError(
-                        f"apply failed and rollback also failed: {rollback_ex}"
-                    ) from ex
-                raise
-            finally:
-                for temp in staged.values():
-                    try:
-                        if temp.exists():
-                            temp.unlink()
-                    except OSError:
-                        pass
+                    shutil.rmtree(rollback)
+                except Exception as ex:
+                    cleanup_error = ex
+
+        if cleanup_error is not None:
+            raise SandboxApplyError(
+                f"rollback staging cleanup failed: {cleanup_error}"
+            )
+        return evidence
+
