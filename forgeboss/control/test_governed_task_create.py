@@ -529,6 +529,19 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
         self.assertIsNone(self.store.get_lease(p["taskId"]))
 
+    def test_legacy_task_cancel_is_not_overclaimed(self):
+        p=self.params(task_id="T-LEGACY-CANCEL")
+        p.pop("subsystem")
+        created=self.daemon.dispatch(self.request(p,method="task.create"),True)
+        self.assertIsNone(created["governance_mode"])
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(
+                {"method":"task.cancel","idempotencyKey":uuid.uuid4().hex,"params":{"taskId":p["taskId"]}},
+                True,
+            )
+        self.assertEqual(ctx.exception.code,"CANCEL_NOT_SUPPORTED")
+        self.assertIsNone(self.store.get_task(p["taskId"])["cancel_requested_at"])
+
     def test_queued_cancel_is_terminal_and_blocks_governed_launch(self):
         p, _ = self._create_governed_substantial("T-CANCEL-QUEUED")
         out = self.daemon.dispatch(
