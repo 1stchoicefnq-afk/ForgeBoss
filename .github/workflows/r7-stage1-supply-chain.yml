@@ -73,3 +73,64 @@ jobs:
             python-image-repodigests.txt
             python-image-digest.txt
           if-no-files-found: error
+
+
+  package-v28:
+    needs: [package-security, windows-lock, image-digest]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      ENGINE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ENGINE_REF: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-requirements-lock
+          path: stage1-input/lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-python-image-digest
+          path: stage1-input/image
+      - name: Build exact self-verifying v28 candidate
+        shell: pwsh
+        run: python packaging/stage1/build_v28_package.py --template packaging/stage1/v28-template --verifier packaging/stage1/verify_package.py --lock stage1-input/lock/stage1-requirements.lock --image-digest stage1-input/image/python-image-digest.txt --engine-sha "$env:ENGINE_SHA" --engine-ref "$env:ENGINE_REF" --out-dir dist-v28
+      - name: Parse every PowerShell file
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          foreach($f in Get-ChildItem -LiteralPath $root -Recurse -Filter *.ps1){
+            $tokens=$null;$errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$tokens,[ref]$errors)|Out-Null
+            if($errors.Count){$errors|Format-List|Out-String|Write-Host;throw "PowerShell parse failed: $($f.FullName)"}
+          }
+      - name: Execute package PowerShell verifier
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          & (Join-Path $root 'Tools\Verify-Package.ps1') -Root $root
+      - name: Prove TURN-ON refuses a tampered package before install
+        shell: pwsh
+        run: |
+          $src=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          $dst=Join-Path $env:RUNNER_TEMP 'forgeboss-v28-tamper'
+          if(Test-Path $dst){Remove-Item $dst -Recurse -Force}
+          Copy-Item $src $dst -Recurse
+          Add-Content -LiteralPath (Join-Path $dst 'README-FIRST.txt') -Value '# tamper'
+          $p=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dst 'Turn-On-ForgeBoss.ps1'),'-PackageRoot',$dst) -Wait -PassThru -WindowStyle Hidden
+          if($p.ExitCode -eq 0){throw 'Tampered TURN-ON unexpectedly succeeded'}
+          if(Test-Path (Join-Path $env:LOCALAPPDATA 'ForgeBoss\stage1-installed.json')){throw 'Tampered TURN-ON reached installation'}
+          Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ForgeBoss-Stage1-v28-R8-self-verifying-candidate
+          path: |
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28-R8-SELF-VERIFYING-CANDIDATE.zip
+            dist-v28/V28-PACKAGE-BUILD-REPORT.json
+          if-no-files-found: error
