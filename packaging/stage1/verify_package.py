@@ -229,16 +229,10 @@ def _check_package_semantics(root: Path) -> None:
         text=ps1.read_text(encoding="utf-8-sig");match=assignment.search(text) or set_variable.search(text)
         if match:raise PackageVerificationError("POWERSHELL_AUTOMATIC_VARIABLE_ASSIGNMENT:"+ps1.relative_to(root).as_posix()+":"+match.group(1).lower())
     helper=(root/"Authority"/"Prepare-MachineAuthorityRoot.ps1").read_text(encoding="utf-8-sig")
-    # Require the guarantee instead of banning a version literal. A safe exact-match
-    # implementation may be literal or parameterised; what matters is that Root is
-    # compared exactly against the expected identity before any recursive ACL work.
-    required_root_guards=(
-        "PROTECTED_ROOT_IDENTITY_MISMATCH",
-        "PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED",
-        ".Equals($expected,[StringComparison]::OrdinalIgnoreCase)",
-    )
-    if not all(token in helper for token in required_root_guards):
-        raise PackageVerificationError("PROTECTED_ROOT_IDENTITY_GUARD_MISSING")
+    # Keep only the historical shape-only guard rejection here. The actual
+    # protected-root identity guarantee is executed by
+    # Tools/Test-ProtectedRootIdentity.ps1 in CI and owner VERIFY; source-token
+    # presence is not accepted as evidence of runtime behaviour.
     if re.search(r"if\s*\(\s*\$Root\s+-notmatch\s+['\"]\^\[A-Za-z\]",helper,re.I):
         raise PackageVerificationError("PROTECTED_ROOT_SHAPE_ONLY_GUARD_DENIED")
 

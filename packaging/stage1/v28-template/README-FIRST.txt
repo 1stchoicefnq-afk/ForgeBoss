@@ -13,7 +13,7 @@ Security changes:
 - exact engine selection comes from stage1-installed.json and a mismatched FORGEBOSS_ENGINE_ROOT is rejected;
 - runtime dependencies install from a fully hashed Windows lock with --require-hashes --no-deps --only-binary :all:;
 - VERIFY exercises the engine's own self-build budget policy and hidden-child no-console mechanism;
-- builder image is digest-pinned;
+- VERIFY executes the protected-root identity/denylist table before readiness and TURN-ON executes it before UAC;\n- VERIFY proves the current self_build_* authority API and requires a signed self_build_current_known_good receipt;\n- builder image is digest-pinned;
 - only the protected machine-root/ACL step is elevated;
 - VERIFY does not clean or delete engine evidence;
 - the protected authority returns the trust grade shown by the dashboard;

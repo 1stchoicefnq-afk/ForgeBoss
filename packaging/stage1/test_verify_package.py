@@ -143,15 +143,16 @@ class Stage1PackageVerifierTests(unittest.TestCase):
             verify_package(root)
         self.assertIn("POWERSHELL_AUTOMATIC_VARIABLE_ASSIGNMENT", str(cm.exception))
 
-    def test_safe_exact_match_root_guard_is_allowed(self):
+    def test_root_runtime_guarantee_is_not_claimed_from_comment_tokens(self):
         root = self.make_pack({
             "Authority/Prepare-MachineAuthorityRoot.ps1":
                 b"param([string]$Root,[string]$PackageManifest)\n"
-                b"$expected='C:\\\\ForgeBossAuthorityStage1-v28'\n"
-                b"$actual=$Root\n"
-                b"if(-not $actual.Equals($expected,[StringComparison]::OrdinalIgnoreCase)){throw 'PROTECTED_ROOT_IDENTITY_MISMATCH'}\n"
-                b"if($false){throw 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'}\n"
+                b"# PROTECTED_ROOT_IDENTITY_MISMATCH PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED "
+                b"[string]::Equals($actual,$expected,[StringComparison]::OrdinalIgnoreCase)\n"
         })
+        # Integrity/static verification intentionally does not claim the root
+        # runtime property. TURN-ON/Install/VERIFY execute the helper's
+        # -ValidateOnly table and are the authoritative behavior gate.
         self.assertTrue(verify_package(root)["ok"])
 
     def test_shape_only_root_guard_is_rejected(self):
@@ -162,7 +163,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         })
         with self.assertRaises(PackageVerificationError) as cm:
             verify_package(root)
-        self.assertIn("PROTECTED_ROOT_IDENTITY_GUARD_MISSING", str(cm.exception))
+        self.assertIn("PROTECTED_ROOT_SHAPE_ONLY_GUARD_DENIED", str(cm.exception))
 
     def test_cmd_trailing_root_normalization_required(self):
         root = self.make_pack({"VERIFY-FORGEBOSS.cmd": b"@echo off\r\nset \"ROOT=%~dp0\"\r\n"})

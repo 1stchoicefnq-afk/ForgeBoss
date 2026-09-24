@@ -6,6 +6,8 @@ Write-Host '============================================================'
 Write-Host 'FORGEBOSS STAGE 1 - V28 SELF-VERIFYING TURN-ON'
 Write-Host '============================================================'
 & (Join-Path $PackageRoot 'Tools\Verify-Package.ps1') -Root $PackageRoot | Write-Host
+& (Join-Path $PackageRoot 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $PackageRoot | Write-Host
+if($LASTEXITCODE -ne 0){throw 'PROTECTED_ROOT_PRE_UAC_VALIDATION_FAILED'}
 $tools=Join-Path $env:TEMP ('forgeboss-v28-tools-'+[guid]::NewGuid().ToString('N')+'.json')
 try{
   & (Join-Path $PackageRoot 'Tools\Resolve-Tools.ps1') -Output $tools | Write-Host

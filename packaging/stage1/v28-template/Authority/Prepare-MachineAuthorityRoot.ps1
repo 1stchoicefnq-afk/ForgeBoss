@@ -10,12 +10,19 @@ $m=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $version=[string]$m.packageVersion
 if($version -notmatch '^v([0-9]+)(?:\.[0-9]+)?-r[0-9]+(?:\.[0-9]+)?$'){throw 'PACKAGE_VERSION_INVALID'}
 $stage1Major=$Matches[1]
-$expected=[IO.Path]::GetFullPath(('C:\ForgeBossAuthorityStage1-v'+$stage1Major)).TrimEnd('\')
+$systemDrive=[IO.Path]::GetPathRoot($env:SystemRoot).TrimEnd('\')
+if([string]::IsNullOrWhiteSpace($systemDrive)){throw 'SYSTEM_DRIVE_UNAVAILABLE'}
+$expected=[IO.Path]::GetFullPath((Join-Path ($systemDrive+'\') ('ForgeBossAuthorityStage1-v'+$stage1Major))).TrimEnd('\')
 $actual=[IO.Path]::GetFullPath($Root).TrimEnd('\')
-if(-not $actual.Equals($expected,[StringComparison]::OrdinalIgnoreCase)){throw 'PROTECTED_ROOT_IDENTITY_MISMATCH'}
-$systemRoots=@([IO.Path]::GetFullPath($env:SystemRoot).TrimEnd('\'),[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetPathRoot($env:SystemRoot)) 'Users')).TrimEnd('\'),[IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\'),[IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\'))
+$systemRoots=@(
+ [IO.Path]::GetFullPath($env:SystemRoot).TrimEnd('\'),
+ [IO.Path]::GetFullPath((Join-Path ($systemDrive+'\') 'Users')).TrimEnd('\'),
+ [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\'),
+ [IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\')
+)
 if(${env:ProgramFiles(x86)}){$systemRoots += [IO.Path]::GetFullPath(${env:ProgramFiles(x86)}).TrimEnd('\')}
-if($systemRoots | Where-Object {$actual.Equals($_,[StringComparison]::OrdinalIgnoreCase)}){throw 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'}
+if($systemRoots | Where-Object {[string]::Equals($actual,$_,[StringComparison]::OrdinalIgnoreCase)}){throw 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'}
+if(-not [string]::Equals($actual,$expected,[StringComparison]::OrdinalIgnoreCase)){throw 'PROTECTED_ROOT_IDENTITY_MISMATCH'}
 if($ValidateOnly){Write-Host ("[PASS] Protected-root identity accepted: "+$actual);exit 0}
 if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'ELEVATION_REQUIRED'}
 if(Test-Path -LiteralPath $actual){$item=Get-Item -LiteralPath $actual -Force;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'PROTECTED_ROOT_REPARSE_DENIED'}}else{New-Item -ItemType Directory -Path $actual|Out-Null}

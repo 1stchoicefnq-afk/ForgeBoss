@@ -16,7 +16,9 @@ $Base=Join-Path $env:LOCALAPPDATA 'ForgeBoss'
 $EngineRoot=Join-Path $Base ('engine\'+$EngineSha)
 $RuntimeRoot=Join-Path $Base ('runtime\v'+$Stage1Major)
 $RuntimePy=Join-Path $RuntimeRoot 'Scripts\python.exe'
-$ProtectedRoot=('C:\ForgeBossAuthorityStage1-v'+$Stage1Major)
+$SystemDrive=[IO.Path]::GetPathRoot($env:SystemRoot).TrimEnd('\')
+if([string]::IsNullOrWhiteSpace($SystemDrive)){throw 'SYSTEM_DRIVE_UNAVAILABLE'}
+$ProtectedRoot=Join-Path ($SystemDrive+'\') ('ForgeBossAuthorityStage1-v'+$Stage1Major)
 $ClientRoot=Join-Path $Base ('authority-client-stage1-v'+$Stage1Major)
 $StateRoot=Join-Path $Base 'state'
 $LauncherRoot=Join-Path $Base ('launcher\v'+$Stage1Major)
@@ -36,6 +38,8 @@ Write-Host '============================================================'
 Write-Host "Exact engine: $EngineSha"
 
 & (Join-Path $PackageRoot 'Tools\Verify-Package.ps1') -Root $PackageRoot | Write-Host
+& (Join-Path $PackageRoot 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $PackageRoot | Write-Host
+if($LASTEXITCODE -ne 0){throw 'PROTECTED_ROOT_PRE_UAC_VALIDATION_FAILED'}
 $t=Get-Content -LiteralPath $ToolsJson -Raw | ConvertFrom-Json
 AssertTool $t.git 'git.exe'
 AssertTool $t.docker 'docker.exe'

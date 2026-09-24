@@ -32,6 +32,14 @@ try{
  AssertHash (Join-Path $s.launcherRoot 'prove_no_console.py') ([string]$s.launcherFiles.noConsole) 'no-console proof'
  Write-Host '[PASS] Package manifest + exact file-set + behaviour scan'
 
+ $rootProof=& (Join-Path $PackageRoot 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $PackageRoot 2>&1
+ $rootRc=$LASTEXITCODE
+ if($rootRc -ne 0){throw ("PROTECTED_ROOT_VALIDATION_FAILED rc="+$rootRc+": "+($rootProof|Out-String))}
+ $rootObj=($rootProof|Out-String).Trim()|ConvertFrom-Json
+ if(-not $rootObj.ok){throw 'PROTECTED_ROOT_VALIDATION_FAILED'}
+ if([string]$s.protectedRoot -ne [string]$rootObj.expectedRoot){throw 'INSTALLED_PROTECTED_ROOT_IDENTITY_MISMATCH'}
+ Write-Host ("[PASS] Protected root identity executed across "+$rootObj.cases.Count+" cases; root="+$rootObj.expectedRoot)
+
  $env:FORGEBOSS_ENGINE_ROOT=(Resolve-Path -LiteralPath $s.engineRoot).Path
  & $RuntimePy -I -B (Join-Path $s.engineRoot 'packaging\stage1\stage1_gate.py') $Installed
  if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
@@ -46,6 +54,14 @@ try{
  & $RuntimePy -I -B (Join-Path $s.launcherRoot 'prove_no_console.py') --engine-root $s.engineRoot
  if($LASTEXITCODE -ne 0){throw 'NO_CONSOLE_PROOF_FAILED'}
  Write-Host '[PASS] Native Windows no-console child-process proof'
+
+ $authorityContract=& $RuntimePy -I -B (Join-Path $PackageRoot 'Tools\prove_authority_contract.py') --engine-root $s.engineRoot 2>&1
+ if($LASTEXITCODE -ne 0){throw ("STAGE1_AUTHORITY_CONTRACT_FAILED: "+($authorityContract|Out-String))}
+ $authorityContractObj=($authorityContract|Out-String).Trim()|ConvertFrom-Json
+ if(-not $authorityContractObj.ok -or $authorityContractObj.legacyIssueStage1Operations -or $authorityContractObj.obsoleteStage1ServiceParameters){
+   throw 'STAGE1_AUTHORITY_CONTRACT_FAILED'
+ }
+ Write-Host '[PASS] Current Stage 1 authority contract loaded; obsolete issue_stage1 interface absent'
 
  & $s.docker.path image inspect $s.builderImage *> $null
  if($LASTEXITCODE -ne 0){throw 'PINNED_BUILDER_IMAGE_MISSING'}
@@ -64,7 +80,9 @@ try{
  $diagRc=$LASTEXITCODE
  $d=($diag|Out-String).Trim()|ConvertFrom-Json
  if($diagRc -ne 0 -or -not $d.ok){throw ("AUTHORITY_DIAGNOSTIC_FAILED rc="+$diagRc+": "+($d|ConvertTo-Json -Compress))}
- Write-Host ("[PASS] Signed protected authority receipt; trust="+$d.trustGrade)
+ if([string]$d.authorityApi -ne 'self_build_runtime_receipts_v1'){throw 'STAGE1_AUTHORITY_API_MISMATCH'}
+ if([string]$d.receiptOperation -ne 'self_build_current_known_good'){throw 'STAGE1_RECEIPT_OPERATION_MISMATCH'}
+ Write-Host ("[PASS] Signed Stage 1 receipt api="+$d.authorityApi+" operation="+$d.receiptOperation+" trust="+$d.trustGrade)
  Write-Host ("[PASS] Known-good identity revision="+$d.revision+" phase="+$d.phase)
 
  if([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)){throw 'OPENAI_API_KEY_MISSING'}

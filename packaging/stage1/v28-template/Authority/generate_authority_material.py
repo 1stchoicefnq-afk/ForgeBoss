@@ -61,6 +61,7 @@ def main():
       "userSid":sid,"peerId":"controller-a","peerPublicKeyB64":base64.b64encode(peer_pub).decode(),
       "receiptSigningKeyFile":str(receipt_path),"receiptPublicKeyFile":str(client/"receipt-public.b64"),
       "githubPrivateKeyFile":str(github_key),"githubEnabled":False,
+      "authorityApi":"self_build_runtime_receipts_v1",
       "knownGoodManifest":str(manifest_path),"knownGoodIdentity":identity,
       "createdAt":time.time()
     }
