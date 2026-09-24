@@ -289,6 +289,7 @@ def perform_bootstrap_activation(
         activated = activate_verified_state(
             private_root=private_root,
             desktop_sid=desktop_sid,
+            cancelled=cancelled,
         )
         if (
             activated.migration_manifest_sha256
