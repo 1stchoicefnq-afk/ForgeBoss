@@ -126,11 +126,9 @@ class ForgeBossDaemon:
                         raise ProtocolError("RUN_ID_CONFLICT","runId already belongs to another runtime")
                     if str(existing_run.get("status") or "")=="running":
                         raise ProtocolError("RUN_ALREADY_ACTIVE","governed run is already active")
-                    refreshed=self.store.get_task(task["task_id"]) or task
                     return {
                         "taskId":task["task_id"],"runId":run_id,"runtimeId":"mini-swe",
                         "outcome":str(existing_run.get("status") or "unknown"),
-                        "resultHead":refreshed.get("result_head"),
                         "replayed":True,
                     }
                 runtime_id=str(p.get("runtimeId") or "")
