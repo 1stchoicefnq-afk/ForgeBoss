@@ -119,14 +119,19 @@ jobs:
           Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
           $helper=Join-Path $dst 'Authority\Prepare-MachineAuthorityRoot.ps1'
           $text=Get-Content -LiteralPath $helper -Raw
-          $text=$text -replace "(?m)^if\(\$systemRoots \| Where-Object.*PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED.*\r?\n",""
-          $text=$text -replace "(?m)^if\(-not \[string\]::Equals\(\$actual,\$expected.*PROTECTED_ROOT_IDENTITY_MISMATCH.*\r?\n",""
+          $text=$text -replace '(?m)^if\(\$systemRoots \| Where-Object.*PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED.*\r?\n',''
+          $text=$text -replace '(?m)^if\(-not \[string\]::Equals\(\$actual,\$expected.*PROTECTED_ROOT_IDENTITY_MISMATCH.*\r?\n',''
           $text += "`n# PROTECTED_ROOT_IDENTITY_MISMATCH PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED [string]::Equals(`$actual,`$expected,[StringComparison]::OrdinalIgnoreCase)`n"
           Set-Content -LiteralPath $helper -Value $text -Encoding utf8NoBOM
-          & (Join-Path $dst 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $dst *> $null
-          if($LASTEXITCODE -eq 0){throw 'Gutted root guard escaped executable validation'}
-          Write-Host '[PASS] gutted root guard rejected by executable validation'
-          exit 0
+          if($text -match '(?m)^if\(\$systemRoots \| Where-Object.*PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED' -or
+             $text -match '(?m)^if\(-not \[string\]::Equals\(\$actual,\$expected.*PROTECTED_ROOT_IDENTITY_MISMATCH'){
+            throw 'Hostile mutation did not remove the live root guard'
+          }
+          $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $probe=Join-Path $dst 'Tools\Test-ProtectedRootIdentity.ps1'
+          $p=Start-Process -FilePath $ps -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$probe,'-PackageRoot',$dst) -Wait -PassThru -WindowStyle Hidden
+          if($p.ExitCode -eq 0){throw 'Gutted root guard escaped executable validation'}
+          Write-Host ("[PASS] gutted root guard rejected by executable validation exit="+$p.ExitCode)
       - name: Prove engine self-build budget policy
         shell: pwsh
         run: python packaging/stage1/v28-template/Tools/prove_budget_policy.py --engine-root .
