@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Stage1 package hostile regressions
-        run: python -m unittest packaging.stage1.test_verify_package packaging.stage1.test_stage1_gate -v
+        run: python -m unittest discover -s packaging/stage1 -p "test_*.py" -v
 
   windows-lock:
     runs-on: windows-latest
