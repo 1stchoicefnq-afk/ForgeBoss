@@ -191,6 +191,42 @@ class ControlStore:
     def get_task(self,task_id):
         row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
+    def request_cancel(self,task_id):
+        with self._lock:
+            begun=False
+            try:
+                self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
+                row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if not row: raise KeyError("task not found")
+                task=dict(row)
+                if task.get("cancel_requested_at") is not None:
+                    self.db.execute("COMMIT");begun=False
+                    return self.get_task(task_id)
+                status=str(task.get("status") or "")
+                if status=="queued":
+                    cur=self.db.execute("""UPDATE tasks SET cancel_requested_at=?,status='cancelled',
+                      terminal_outcome='cancelled',current_step='cancelled-before-launch',
+                      revision=revision+1,updated_at=? WHERE task_id=? AND revision=? AND cancel_requested_at IS NULL""",
+                      (now,now,task_id,int(task["revision"])))
+                    event_type="task.cancelled"
+                elif status=="running":
+                    cur=self.db.execute("""UPDATE tasks SET cancel_requested_at=?,current_step='cancel-requested',
+                      revision=revision+1,updated_at=? WHERE task_id=? AND revision=? AND cancel_requested_at IS NULL""",
+                      (now,now,task_id,int(task["revision"])))
+                    event_type="task.cancel_requested"
+                else:
+                    self.db.execute("COMMIT");begun=False
+                    return self.get_task(task_id)
+                if cur.rowcount!=1: raise PermissionError("task authority changed during cancellation")
+                self._event_locked(event_type,{"status":status},task_id)
+                self.db.execute("COMMIT");begun=False
+                return self.get_task(task_id)
+            except Exception:
+                if begun:
+                    try:self.db.execute("ROLLBACK")
+                    except Exception:pass
+                raise
+
     def _live_cross_task_conflicts_locked(self,task_id,repository,base_sha,worktree,scope,now):
         worktree_id=_physical_worktree_identity(worktree);repository_id=_repository_identity(repository);base_id=_git_object_id(base_sha)
         rows=self.db.execute("""SELECT wl.task_id,wl.worktree_path,t.repository,t.base_sha,t.allowed_paths_json
@@ -212,6 +248,8 @@ class ControlStore:
                 task_row=self.db.execute("SELECT * FROM tasks WHERE task_id=?",(task_id,)).fetchone()
                 if not task_row: raise KeyError("task not found")
                 task=dict(task_row);scope=_scope_authorities(task["allowed_paths_json"])
+                if task.get("cancel_requested_at") is not None:
+                    raise PermissionError("task authority revoked: cancellation requested")
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone()
                 next_epoch=(int(row["owner_epoch"])+1) if row else 1
                 if row and row["released_at"] is None and float(row["expires_at"])>now: raise RuntimeError("workspace lease is already active")
@@ -245,8 +283,10 @@ class ControlStore:
 
     def assert_writer(self,task_id,run_id,owner_epoch,expected_head=None):
         with self._lock:
-            row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL",(task_id,run_id,int(owner_epoch))).fetchone()
-            if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
+            row=self.db.execute("""SELECT wl.* FROM workspace_leases wl JOIN tasks t ON t.task_id=wl.task_id
+              WHERE wl.task_id=? AND wl.owner_run_id=? AND wl.owner_epoch=? AND wl.released_at IS NULL
+              AND t.cancel_requested_at IS NULL""",(task_id,run_id,int(owner_epoch))).fetchone()
+            if not row: raise PermissionError("writer authority lost: lease/epoch/cancellation mismatch")
             if float(row["expires_at"])<=time.time(): raise PermissionError("writer authority lost: lease expired")
             if expected_head and row["current_head"]!=expected_head: raise PermissionError("writer authority lost: expected head mismatch")
             return dict(row)
@@ -257,8 +297,10 @@ class ControlStore:
             begun=False
             try:
                 self.db.execute("BEGIN IMMEDIATE");begun=True;now=time.time()
-                row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL",(task_id,run_id,int(owner_epoch))).fetchone()
-                if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
+                row=self.db.execute("""SELECT wl.* FROM workspace_leases wl JOIN tasks t ON t.task_id=wl.task_id
+                  WHERE wl.task_id=? AND wl.owner_run_id=? AND wl.owner_epoch=? AND wl.released_at IS NULL
+                  AND t.cancel_requested_at IS NULL""",(task_id,run_id,int(owner_epoch))).fetchone()
+                if not row: raise PermissionError("writer authority lost: lease/epoch/cancellation mismatch")
                 if float(row["expires_at"])<=now: raise PermissionError("writer authority lost: lease expired")
                 old_head=str(row["current_head"])
                 if expected_head is not None and old_head!=str(expected_head): raise PermissionError("writer authority lost: expected head mismatch")
