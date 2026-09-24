@@ -185,7 +185,7 @@ def _check_package_semantics(root: Path) -> None:
         if raw.startswith(b"\xef\xbb\xbf"):
             raise PackageVerificationError("CMD_UTF8_BOM_DENIED:" + name)
         text = raw.decode("utf-8")
-        if 'if "%ROOT:~-1%"=="\\\" set "ROOT=%ROOT:~0,-1%"' not in text:
+        if 'if "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"' not in text:
             raise PackageVerificationError("CMD_ROOT_NORMALIZATION_MISSING:" + name)
 
     start = (root / "Start-ForgeBoss.ps1").read_text(encoding="utf-8-sig")
