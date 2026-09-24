@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Output)
+param([string]$Output)
 $ErrorActionPreference='Stop'
 function Sha([string]$p){(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
 function FirstExisting([string[]]$items){foreach($p in $items){if($p -and (Test-Path -LiteralPath $p -PathType Leaf)){return (Resolve-Path -LiteralPath $p).Path}};return $null}
@@ -35,6 +35,9 @@ $payload=[ordered]@{
  docker=@{path=$docker;sha256=(Sha $docker);size=(Get-Item $docker).Length}
  python=@{path=$python;sha256=(Sha $python);size=(Get-Item $python).Length}
 }
-$dir=Split-Path -Parent $Output;if($dir){New-Item -ItemType Directory -Force -Path $dir|Out-Null}
-$payload|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $Output -Encoding UTF8
-$payload|ConvertTo-Json -Depth 5 -Compress
+$json=$payload|ConvertTo-Json -Depth 5 -Compress
+if($Output){
+  $dir=Split-Path -Parent $Output;if($dir){New-Item -ItemType Directory -Force -Path $dir|Out-Null}
+  $json|Set-Content -LiteralPath $Output -Encoding UTF8
+}
+$json
