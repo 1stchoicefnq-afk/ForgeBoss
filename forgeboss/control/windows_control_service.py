@@ -10,7 +10,7 @@ from typing import Mapping
 
 from forgeboss.control.windows_state_activation import (
     ActiveStateError,
-    load_verified_active_state,
+    load_optional_verified_active_state,
 )
 
 from forgeboss.control.windows_service_boundary import (
@@ -270,7 +270,7 @@ def build_service_class():
             sid = load_allowed_client_sid()
             try:
                 private_root = default_private_root()
-                active_state = load_verified_active_state(
+                active_state = load_optional_verified_active_state(
                     private_root=private_root,
                     desktop_sid=sid,
                 )
@@ -278,11 +278,16 @@ def build_service_class():
                 raise WindowsControlServiceError(
                     "service active-state verification failed"
                 ) from ex
-            servicemanager.LogInfoMsg(
-                f"{SERVICE_NAME} active-state verified "
-                f"schema={active_state.schema_version} "
-                f"manifest={active_state.migration_manifest_sha256[:16]}"
-            )
+            if active_state is None:
+                servicemanager.LogInfoMsg(
+                    f"{SERVICE_NAME} bootstrap mode: no active-state record"
+                )
+            else:
+                servicemanager.LogInfoMsg(
+                    f"{SERVICE_NAME} active-state verified "
+                    f"schema={active_state.schema_version} "
+                    f"manifest={active_state.migration_manifest_sha256[:16]}"
+                )
             servicemanager.LogInfoMsg(
                 f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
             )
