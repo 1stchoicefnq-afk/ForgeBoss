@@ -28,16 +28,20 @@ def main() -> int:
             print("FORGEBOSS SAFE STOP: governed runner identity mismatch.",file=sys.stderr);return 13
         if not control_envelope:
             print("FORGEBOSS SAFE STOP: governed control envelope missing.",file=sys.stderr);return 13
-        v=subprocess.run(
-            [sys.executable,str(guard),"paid-start","--lease",lease,"--token",lease_token,
-             "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
-             "--control-envelope",control_envelope,"--budget",str(budget)],
-            capture_output=True,text=True
-        )
+        try:
+            root=Path(__file__).resolve().parents[2]
+            if str(root) not in sys.path:sys.path.insert(0,str(root))
+            from forgeboss.security.executor_guard import paid_start_authority
+            with paid_start_authority(
+                lease,lease_token,sys.argv[1],workspace,"mini-swe",control_envelope,budget
+            ):
+                pass
+        except Exception as ex:
+            print("FORGEBOSS SAFE STOP: governed paid-start denied: "+str(ex),file=sys.stderr);return 13
     else:
         v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
-    if v.returncode:
-        print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
+        if v.returncode:
+            print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
 
     # Do not leave control authority/token material in the worker's inherited environment.
     os.environ.pop("FORGEBOSS_CONTROL_ENVELOPE",None)
