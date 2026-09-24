@@ -664,6 +664,8 @@ class Api:
         s["forgebossd"]=forgebossd_health()
         s["project_profiles"]=project_profiles_snapshot()
         s["selected_project"]=load_selected_project()
+        s["authority"]=_authority_snapshot()
+        s["product_projects"]=self.list_product_projects().get("projects",[])
         with self._self_build_lock:
             sessions=list(self._self_build_sessions.values())
             if sessions:
@@ -681,6 +683,119 @@ class Api:
         return {"ok":True,"settings":st}
     def save_settings(self,x):
         return {"ok":True,"settings":save_settings_file(x)}
+    def list_product_projects(self):
+        PRODUCT_PROJECT_ROOT.mkdir(parents=True,exist_ok=True)
+        rows=[]
+        for root in sorted(PRODUCT_PROJECT_ROOT.iterdir(),key=lambda p:p.stat().st_mtime,reverse=True):
+            if not root.is_dir():continue
+            meta=safe_json(root/"project.json")
+            if not meta:continue
+            rows.append({
+                "project_id":meta.get("project_id") or root.name,
+                "name":meta.get("name") or root.name,
+                "idea":meta.get("idea") or "",
+                "bible_complete":bool(meta.get("bible_complete")),
+                "open_questions":int(meta.get("open_questions") or 0),
+                "created_at":meta.get("created_at"),
+                "repository":meta.get("repository"),
+            })
+        return {"ok":True,"projects":rows}
+
+    def create_product_project(self,data):
+        try:
+            data=dict(data or {})
+            name=str(data.get("name") or "").strip()
+            idea=str(data.get("idea") or "").strip()
+            if not name or not idea:return {"ok":False,"message":"Project name and idea are required."}
+            project_id=_safe_slug(name)
+            root=_product_project(project_id)
+            if root.exists():return {"ok":False,"message":"A project with that name already exists."}
+            root.mkdir(parents=True)
+            who=str(data.get("who") or "").strip()
+            outcome=str(data.get("outcome") or "").strip()
+            limits=str(data.get("limits") or "").strip()
+            missing=[label for label,value in (("Who is this for?",who),("What outcome must it achieve?",outcome),("What limits/rules must it obey?",limits)) if not value]
+            docs={
+                "START_HERE.md":f"# {name}\n\n## Idea\n{idea}\n",
+                "PROJECT_IDEA.md":f"# Project Idea\n\n{idea}\n",
+                "REQUIREMENTS.md":f"# Requirements\n\n## User\n{who or 'OPEN'}\n\n## Outcome\n{outcome or 'OPEN'}\n\n## Limits\n{limits or 'OPEN'}\n",
+                "ARCHITECTURE.md":"# Architecture\n\nStatus: NOT YET DERIVED\n",
+                "WORKFLOW.md":"# Workflow\n\nPLAN → BUILD → TEST → HOSTILE REVIEW → REPAIR → PROVE\n",
+                "SAFETY.md":"# Safety\n\nRisky, destructive, credential, publish, merge and deploy actions require explicit authority.\n",
+                "REVIEW_STANDARD.md":"# Review Standard\n\nTreat green tests as provisional. Reproduce claims, attack bypasses and inspect shadow paths.\n",
+                "RULES.md":"# Rules\n\n1. Fail closed.\n2. Keep evidence.\n3. Separate builder and reviewer authority.\n4. Never hide unresolved blockers.\n",
+                "TEST_PLAN.md":"# Test Plan\n\nStatus: NOT YET DERIVED\n",
+                "MEMORY.md":"# Project Memory\n\nAuthoritative decisions and accepted lessons belong here.\n",
+                "EVIDENCE.md":"# Evidence\n\nNo proof recorded yet.\n",
+            }
+            for rel,text in docs.items():_atomic_text(root/rel,text)
+            if missing:
+                _atomic_text(root/"OPEN_QUESTIONS.md","# Open Questions\n\n"+"\n".join(f"- {x}" for x in missing)+"\n")
+            meta={
+                "schema":1,"project_id":project_id,"name":name,"idea":idea,
+                "who":who,"outcome":outcome,"limits":limits,
+                "bible_complete":not missing,"open_questions":len(missing),
+                "created_at":time.time(),"repository":None,
+            }
+            _atomic_text(root/"project.json",json.dumps(meta,sort_keys=True,indent=2)+"\n")
+            fb.log(f"PRODUCT PROJECT CREATED id={project_id} bible={'COMPLETE' if not missing else 'OPEN_QUESTIONS'}")
+            return {"ok":True,"project":meta,"files":sorted(docs)+(["OPEN_QUESTIONS.md"] if missing else [])}
+        except Exception as ex:return {"ok":False,"message":str(ex)}
+
+    def get_product_bible(self,project_id):
+        try:
+            root=_product_project(project_id)
+            if not root.is_dir():return {"ok":False,"message":"Project not found."}
+            files={}
+            for p in sorted(root.glob("*.md")):
+                files[p.name]=p.read_text(encoding="utf-8")
+            return {"ok":True,"project":safe_json(root/"project.json"),"files":files}
+        except Exception as ex:return {"ok":False,"message":str(ex)}
+
+    def register_project_repository(self,project_id,url):
+        try:
+            parsed=_validate_repo_url(url)
+            root=_product_project(project_id)
+            meta=safe_json(root/"project.json")
+            if not meta:return {"ok":False,"message":"Project not found."}
+            known={"github.com":"GitHub","gitlab.com":"GitLab","bitbucket.org":"Bitbucket","dev.azure.com":"Azure DevOps","ssh.dev.azure.com":"Azure DevOps"}
+            meta["repository"]={**parsed,"provider":known.get(parsed["host"],"Generic Git"),"status":"URL_VALIDATED_NOT_CONNECTED"}
+            _atomic_text(root/"project.json",json.dumps(meta,sort_keys=True,indent=2)+"\n")
+            return {"ok":True,"repository":meta["repository"]}
+        except Exception as ex:return {"ok":False,"message":str(ex)}
+
+    def add_project_chat(self,project_id,role,text):
+        try:
+            role=str(role or "").strip().lower()
+            if role not in {"owner","forgeboss"}:return {"ok":False,"message":"Chat role is invalid."}
+            body=str(text or "").strip()
+            if not body:return {"ok":False,"message":"Message is empty."}
+            root=_product_project(project_id)
+            if not root.is_dir():return {"ok":False,"message":"Project not found."}
+            path=CHAT_ROOT/(_safe_slug(project_id)+".jsonl");path.parent.mkdir(parents=True,exist_ok=True)
+            row={"ts":time.time(),"role":role,"text":body}
+            with path.open("a",encoding="utf-8",newline="\n") as fh:
+                fh.write(json.dumps(row,ensure_ascii=False,separators=(",",":"))+"\n");fh.flush();os.fsync(fh.fileno())
+            return {"ok":True,"message":row}
+        except Exception as ex:return {"ok":False,"message":str(ex)}
+
+    def get_project_chat(self,project_id):
+        try:
+            path=CHAT_ROOT/(_safe_slug(project_id)+".jsonl")
+            rows=[]
+            if path.exists():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:rows.append(json.loads(line))
+                    except Exception:pass
+            return {"ok":True,"messages":rows[-200:]}
+        except Exception as ex:return {"ok":False,"message":str(ex)}
+
+    def vault_status(self):
+        return {
+            "ok":True,"enabled":False,"status":"PROTECTED_BROKER_REQUIRED",
+            "message":"Forge Vault is visible but credential storage is disabled until the protected secret broker can prove lease-only use without exposing raw provider secrets."
+        }
+
     def get_event_details(self,key):
         """Read-only technical drill-down for a friendly activity event."""
         chunks=[]
