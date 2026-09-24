@@ -237,7 +237,6 @@ def build_stage_argv(
             "-w",
             "/workspace",
             image,
-            "cp",
             "-a",
             "/source/.",
             "/workspace/",
@@ -291,7 +290,6 @@ def build_extract_argv(
             "-w",
             "/workspace",
             image,
-            "cp",
             "-a",
             "/workspace/.",
             "/result/",
@@ -568,7 +566,9 @@ def run_governed_sandbox(
                     )
             except Exception as ex:
                 cleanup_errors.append(f"volume cleanup: {ex}")
-        if cleanup_errors and primary_error is None:
-            raise GovernedSandboxError(
-                "sandbox cleanup failed: " + "; ".join(cleanup_errors)
-            )
+        if cleanup_errors:
+            detail = "sandbox cleanup failed: " + "; ".join(cleanup_errors)
+            if primary_error is None:
+                raise GovernedSandboxError(detail)
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note(detail)
