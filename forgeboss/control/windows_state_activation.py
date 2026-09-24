@@ -657,3 +657,29 @@ def load_verified_active_state(
         service_sid=verified.service_sid,
         activated_at=float(record["activatedAt"]),
     )
+
+
+def load_optional_verified_active_state(
+    *,
+    private_root: str | Path,
+    desktop_sid: str,
+) -> ActiveState | None:
+    """Load active state when present, while keeping pre-activation R0 bootstrap-safe.
+
+    A genuinely absent record returns None. Any present, linklike, malformed,
+    stale or authority-mismatched record remains a hard failure.
+    """
+    _verify_windows_authority(
+        private_root,
+        desktop_sid=desktop_sid,
+    )
+    private = _real_directory(private_root, "service-private root")
+    active_path = private / ACTIVE_STATE_FILE
+    if not active_path.exists():
+        if _linklike_or_reparse(active_path):
+            raise ActiveStateError("active-state path is linklike/reparse")
+        return None
+    return load_verified_active_state(
+        private_root=private,
+        desktop_sid=desktop_sid,
+    )
