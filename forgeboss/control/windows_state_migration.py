@@ -12,8 +12,11 @@ import time
 from types import MappingProxyType
 from typing import Mapping
 
-from forgeboss.control.windows_service_boundary import current_process_sid
-from forgeboss.control.windows_service_sid import resolve_service_sid
+from forgeboss.control.windows_service_sid import (
+    ServiceSidConfigError,
+    assert_service_sid_in_current_token,
+    resolve_service_sid,
+)
 from forgeboss.control.windows_service_state import (
     ServicePrivateStateError,
     create_private_root_atomic,
@@ -274,11 +277,12 @@ def copy_verified_state(
     except ServicePrivateStateError as ex:
         raise StateMigrationError(str(ex)) from ex
 
-    current_sid = current_process_sid().upper()
-    if current_sid != service_sid.upper():
+    try:
+        assert_service_sid_in_current_token(service_sid)
+    except ServiceSidConfigError as ex:
         raise StateMigrationError(
-            "state migration must run under the ForgeBossControl service SID"
-        )
+            "state migration must run in a token containing the ForgeBossControl service SID"
+        ) from ex
 
     source_before = inspect_source_state(source_root)
     source_root_path = Path(source_before.source_root)
