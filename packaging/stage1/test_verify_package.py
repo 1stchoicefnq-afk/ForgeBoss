@@ -20,6 +20,14 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
+        baseline = {
+            "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\\\" set "ROOT=%ROOT:~0,-1%"\r\n',
+            "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\\\" set "ROOT=%ROOT:~0,-1%"\r\n',
+            "Start-ForgeBoss.ps1": b"$authorityHost='x'\n",
+            "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root)\n",
+        }
+        baseline.update(files)
+        files = baseline
         for rel, data in files.items():
             path = root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +51,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         })
         out = verify_package(root)
         self.assertTrue(out["ok"])
-        self.assertEqual(out["filesVerified"], 2)
+        self.assertGreaterEqual(out["filesVerified"], 5)
 
     def test_every_manifest_file_hash_is_enforced(self):
         root = self.make_pack({
@@ -105,6 +113,45 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         with self.assertRaises(PackageVerificationError) as cm:
             verify_package(root)
         self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED", str(cm.exception))
+
+    def test_indirect_subprocess_module_alias_monkeypatch_detected(self):
+        root = self.make_pack({
+            "UI/x.py": b"import subprocess\n_m=subprocess\n_n=_m\n_n.Popen=object\n"
+        })
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED", str(cm.exception))
+        self.assertIn("subprocess.Popen", str(cm.exception))
+
+    def test_indirect_os_module_alias_setattr_detected(self):
+        root = self.make_pack({
+            "UI/x.py": b"import os\n_m=os\nsetattr(_m, 'mkdir', object)\n"
+        })
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED", str(cm.exception))
+        self.assertIn("os.mkdir", str(cm.exception))
+
+    def test_reserved_powershell_host_assignment_rejected(self):
+        root = self.make_pack({"Start-ForgeBoss.ps1": b"$host='bad'\n"})
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertEqual(str(cm.exception), "POWERSHELL_RESERVED_HOST_ASSIGNMENT")
+
+    def test_hardcoded_authority_root_version_rejected(self):
+        root = self.make_pack({
+            "Authority/Prepare-MachineAuthorityRoot.ps1":
+                b"$Expected='C:\\\\ForgeBossAuthorityStage1-v27'\n"
+        })
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertIn("HARDCODED_AUTHORITY_ROOT_VERSION", str(cm.exception))
+
+    def test_cmd_trailing_root_normalization_required(self):
+        root = self.make_pack({"VERIFY-FORGEBOSS.cmd": b"@echo off\r\nset \"ROOT=%~dp0\"\r\n"})
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertIn("CMD_ROOT_NORMALIZATION_MISSING", str(cm.exception))
 
     def test_symbol_name_alone_does_not_fail(self):
         root = self.make_pack({
