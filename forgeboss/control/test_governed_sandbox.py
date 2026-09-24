@@ -125,12 +125,13 @@ class GovernedSandboxTests(unittest.TestCase):
         destination = self.root / "small-sanitized"
         destination.mkdir()
         with self.assertRaisesRegex(GovernedSandboxError, "byte limit"):
-            create_sanitized_source(self.source, destination, max_bytes=0, max_files=10)
+            create_sanitized_source(self.source, destination, max_bytes=1, max_files=10)
 
+        (self.source / "b.txt").write_text("y", encoding="utf-8")
         destination2 = self.root / "small-sanitized-2"
         destination2.mkdir()
         with self.assertRaisesRegex(GovernedSandboxError, "file-count"):
-            create_sanitized_source(self.source, destination2, max_bytes=1000, max_files=0)
+            create_sanitized_source(self.source, destination2, max_bytes=1000, max_files=1)
 
     def test_sanitized_source_rejects_hardlinks(self):
         first = self.source / "hard-a.txt"
