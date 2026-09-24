@@ -38,6 +38,9 @@ class V28TemplateSecurityTests(unittest.TestCase):
         self.assertIn("receiptOperation",diag)
         self.assertIn("CURRENT_REQUIRED",proof)
         self.assertIn("issue_stage1_",proof)
+        self.assertIn('"authorityApi":"self_build_runtime_receipts_v1"',text("Authority/generate_authority_material.py"))
+        self.assertIn("AUTHORITY_API_CONFIG_MISMATCH",text("Authority/authority_user_host.py"))
+        self.assertIn("AUTHORITY_API_CONFIG_MISMATCH",diag)
 
     def test_installed_state_rebinds_engine_env_before_gate(self):
         for rel in ("Install-Stage1.ps1","Start-ForgeBoss.ps1","Verify-Stage1.ps1"):
