@@ -326,6 +326,62 @@ def create_sanitized_source(
     return total_files, total_bytes
 
 
+def _manifest_regular_file(path: Path, relative: str) -> ManifestEntry:
+    try:
+        before = os.lstat(path)
+    except OSError as ex:
+        raise GovernedSandboxError(f"manifest file identity unreadable: {relative}") from ex
+    if not statmod.S_ISREG(before.st_mode):
+        raise GovernedSandboxError(f"manifest contains non-regular file: {relative}")
+    if int(getattr(before, "st_nlink", 1)) != 1:
+        raise GovernedSandboxError(f"manifest contains hardlinked file: {relative}")
+    if os.name == "nt" and int(getattr(before, "st_file_attributes", 0)) & 0x400:
+        raise GovernedSandboxError(f"manifest contains reparse-point file: {relative}")
+
+    flags = os.O_RDONLY
+    flags |= int(getattr(os, "O_BINARY", 0))
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(path, flags)
+    except OSError as ex:
+        raise GovernedSandboxError(f"manifest file could not be opened safely: {relative}") from ex
+    try:
+        current = os.fstat(fd)
+        if (
+            current.st_dev != before.st_dev
+            or current.st_ino != before.st_ino
+            or current.st_size != before.st_size
+        ):
+            raise GovernedSandboxError(f"manifest file changed during safe-open: {relative}")
+        if not statmod.S_ISREG(current.st_mode):
+            raise GovernedSandboxError(f"manifest file became non-regular: {relative}")
+        if int(getattr(current, "st_nlink", 1)) != 1:
+            raise GovernedSandboxError(f"manifest file became hardlinked: {relative}")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            digest.update(chunk)
+        after = os.fstat(fd)
+        if (
+            after.st_dev != current.st_dev
+            or after.st_ino != current.st_ino
+            or after.st_size != current.st_size
+            or total != int(current.st_size)
+        ):
+            raise GovernedSandboxError(f"manifest file changed while hashing: {relative}")
+        return ManifestEntry(
+            path=relative,
+            sha256=digest.hexdigest(),
+            size=total,
+        )
+    finally:
+        os.close(fd)
+
+
 def manifest_tree(
     root: Path,
     *,
@@ -335,17 +391,22 @@ def manifest_tree(
     _assert_result_tree_safe(root, max_bytes=max_bytes, max_files=max_files)
     root = root.resolve(strict=True)
     entries = []
+    total_bytes = 0
     for path in root.rglob("*"):
-        if not path.is_file():
+        try:
+            st = os.lstat(path)
+        except OSError as ex:
+            raise GovernedSandboxError("manifest path identity cannot be inspected") from ex
+        if statmod.S_ISDIR(st.st_mode):
             continue
         rel = path.relative_to(root).as_posix()
-        entries.append(
-            ManifestEntry(
-                path=rel,
-                sha256=_sha256_file(path),
-                size=int(path.stat().st_size),
-            )
-        )
+        entry = _manifest_regular_file(path, rel)
+        entries.append(entry)
+        total_bytes += entry.size
+        if len(entries) > max_files:
+            raise GovernedSandboxError("manifest file-count limit exceeded")
+        if total_bytes > max_bytes:
+            raise GovernedSandboxError("manifest byte limit exceeded")
     entries.sort(key=lambda item: (item.path.casefold(), item.path))
     return tuple(entries)
 
