@@ -1,0 +1,472 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+import hashlib
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import subprocess
+import threading
+import time
+from typing import Callable, Sequence
+
+from forgeboss.security.executor_guard import (
+    SecurityError,
+    paid_start_authority,
+)
+
+
+class GovernedSandboxError(RuntimeError):
+    """Raised when the host-side governed sandbox cannot fail safely."""
+
+
+_IMAGE_DIGEST = re.compile(r"^[A-Za-z0-9._/:@+-]+@sha256:[0-9a-f]{64}$")
+_VOLUME_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
+_DEFAULT_MAX_OUTPUT = 64 * 1024
+_TRUNCATION = "\n[...TRUNCATED...]\n"
+
+
+@dataclass(frozen=True)
+class DockerIdentity:
+    path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    argv: tuple[str, ...]
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class SandboxResult:
+    docker: DockerIdentity
+    image: str
+    volume: str
+    worker: ProcessResult
+    result_dir: str
+    network_mode: str = "none"
+    authority_consumed: bool = True
+
+
+class _BoundedText:
+    def __init__(self, limit: int):
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < len(_TRUNCATION) + 32:
+            raise GovernedSandboxError("output limit is invalid")
+        self.limit = limit
+        kept = limit - len(_TRUNCATION)
+        self.head_limit = (kept + 1) // 2
+        self.tail_limit = kept // 2
+        self.head = ""
+        self.tail = ""
+        self.truncated = False
+        self.lock = threading.Lock()
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        with self.lock:
+            if not self.truncated:
+                combined = self.head + text
+                if len(combined) <= self.limit:
+                    self.head = combined
+                    return
+                self.truncated = True
+                self.head = combined[: self.head_limit]
+                self.tail = combined[-self.tail_limit :] if self.tail_limit else ""
+                return
+            if self.tail_limit:
+                self.tail = (self.tail + text)[-self.tail_limit :]
+
+    def value(self) -> str:
+        with self.lock:
+            if self.truncated:
+                return self.head + _TRUNCATION + self.tail
+            return self.head
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_docker_identity(explicit_path: str | Path | None = None) -> DockerIdentity:
+    raw = str(explicit_path) if explicit_path is not None else shutil.which(
+        "docker.exe" if os.name == "nt" else "docker"
+    )
+    if not raw:
+        raise GovernedSandboxError("Docker CLI is unavailable")
+    original = Path(raw)
+    try:
+        if original.is_symlink():
+            raise GovernedSandboxError("Docker CLI must not be a symlink")
+        if hasattr(original, "is_junction") and original.is_junction():
+            raise GovernedSandboxError("Docker CLI must not be a junction")
+        resolved = original.resolve(strict=True)
+    except GovernedSandboxError:
+        raise
+    except OSError as ex:
+        raise GovernedSandboxError("Docker CLI identity cannot be resolved") from ex
+    if not resolved.is_file():
+        raise GovernedSandboxError("Docker CLI must be a regular file")
+    if os.name != "nt" and not os.access(resolved, os.X_OK):
+        raise GovernedSandboxError("Docker CLI is not executable")
+    before = _sha256_file(resolved)
+    after = _sha256_file(resolved)
+    if before != after:
+        raise GovernedSandboxError("Docker CLI changed while hashing")
+    return DockerIdentity(str(resolved), before)
+
+
+def _validate_image(image: object) -> str:
+    if not isinstance(image, str):
+        raise GovernedSandboxError("image must be a digest-pinned string")
+    clean = image.strip()
+    if clean != image or not _IMAGE_DIGEST.fullmatch(clean):
+        raise GovernedSandboxError("image must be pinned as name@sha256:<64 lowercase hex>")
+    return clean
+
+
+def _absolute_dir(path: str | Path, label: str, *, must_exist: bool = True) -> Path:
+    p = Path(path)
+    if not p.is_absolute():
+        raise GovernedSandboxError(f"{label} must be absolute")
+    try:
+        resolved = p.resolve(strict=must_exist)
+    except OSError as ex:
+        raise GovernedSandboxError(f"{label} cannot be resolved") from ex
+    if must_exist and not resolved.is_dir():
+        raise GovernedSandboxError(f"{label} must be a directory")
+    return resolved
+
+
+def _mount_value(path: Path) -> str:
+    value = str(path)
+    if "," in value or "\x00" in value or "\r" in value or "\n" in value:
+        raise GovernedSandboxError("Docker mount path contains unsupported characters")
+    return value
+
+
+def _worker_command(values: object) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        raise GovernedSandboxError("worker command must be an argv array")
+    out = []
+    for value in values:
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise GovernedSandboxError("worker command contains invalid argv")
+        out.append(value)
+    if not out:
+        raise GovernedSandboxError("worker command must not be empty")
+    return tuple(out)
+
+
+def _docker_base() -> list[str]:
+    return [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--memory",
+        "1g",
+        "--cpus",
+        "2",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m",
+    ]
+
+
+def build_stage_argv(docker: DockerIdentity, image: str, volume: str, source: Path) -> tuple[str, ...]:
+    if not _VOLUME_NAME.fullmatch(volume):
+        raise GovernedSandboxError("invalid Docker volume name")
+    return tuple(
+        [docker.path]
+        + _docker_base()
+        + [
+            "--mount",
+            f"type=bind,src={_mount_value(source)},dst=/source,readonly",
+            "--mount",
+            f"type=volume,src={volume},dst=/workspace",
+            "-w",
+            "/workspace",
+            image,
+            "cp",
+            "-a",
+            "/source/.",
+            "/workspace/",
+        ]
+    )
+
+
+def build_worker_argv(
+    docker: DockerIdentity,
+    image: str,
+    volume: str,
+    command: Sequence[str],
+) -> tuple[str, ...]:
+    if not _VOLUME_NAME.fullmatch(volume):
+        raise GovernedSandboxError("invalid Docker volume name")
+    cmd = _worker_command(command)
+    return tuple(
+        [docker.path]
+        + _docker_base()
+        + [
+            "--mount",
+            f"type=volume,src={volume},dst=/workspace",
+            "-w",
+            "/workspace",
+            image,
+        ]
+        + list(cmd)
+    )
+
+
+def build_extract_argv(
+    docker: DockerIdentity,
+    image: str,
+    volume: str,
+    result_dir: Path,
+) -> tuple[str, ...]:
+    if not _VOLUME_NAME.fullmatch(volume):
+        raise GovernedSandboxError("invalid Docker volume name")
+    return tuple(
+        [docker.path]
+        + _docker_base()
+        + [
+            "--mount",
+            f"type=volume,src={volume},dst=/workspace,readonly",
+            "--mount",
+            f"type=bind,src={_mount_value(result_dir)},dst=/result",
+            "-w",
+            "/workspace",
+            image,
+            "cp",
+            "-a",
+            "/workspace/.",
+            "/result/",
+        ]
+    )
+
+
+def _docker_cli_env() -> dict[str, str]:
+    allowed = (
+        "SYSTEMROOT",
+        "WINDIR",
+        "HOME",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+    )
+    return {key: os.environ[key] for key in allowed if os.environ.get(key)}
+
+
+def run_process_bounded(
+    argv: Sequence[str],
+    *,
+    timeout_seconds: int,
+    max_output: int = _DEFAULT_MAX_OUTPUT,
+) -> ProcessResult:
+    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool):
+        raise GovernedSandboxError("timeout_seconds must be an integer")
+    if timeout_seconds <= 0 or timeout_seconds > 3600:
+        raise GovernedSandboxError("timeout_seconds must be between 1 and 3600")
+    if not argv:
+        raise GovernedSandboxError("argv must not be empty")
+    out = _BoundedText(max_output)
+    err = _BoundedText(max_output)
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            env=_docker_cli_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError as ex:
+        raise GovernedSandboxError(
+            f"Docker process could not start: {type(ex).__name__}: {ex}"
+        ) from ex
+
+    def pump(stream, sink: _BoundedText):
+        try:
+            for chunk in iter(lambda: stream.read(4096), ""):
+                if not chunk:
+                    break
+                sink.append(chunk)
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, out), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, err), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        rc = proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as ex:
+        try:
+            proc.kill()
+        finally:
+            proc.wait(timeout=10)
+        raise GovernedSandboxError(
+            f"Docker process timed out after {timeout_seconds}s"
+        ) from ex
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+
+    return ProcessResult(
+        argv=tuple(str(x) for x in argv),
+        returncode=int(rc),
+        stdout=out.value(),
+        stderr=err.value(),
+        duration_seconds=max(0.0, time.monotonic() - started),
+    )
+
+
+def _require_ok(result: ProcessResult, label: str) -> ProcessResult:
+    if result.returncode != 0:
+        raise GovernedSandboxError(
+            f"{label} failed with exit {result.returncode}: {result.stderr[-4000:]}"
+        )
+    return result
+
+
+def _assert_result_tree_safe(root: Path) -> None:
+    root = root.resolve(strict=True)
+    for path in root.rglob("*"):
+        try:
+            if path.is_symlink():
+                raise GovernedSandboxError(
+                    f"sandbox result contains symlink: {path.relative_to(root)}"
+                )
+            if hasattr(path, "is_junction") and path.is_junction():
+                raise GovernedSandboxError(
+                    f"sandbox result contains junction: {path.relative_to(root)}"
+                )
+        except OSError as ex:
+            raise GovernedSandboxError("sandbox result identity cannot be inspected") from ex
+
+
+def run_governed_sandbox(
+    *,
+    source_workspace: str | Path,
+    result_dir: str | Path,
+    image: str,
+    worker_command: Sequence[str],
+    lease_path: str | Path,
+    lease_token: str,
+    packet_path: str | Path,
+    executor: str,
+    control_envelope: object,
+    cli_budget: object,
+    docker_path: str | Path | None = None,
+    timeout_seconds: int = 900,
+    process_runner: Callable[..., ProcessResult] = run_process_bounded,
+) -> SandboxResult:
+    """Run an already-authorized worker command inside a no-network Docker sandbox.
+
+    Authority is consumed on the trusted host. ForgeBoss source/control state is
+    never mounted into the worker container by this primitive.
+    """
+    source = _absolute_dir(source_workspace, "source_workspace")
+    result = _absolute_dir(result_dir, "result_dir")
+    if any(result.iterdir()):
+        raise GovernedSandboxError("result_dir must be empty")
+    if os.path.commonpath((str(source), str(result))) in (str(source), str(result)):
+        raise GovernedSandboxError("result_dir and source_workspace must be disjoint")
+
+    pinned_image = _validate_image(image)
+    docker = resolve_docker_identity(docker_path)
+    command = _worker_command(worker_command)
+    volume = "forgeboss_gov_" + secrets.token_hex(12)
+
+    create = (docker.path, "volume", "create", volume)
+    remove = (docker.path, "volume", "rm", "-f", volume)
+    created = False
+    worker_result: ProcessResult | None = None
+
+    try:
+        _require_ok(
+            process_runner(create, timeout_seconds=60),
+            "Docker volume create",
+        )
+        created = True
+        _require_ok(
+            process_runner(
+                build_stage_argv(docker, pinned_image, volume, source),
+                timeout_seconds=min(timeout_seconds, 300),
+            ),
+            "Docker workspace stage",
+        )
+
+        with paid_start_authority(
+            lease_path,
+            lease_token,
+            packet_path,
+            source,
+            executor,
+            control_envelope,
+            cli_budget=cli_budget,
+        ):
+            worker_result = process_runner(
+                build_worker_argv(docker, pinned_image, volume, command),
+                timeout_seconds=timeout_seconds,
+            )
+        _require_ok(worker_result, "sandbox worker")
+
+        _require_ok(
+            process_runner(
+                build_extract_argv(docker, pinned_image, volume, result),
+                timeout_seconds=min(timeout_seconds, 300),
+            ),
+            "Docker result extraction",
+        )
+        _assert_result_tree_safe(result)
+        return SandboxResult(
+            docker=docker,
+            image=pinned_image,
+            volume=volume,
+            worker=worker_result,
+            result_dir=str(result),
+        )
+    except SecurityError as ex:
+        raise GovernedSandboxError(f"host authority denied sandbox launch: {ex}") from ex
+    finally:
+        if created:
+            try:
+                process_runner(remove, timeout_seconds=60)
+            except Exception:
+                # Cleanup failure must be visible to callers; preserving the first
+                # exception is still more useful than masking it here. Production
+                # integration must record cleanup debt separately.
+                pass
