@@ -12,6 +12,6 @@ if(Test-Path -LiteralPath $Root){
 $icacls=Join-Path $env:SystemRoot 'System32\icacls.exe'
 & $icacls $Root /setowner "*$UserSid" /T /C | Out-Null
 if($LASTEXITCODE -ne 0){throw 'PROTECTED_ROOT_OWNER_FAILED'}
-& $icacls $Root /inheritance:r /grant:r "*$UserSid:(OI)(CI)(F)" "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" /T /C | Out-Null
+& $icacls $Root /inheritance:r /grant:r "*${UserSid}:(OI)(CI)(F)" "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" /T /C | Out-Null
 if($LASTEXITCODE -ne 0){throw 'PROTECTED_ROOT_ACL_FAILED'}
 Write-Host "[PASS] Protected machine authority root ready: $Root"
