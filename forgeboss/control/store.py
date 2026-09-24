@@ -215,8 +215,10 @@ class ControlStore:
                       (now,now,task_id,int(task["revision"])))
                     event_type="task.cancel_requested"
                 else:
-                    self.db.execute("COMMIT");begun=False
-                    return self.get_task(task_id)
+                    cur=self.db.execute("""UPDATE tasks SET cancel_requested_at=?,current_step='future-authority-cancelled',
+                      revision=revision+1,updated_at=? WHERE task_id=? AND revision=? AND cancel_requested_at IS NULL""",
+                      (now,now,task_id,int(task["revision"])))
+                    event_type="task.future_authority_cancelled"
                 if cur.rowcount!=1: raise PermissionError("task authority changed during cancellation")
                 self._event_locked(event_type,{"status":status},task_id)
                 self.db.execute("COMMIT");begun=False
