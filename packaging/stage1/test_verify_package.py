@@ -163,7 +163,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         })
         with self.assertRaises(PackageVerificationError) as cm:
             verify_package(root)
-        self.assertIn("PROTECTED_ROOT_IDENTITY_GUARD_MISSING", str(cm.exception))
+        self.assertIn("PROTECTED_ROOT_SHAPE_ONLY_GUARD_DENIED", str(cm.exception))
 
     def test_cmd_trailing_root_normalization_required(self):
         root = self.make_pack({"VERIFY-FORGEBOSS.cmd": b"@echo off\r\nset \"ROOT=%~dp0\"\r\n"})
