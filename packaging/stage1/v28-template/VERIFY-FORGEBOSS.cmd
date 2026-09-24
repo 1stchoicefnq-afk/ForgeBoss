@@ -1,8 +1,9 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"
+set "ROOT=%~dp0"
+if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\\Verify-Stage1.ps1" -PackageRoot "%ROOT%"
+"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\Verify-Stage1.ps1" -PackageRoot "%ROOT%"
 set "RC=%ERRORLEVEL%"
 echo.
 if "%RC%"=="0" (echo [PASS] STAGE 1 VERIFY COMPLETE) else (echo [FAIL] STAGE 1 VERIFY FAILED)
