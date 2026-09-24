@@ -72,7 +72,7 @@ if(Test-Path -LiteralPath $RuntimeRoot){Remove-Item -LiteralPath $RuntimeRoot -R
 AssertTool $t.python 'python.exe'
 & $BootstrapPython -I -m venv $RuntimeRoot
 if($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $RuntimePy -PathType Leaf)){throw 'RUNTIME_VENV_FAILED'}
-& $RuntimePy -I -m pip install --disable-pip-version-check --require-hashes --no-deps --only-binary=:all: -r (Join-Path $PackageRoot 'requirements.lock')
+& $RuntimePy -I -m pip install --disable-pip-version-check --require-hashes --no-deps -r (Join-Path $PackageRoot 'requirements.lock')
 if($LASTEXITCODE -ne 0){throw 'HASH_PINNED_RUNTIME_INSTALL_FAILED'}
 & $RuntimePy -I -c "import cryptography,litellm,webview;from minisweagent.agents.default import DefaultAgent;print('RUNTIME_IMPORT_OK')"
 if($LASTEXITCODE -ne 0){throw 'RUNTIME_IMPORT_FAILED'}
