@@ -55,6 +55,18 @@ jobs:
         if: always()
         run: python -m unittest discover -v -s forgeboss/security -p "test_*.py"
 
+      - name: Executor selftest
+        if: always()
+        run: node forgeboss/tests/selftest.js
+
+      - name: Unified security selftest
+        if: always()
+        run: python forgeboss/security/selftest.py
+
+      - name: Latest control selftest
+        if: always()
+        run: python forgeboss/control/selftest_v214.py
+
       - name: Remove test runtime state
         if: always()
         shell: bash
