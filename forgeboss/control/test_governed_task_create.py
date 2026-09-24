@@ -35,7 +35,8 @@ class GovernedTaskCreateTests(unittest.TestCase):
         fake_launch_secret = lambda root: (cls.root / "launch-secret.bin", b"l" * 32)
         runner = cls.root / "forgeboss" / "executors" / "mini_swe_runner.py"
         runner.parent.mkdir(parents=True)
-        runner.write_text("print('trusted mini-swe runner')\n", encoding="utf-8")
+        reviewed_runner = Path(__file__).resolve().parents[1] / "executors" / "mini_swe_runner.py"
+        runner.write_bytes(reviewed_runner.read_bytes())
         with (
             mock.patch.object(store_module, "ControlStore", BootstrapStore),
             mock.patch.object(envelope_module, "secret_file", fake_secret),
