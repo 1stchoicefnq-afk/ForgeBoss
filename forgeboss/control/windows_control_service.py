@@ -10,6 +10,7 @@ from typing import Mapping
 
 from forgeboss.control.windows_service_boundary import (
     MAX_MESSAGE_BYTES,
+    _require_windows_pywin32,
     PIPE_NAME,
     PROTOCOL_VERSION,
     WindowsServiceBoundaryError,
@@ -158,6 +159,10 @@ def _require_pipe_api():
             "Windows control service host is unavailable on this platform"
         )
     try:
+        _require_windows_pywin32()
+    except WindowsServiceBoundaryError as ex:
+        raise WindowsControlServiceError(str(ex)) from ex
+    try:
         import pywintypes
         import win32file
         import win32pipe
@@ -216,6 +221,10 @@ def build_service_class():
         raise WindowsControlServiceError(
             "Windows control service host is unavailable on this platform"
         )
+    try:
+        _require_windows_pywin32()
+    except WindowsServiceBoundaryError as ex:
+        raise WindowsControlServiceError(str(ex)) from ex
     try:
         import servicemanager
         import win32event
