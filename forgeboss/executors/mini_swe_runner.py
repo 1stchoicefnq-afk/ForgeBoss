@@ -91,6 +91,24 @@ def _windows_hidden_children():
     finally:
         subprocess.Popen = original
 
+def _trusted_docker_executable_from_env():
+    trusted=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_PATH")
+    expected=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_SHA256","").lower()
+    if not trusted:
+        return None
+    from forgeboss.security.executor_guard import fhash, is_linklike
+    path=Path(trusted)
+    if not path.is_absolute() or is_linklike(path):
+        raise RuntimeError("trusted Docker executable path is invalid")
+    path=path.resolve(strict=True)
+    if not path.is_file() or is_linklike(path):
+        raise RuntimeError("trusted Docker executable is not a regular file")
+    if len(expected)!=64 or any(ch not in "0123456789abcdef" for ch in expected):
+        raise RuntimeError("trusted Docker executable digest is invalid")
+    if fhash(path).lower()!=expected:
+        raise RuntimeError("trusted Docker executable identity changed")
+    return str(path)
+
 def _guard_subprocess(args:list[str]):
     engine_root=Path(__file__).resolve().parents[2]
     env=dict(os.environ)
@@ -141,7 +159,6 @@ def main() -> int:
         from minisweagent.environments.docker import DockerEnvironment
         from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
         from forgeboss.security.host_tool_identity import resolve_trusted_host_executable
-        from forgeboss.security.executor_guard import fhash, is_linklike
 
         class ForgeBossDockerEnvironment(DockerEnvironment):
             """Windows-safe, synchronous container cleanup for protected self-build."""
@@ -161,20 +178,7 @@ def main() -> int:
         mount=f"type=bind,src={workspace},dst=/workspace"
         run_id=str(packet.get("run_id") or "")
         builder_id=str(packet.get("builder_id") or "")
-        trusted_docker=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_PATH")
-        trusted_docker_sha=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_SHA256","").lower()
-        if trusted_docker:
-            docker_path=Path(trusted_docker)
-            if not docker_path.is_absolute() or is_linklike(docker_path):
-                raise RuntimeError("trusted Docker executable path is invalid")
-            docker_path=docker_path.resolve(strict=True)
-            if not docker_path.is_file() or is_linklike(docker_path):
-                raise RuntimeError("trusted Docker executable is not a regular file")
-            if len(trusted_docker_sha)!=64 or fhash(docker_path).lower()!=trusted_docker_sha:
-                raise RuntimeError("trusted Docker executable identity changed")
-            docker_executable=str(docker_path)
-        else:
-            docker_executable=resolve_trusted_host_executable("docker").path
+        docker_executable=_trusted_docker_executable_from_env() or resolve_trusted_host_executable("docker").path
         env_obj=ForgeBossDockerEnvironment(
             executable=docker_executable,
             image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
