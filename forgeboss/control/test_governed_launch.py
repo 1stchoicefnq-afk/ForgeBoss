@@ -19,7 +19,8 @@ class GovernedLaunchAuthorityTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.runner = self.root / "forgeboss" / "executors" / "mini_swe_runner.py"
         self.runner.parent.mkdir(parents=True)
-        self.runner.write_text("print('trusted')\n", encoding="utf-8")
+        reviewed_runner = Path(__file__).resolve().parents[1] / "executors" / "mini_swe_runner.py"
+        self.runner.write_bytes(reviewed_runner.read_bytes())
         self.workspace = self.root / "worktrees" / "run-1"
         self.workspace.mkdir(parents=True)
         self.secret = b"l" * 32
