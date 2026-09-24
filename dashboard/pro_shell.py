@@ -58,6 +58,7 @@ import server as fb
 from forgeboss.control.self_build_preflight import self_build_preflight,concise_blockers,self_build_session_plan
 from forgeboss.control.self_build_session_evidence import canonical_digest,evaluate_p0_session
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
+from forgeboss.protected_authority.protocol import AuthorityError
 from forgeboss.control.self_build_launcher import SelfBuildLauncher,SelfBuildLaunchError
 from forgeboss.control.process_supervisor import ProcessSupervisor
 
@@ -546,21 +547,23 @@ class Api:
                     if session_id:
                         fb.log(f"SELF-BUILD SESSION COMPLETE session={session_id} cycles={cycle_index}/{cycle_target} final={final_known_good.get('revision')}")
         except Exception as e:
+            owner_stopped=isinstance(e,AuthorityError) and e.code=="IPC_STOPPED"
             with self._self_build_lock:
                 state=self._self_build_runs.get(run_id)
                 if state:
-                    state["phase"]="SELF_BUILD_FAILED"
-                    state["error"]=str(e)
+                    state["phase"]="SAFE_STOPPED" if owner_stopped else "SELF_BUILD_FAILED"
+                    state["error"]=None if owner_stopped else str(e)
                     sid=state.get("session_id")
                     session=self._self_build_sessions.get(sid) if sid else None
                     if session:
-                        session["phase"]="FAILED"
-                        session["error"]=str(e)
+                        session["phase"]="SAFE_STOPPED" if owner_stopped else "FAILED"
+                        session["error"]=None if owner_stopped else str(e)
                         session["stop_requested"]=True
             if state and state.get("session_id"):
                 try:self._persist_self_build_session(state.get("session_id"))
                 except Exception as persist_error:fb.log(f"SELF-BUILD EVIDENCE PERSIST FAILED run={run_id}: {persist_error}")
-            fb.log(f"SELF-BUILD FAILED run={run_id}: {e}")
+            if owner_stopped:fb.log(f"SELF-BUILD SAFE STOPPED run={run_id}: protected authority request cancelled before write")
+            else:fb.log(f"SELF-BUILD FAILED run={run_id}: {e}")
 
     def _probe(self):
         if time.time()-self._last_probe < 25:return
@@ -734,9 +737,15 @@ class Api:
                     active=[x for x in self._self_build_sessions.values() if str(x.get("phase") or "") not in terminal]
                     if active:
                         return {"ok":False,"blocked":True,"phase":"SELF_BUILD_SESSION_ACTIVE","message":"A ForgeBoss self-build session is already active. Stop it safely or let it finish before starting another."}
-                client=ProtectedAuthorityClient.from_environment(os.environ,timeout=300.0)
-                launcher=self._get_self_build_launcher(client)
                 session_id="fl1s-"+uuid.uuid4().hex[:12]
+                def authority_stop_requested():
+                    with self._self_build_lock:
+                        session=self._self_build_sessions.get(session_id)
+                        return bool(session and session.get("stop_requested"))
+                client=ProtectedAuthorityClient.from_environment(
+                    os.environ,timeout=300.0,cancellation_predicate=authority_stop_requested,
+                )
+                launcher=self._get_self_build_launcher(client)
                 with self._self_build_lock:
                     self._self_build_sessions[session_id]={
                         "session_id":session_id,"client":client,"launcher":launcher,"plan":plan,
