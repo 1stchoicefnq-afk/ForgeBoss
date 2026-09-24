@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, importlib.metadata, json, os, sys, traceback, subprocess
+import hashlib, importlib.metadata, json, os, sys, threading, time, traceback, subprocess
 from pathlib import Path
 
 GOVERNED_MINISWE_VERSION="2.4.6"
@@ -25,7 +25,21 @@ def main() -> int:
     governed=os.environ.get("FORGEBOSS_GOVERNED_RUN")=="YES"
     expected_runner_hash=os.environ.get("FORGEBOSS_EXPECTED_RUNNER_SHA256","")
     control_envelope=os.environ.get("FORGEBOSS_CONTROL_ENVELOPE","")
+    cancel_path=None
     if governed:
+        root=Path(__file__).resolve().parents[2]
+        cancel_raw=os.environ.get("FORGEBOSS_CANCEL_FILE","")
+        if not cancel_raw:
+            print("FORGEBOSS SAFE STOP: governed cancellation channel missing.",file=sys.stderr);return 13
+        try:
+            cancel_path=Path(cancel_raw).resolve(strict=False)
+            cancel_root=(root/"state"/"forgebossd"/"launch-packets").resolve(strict=False)
+            if os.path.commonpath([str(cancel_root),str(cancel_path)])!=str(cancel_root):
+                raise ValueError("cancel path escapes private ForgeBoss launch state")
+        except Exception as ex:
+            print("FORGEBOSS SAFE STOP: invalid governed cancellation channel: "+str(ex),file=sys.stderr);return 13
+        if cancel_path.exists():
+            print("FORGEBOSS SAFE STOP: governed run cancelled before paid start.",file=sys.stderr);return 130
         runner_text=Path(__file__).read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n")
         actual_runner_hash=hashlib.sha256(runner_text.encode("utf-8")).hexdigest()
         if not expected_runner_hash or actual_runner_hash!=expected_runner_hash:
@@ -39,7 +53,6 @@ def main() -> int:
         if not control_envelope:
             print("FORGEBOSS SAFE STOP: governed control envelope missing.",file=sys.stderr);return 13
         try:
-            root=Path(__file__).resolve().parents[2]
             if str(root) not in sys.path:sys.path.insert(0,str(root))
             from forgeboss.security.executor_guard import paid_start_authority
             with paid_start_authority(
@@ -57,7 +70,10 @@ def main() -> int:
     os.environ.pop("FORGEBOSS_CONTROL_ENVELOPE",None)
     os.environ.pop("FORGEBOSS_EXPECTED_RUNNER_SHA256",None)
     os.environ.pop("FORGEBOSS_EXECUTOR_LEASE_TOKEN",None)
+    os.environ.pop("FORGEBOSS_CANCEL_FILE",None)
     env_obj=None
+    cancel_stop=threading.Event()
+    cancel_thread=None
     try:
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
@@ -73,6 +89,17 @@ def main() -> int:
             timeout=180,
             container_timeout="45m",
         )
+        if governed:
+            def watch_cancel():
+                while not cancel_stop.wait(.1):
+                    if cancel_path is not None and cancel_path.exists():
+                        try:env_obj.cleanup()
+                        finally:os._exit(130)
+            cancel_thread=threading.Thread(target=watch_cancel,name="forgeboss-cancel-watch",daemon=True)
+            cancel_thread.start()
+            if cancel_path is not None and cancel_path.exists():
+                try:env_obj.cleanup()
+                finally:return 130
         model=LitellmModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.
 Your response must contain exactly ONE bash command block in this format:
@@ -133,6 +160,10 @@ Required acceptance intent:
         print(result["error"],file=sys.stderr)
         return 10
     finally:
+        cancel_stop.set()
+        try:
+            if cancel_thread is not None: cancel_thread.join(timeout=.5)
+        except Exception: pass
         try:
             if env_obj is not None: env_obj.cleanup()
         except Exception: pass
