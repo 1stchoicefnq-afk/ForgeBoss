@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$PackageRoot)
 $ErrorActionPreference='Stop'
-$PackageRoot=$PackageRoot.Trim().Trim('"')\n$PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
+$PackageRoot=$PackageRoot.Trim().Trim('"')
+$PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
 $Installed=Join-Path $env:LOCALAPPDATA 'ForgeBoss\stage1-installed.json'
 function Sha([string]$p){(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
 function AssertHash([string]$path,[string]$want,[string]$label){
