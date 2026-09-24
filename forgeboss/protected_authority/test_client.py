@@ -131,10 +131,11 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
         self.assertEqual(api.create_calls,1);self.assertEqual(api.write_calls,0)
 
     def test_windows_wait_never_exceeds_remaining_deadline(self):
-        clock=self._Clock();api=self._FakePipe(clock,[(False,121,9999)])
-        with self.assertRaises(AuthorityError) as cm:self._exchange_fake(self._raw_client(timeout=0.05),api,clock)
+        clock=self._Clock();api=self._FakePipe(clock,[(False,121,70),(False,121,9999)])
+        with self.assertRaises(AuthorityError) as cm:self._exchange_fake(self._raw_client(timeout=0.11),api,clock)
         self.assertEqual(cm.exception.code,"IPC_CONNECT_FAILED")
-        self.assertTrue(api.wait_calls);self.assertLessEqual(api.wait_calls[0][1],50)
+        self.assertGreaterEqual(len(api.wait_calls),2)
+        self.assertLessEqual(api.wait_calls[1][1],21)
         self.assertEqual(api.write_calls,0)
 
     def test_windows_stop_after_wait_prevents_open_and_write(self):
