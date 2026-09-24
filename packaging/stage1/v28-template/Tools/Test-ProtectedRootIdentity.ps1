@@ -40,9 +40,13 @@ $rows += Invoke-RootCase (Join-Path ($systemDrive+'\') 'anything') 13 'PROTECTED
 $otherDrive=if($systemDrive -ieq 'C:'){'D:'}else{'C:'}
 $rows += Invoke-RootCase (Join-Path ($otherDrive+'\') ('ForgeBossAuthorityStage1-v'+$major)) 13 'PROTECTED_ROOT_IDENTITY_MISMATCH'
 
-[pscustomobject]@{
+$result=[pscustomobject]@{
   ok=$true
   expectedRoot=$expected
   systemDrive=$systemDrive
   cases=$rows
-} | ConvertTo-Json -Depth 5 -Compress
+}
+# The final validation case is intentionally a non-zero child exit. Reset the
+# process-exit channel to success only after every expected result above matched.
+& $systemPS -NoLogo -NoProfile -Command "exit 0" *> $null
+$result | ConvertTo-Json -Depth 5 -Compress
