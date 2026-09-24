@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 from .governed_launch import runner_identity
+from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 
 
 class GovernedHostLaunchError(RuntimeError):
@@ -51,6 +52,7 @@ def build_executor_packet(task: dict, current_head: str) -> dict:
 def _write_private_packet(state_dir: Path, packet: dict) -> Path:
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
+    harden_private_dir(state_dir)
     fd, raw = tempfile.mkstemp(prefix="governed-packet-", suffix=".json", dir=str(state_dir))
     path = Path(raw)
     try:
@@ -58,6 +60,7 @@ def _write_private_packet(state_dir: Path, packet: dict) -> Path:
             os.chmod(path, 0o600)
         except OSError:
             pass
+        harden_private_path(path)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump(packet, f, sort_keys=True, separators=(",", ":"))
             f.flush()
@@ -163,7 +166,13 @@ def run_governed_worker(
     packet = build_executor_packet(task, current_head)
     packet_path = _write_private_packet(Path(state_dir), packet)
     try:
-        child_env = dict(os.environ)
+        allowed_host_env = {
+            "PATH","PATHEXT","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP",
+            "USERPROFILE","HOME","APPDATA","LOCALAPPDATA","PROGRAMDATA",
+            "DOCKER_HOST","DOCKER_CONTEXT","OPENAI_API_KEY","LLM_API_KEY",
+            "FORGEBOSS_MINISWE_IMAGE",
+        }
+        child_env = {k:v for k,v in os.environ.items() if k in allowed_host_env}
         for key in SENSITIVE_CHILD_ENV:
             child_env.pop(key, None)
         child_env["FORGEBOSS_ALLOW_PAID_EXECUTOR"] = "YES"
