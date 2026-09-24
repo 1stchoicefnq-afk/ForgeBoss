@@ -69,7 +69,7 @@ class GovernedLaunchAuthorityTests(unittest.TestCase):
     def test_runner_content_change_invalidates_existing_attestation(self):
         token = self.issue()
         self.runner.write_text("print('replaced')\n", encoding="utf-8")
-        with self.assertRaisesRegex(GovernedLaunchAttestationError, "runnerSha256"):
+        with self.assertRaisesRegex(GovernedLaunchAttestationError, "reviewed SHA-256"):
             self.verify(token)
 
     def test_runtime_label_substitution_is_rejected(self):
