@@ -8,6 +8,11 @@ import threading
 from types import MappingProxyType
 from typing import Mapping
 
+from forgeboss.control.windows_state_activation import (
+    ActiveStateError,
+    load_verified_active_state,
+)
+
 from forgeboss.control.windows_service_boundary import (
     MAX_MESSAGE_BYTES,
     _require_windows_pywin32,
@@ -263,6 +268,21 @@ def build_service_class():
 
         def SvcDoRun(self):
             sid = load_allowed_client_sid()
+            try:
+                private_root = default_private_root()
+                active_state = load_verified_active_state(
+                    private_root=private_root,
+                    desktop_sid=sid,
+                )
+            except (ActiveStateError, ServicePrivateStateError) as ex:
+                raise WindowsControlServiceError(
+                    "service active-state verification failed"
+                ) from ex
+            servicemanager.LogInfoMsg(
+                f"{SERVICE_NAME} active-state verified "
+                f"schema={active_state.schema_version} "
+                f"manifest={active_state.migration_manifest_sha256[:16]}"
+            )
             servicemanager.LogInfoMsg(
                 f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
             )
