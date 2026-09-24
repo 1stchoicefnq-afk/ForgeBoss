@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$PackageRoot)
 $ErrorActionPreference='Stop'
-$PackageRoot=$PackageRoot.Trim().Trim('"')\n$PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
+$PackageRoot=$PackageRoot.Trim().Trim('"')
+$PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
 Write-Host '============================================================'
 Write-Host 'FORGEBOSS STAGE 1 - V28 SELF-VERIFYING TURN-ON'
 Write-Host '============================================================'
