@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -71,12 +72,27 @@ class ProcessResult:
 
 
 @dataclass(frozen=True)
+class ManifestEntry:
+    path: str
+    sha256: str
+    size: int
+
+
+@dataclass(frozen=True)
 class SandboxResult:
     docker: DockerIdentity
     image: str
     volume: str
     worker: ProcessResult
     result_dir: str
+    task_id: str
+    run_id: str
+    owner_epoch: int
+    executor: str
+    source_manifest: tuple[ManifestEntry, ...]
+    source_manifest_sha256: str
+    result_manifest: tuple[ManifestEntry, ...]
+    result_manifest_sha256: str
     network_mode: str = "none"
     authority_consumed: bool = True
 
@@ -308,6 +324,44 @@ def create_sanitized_source(
                 raise GovernedSandboxError("sandbox source byte limit exceeded")
 
     return total_files, total_bytes
+
+
+def manifest_tree(
+    root: Path,
+    *,
+    max_bytes: int = _DEFAULT_MAX_RESULT_BYTES,
+    max_files: int = _DEFAULT_MAX_RESULT_FILES,
+) -> tuple[ManifestEntry, ...]:
+    _assert_result_tree_safe(root, max_bytes=max_bytes, max_files=max_files)
+    root = root.resolve(strict=True)
+    entries = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        entries.append(
+            ManifestEntry(
+                path=rel,
+                sha256=_sha256_file(path),
+                size=int(path.stat().st_size),
+            )
+        )
+    entries.sort(key=lambda item: (item.path.casefold(), item.path))
+    return tuple(entries)
+
+
+def manifest_sha256(entries: Sequence[ManifestEntry]) -> str:
+    payload = [
+        {"path": item.path, "sha256": item.sha256, "size": item.size}
+        for item in entries
+    ]
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _mount_value(path: Path) -> str:
@@ -695,6 +749,12 @@ def run_governed_sandbox(
             ) as safe_dir_raw:
                 safe_dir = Path(safe_dir_raw).resolve(strict=True)
                 create_sanitized_source(source, safe_dir)
+                source_manifest = manifest_tree(
+                    safe_dir,
+                    max_bytes=_DEFAULT_MAX_SOURCE_BYTES,
+                    max_files=_DEFAULT_MAX_SOURCE_FILES,
+                )
+                source_manifest_digest = manifest_sha256(source_manifest)
 
                 volume_attempted = True
                 created_result = _require_ok(
@@ -750,6 +810,8 @@ def run_governed_sandbox(
                     "Docker result extraction",
                 )
                 _assert_result_tree_safe(result)
+                result_manifest = manifest_tree(result)
+                result_manifest_digest = manifest_sha256(result_manifest)
 
         return SandboxResult(
             docker=docker,
@@ -757,6 +819,14 @@ def run_governed_sandbox(
             volume=volume,
             worker=worker_result,
             result_dir=str(result),
+            task_id=str(authority["taskId"]),
+            run_id=str(authority["runId"]),
+            owner_epoch=int(authority["ownerEpoch"]),
+            executor=str(executor),
+            source_manifest=source_manifest,
+            source_manifest_sha256=source_manifest_digest,
+            result_manifest=result_manifest,
+            result_manifest_sha256=result_manifest_digest,
         )
     except SecurityError as ex:
         primary_error = GovernedSandboxError(
