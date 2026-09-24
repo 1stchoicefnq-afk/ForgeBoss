@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, _windows_hidden_children, CREATE_NO_WINDOW
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, _windows_hidden_children, _trusted_docker_executable_from_env, CREATE_NO_WINDOW
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
@@ -79,6 +79,20 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
         with _windows_hidden_children():
             cp=__import__("subprocess").run([__import__("sys").executable,"-c",code],capture_output=True,text=True,check=True)
         self.assertEqual(cp.stdout.strip(),"0")
+
+    def test_installed_docker_path_and_sha_are_enforced_without_path_lookup(self):
+        import hashlib,tempfile
+        from pathlib import Path
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        exe=Path(td.name)/("docker.exe" if os.name=="nt" else "docker")
+        exe.write_bytes(b"trusted-docker")
+        digest=hashlib.sha256(exe.read_bytes()).hexdigest()
+        env={"FORGEBOSS_TRUSTED_DOCKER_PATH":str(exe.resolve()),"FORGEBOSS_TRUSTED_DOCKER_SHA256":digest}
+        with patch.dict(os.environ,env,clear=False):
+            self.assertEqual(_trusted_docker_executable_from_env(),str(exe.resolve()))
+        with patch.dict(os.environ,{**env,"FORGEBOSS_TRUSTED_DOCKER_SHA256":"0"*64},clear=False):
+            with self.assertRaisesRegex(RuntimeError,"identity changed"):
+                _trusted_docker_executable_from_env()
 
     def test_guard_module_resolves_from_exact_engine_even_with_poisoned_pythonpath(self):
         with tempfile.TemporaryDirectory() as td:
