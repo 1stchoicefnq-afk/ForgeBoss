@@ -72,7 +72,8 @@ try{
  $diagRc=$LASTEXITCODE
  $d=($diag|Out-String).Trim()|ConvertFrom-Json
  if($diagRc -ne 0 -or -not $d.ok){throw ("AUTHORITY_DIAGNOSTIC_FAILED rc="+$diagRc+": "+($d|ConvertTo-Json -Compress))}
- Write-Host ("[PASS] Signed protected authority receipt; trust="+$d.trustGrade)
+ if([string]$d.receiptOperation -ne 'self_build_current_known_good'){throw 'STAGE1_RECEIPT_OPERATION_MISMATCH'}
+ Write-Host ("[PASS] Signed Stage 1 receipt operation="+$d.receiptOperation+" trust="+$d.trustGrade)
  Write-Host ("[PASS] Known-good identity revision="+$d.revision+" phase="+$d.phase)
 
  if([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)){throw 'OPENAI_API_KEY_MISSING'}
