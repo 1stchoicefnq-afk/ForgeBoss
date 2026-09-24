@@ -26,7 +26,8 @@ def main() -> int:
     expected_runner_hash=os.environ.get("FORGEBOSS_EXPECTED_RUNNER_SHA256","")
     control_envelope=os.environ.get("FORGEBOSS_CONTROL_ENVELOPE","")
     if governed:
-        actual_runner_hash=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        runner_text=Path(__file__).read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n")
+        actual_runner_hash=hashlib.sha256(runner_text.encode("utf-8")).hexdigest()
         if not expected_runner_hash or actual_runner_hash!=expected_runner_hash:
             print("FORGEBOSS SAFE STOP: governed runner identity mismatch.",file=sys.stderr);return 13
         try:
