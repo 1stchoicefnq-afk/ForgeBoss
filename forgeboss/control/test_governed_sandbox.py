@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from forgeboss.control.governed_sandbox import (
     build_extract_argv,
     build_stage_argv,
     build_worker_argv,
+    create_sanitized_source,
     resolve_docker_identity,
     run_governed_sandbox,
 )
@@ -92,6 +94,57 @@ class GovernedSandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(GovernedSandboxError, "mount path"):
             build_stage_argv(self.identity(), IMAGE, "forgeboss_gov_abc", bad)
 
+    def test_sanitized_source_strips_secret_and_git_paths_but_keeps_build_files(self):
+        (self.source / ".env").write_text("API_KEY=secret", encoding="utf-8")
+        (self.source / "package.json").write_text("{}", encoding="utf-8")
+        (self.source / ".git").mkdir()
+        (self.source / ".git" / "config").write_text("secret", encoding="utf-8")
+        nested = self.source / "pkg"
+        nested.mkdir()
+        (nested / ".env.local").write_text("TOKEN=x", encoding="utf-8")
+        (nested / ".git").mkdir()
+        (nested / ".git" / "config").write_text("secret", encoding="utf-8")
+        (nested / "secrets").mkdir()
+        (nested / "secrets" / "key.txt").write_text("secret", encoding="utf-8")
+        destination = self.root / "sanitized"
+        destination.mkdir()
+
+        files, total = create_sanitized_source(self.source, destination)
+
+        self.assertGreater(files, 0)
+        self.assertGreater(total, 0)
+        self.assertTrue((destination / "a.txt").is_file())
+        self.assertTrue((destination / "package.json").is_file())
+        self.assertFalse((destination / ".env").exists())
+        self.assertFalse((destination / ".git").exists())
+        self.assertFalse((destination / "pkg" / ".env.local").exists())
+        self.assertFalse((destination / "pkg" / ".git").exists())
+        self.assertFalse((destination / "pkg" / "secrets").exists())
+
+    def test_sanitized_source_enforces_byte_and_file_limits(self):
+        destination = self.root / "small-sanitized"
+        destination.mkdir()
+        with self.assertRaisesRegex(GovernedSandboxError, "byte limit"):
+            create_sanitized_source(self.source, destination, max_bytes=0, max_files=10)
+
+        destination2 = self.root / "small-sanitized-2"
+        destination2.mkdir()
+        with self.assertRaisesRegex(GovernedSandboxError, "file-count"):
+            create_sanitized_source(self.source, destination2, max_bytes=1000, max_files=0)
+
+    def test_sanitized_source_rejects_hardlinks(self):
+        first = self.source / "hard-a.txt"
+        second = self.source / "hard-b.txt"
+        first.write_text("x", encoding="utf-8")
+        try:
+            os.link(first, second)
+        except OSError:
+            self.skipTest("hardlink creation unavailable")
+        destination = self.root / "hard-sanitized"
+        destination.mkdir()
+        with self.assertRaisesRegex(GovernedSandboxError, "hardlinked"):
+            create_sanitized_source(self.source, destination)
+
     def test_resolve_docker_identity_detects_file_hash(self):
         ident = resolve_docker_identity(self.docker)
         self.assertEqual(
@@ -153,6 +206,14 @@ class GovernedSandboxTests(unittest.TestCase):
             docker_path=self.docker,
             process_runner=runner,
         )
+        create_calls = [
+            x for x in calls if len(x[0]) >= 3 and x[0][1:3] == ("volume", "create")
+        ]
+        self.assertEqual(len(create_calls), 1)
+        self.assertIn("type=tmpfs", create_calls[0][0])
+        self.assertIn("device=tmpfs", create_calls[0][0])
+        self.assertTrue(any("nr_inodes=" in part for part in create_calls[0][0]))
+
         worker_calls = [
             x for x in calls
             if IMAGE in x[0] and "python" in x[0] and "worker.py" in x[0]
@@ -323,6 +384,31 @@ class GovernedSandboxTests(unittest.TestCase):
                 process_runner=runner,
             )
         self.assertTrue(any(call[1:4] == ("volume", "rm", "-f") for call in calls))
+
+    def test_result_tree_rejects_hardlink_and_fifo(self):
+        from forgeboss.control.governed_sandbox import _assert_result_tree_safe
+
+        first = self.result / "a.txt"
+        second = self.result / "b.txt"
+        first.write_text("x", encoding="utf-8")
+        try:
+            os.link(first, second)
+        except OSError:
+            self.skipTest("hardlink creation unavailable")
+        with self.assertRaisesRegex(GovernedSandboxError, "hardlinked"):
+            _assert_result_tree_safe(self.result)
+
+        second.unlink()
+        first.unlink()
+        if not hasattr(os, "mkfifo"):
+            return
+        fifo = self.result / "pipe"
+        try:
+            os.mkfifo(fifo)
+        except OSError:
+            return
+        with self.assertRaisesRegex(GovernedSandboxError, "non-regular"):
+            _assert_result_tree_safe(self.result)
 
     def test_result_tree_rejects_symlink(self):
         target = self.root / "outside.txt"
