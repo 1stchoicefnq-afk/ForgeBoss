@@ -118,6 +118,21 @@ class ForgeBossDaemon:
                 run_id=p.get("runId")
                 if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip():
                     raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable runId")
+                existing_run=self.store.get_run(run_id)
+                if existing_run:
+                    if str(existing_run.get("task_id"))!=str(task["task_id"]):
+                        raise ProtocolError("RUN_ID_CONFLICT","runId already belongs to another task")
+                    if str(existing_run.get("runtime_id") or "")!="mini-swe":
+                        raise ProtocolError("RUN_ID_CONFLICT","runId already belongs to another runtime")
+                    if str(existing_run.get("status") or "")=="running":
+                        raise ProtocolError("RUN_ALREADY_ACTIVE","governed run is already active")
+                    refreshed=self.store.get_task(task["task_id"]) or task
+                    return {
+                        "taskId":task["task_id"],"runId":run_id,"runtimeId":"mini-swe",
+                        "outcome":str(existing_run.get("status") or "unknown"),
+                        "resultHead":refreshed.get("result_head"),
+                        "replayed":True,
+                    }
                 runtime_id=str(p.get("runtimeId") or "")
                 if runtime_id!="mini-swe":
                     raise ProtocolError("RUNTIME_NOT_APPROVED","governed host launch r0 permits mini-swe only")
@@ -218,7 +233,7 @@ class ForgeBossDaemon:
                     "workerReturnCode":int(worker["returncode"]),
                     "stdoutTail":worker["stdout_tail"],"stderrTail":worker["stderr_tail"],
                 }
-            return self._idem(req,launch)
+            return launch()
         if m=="workspace.claim":
             def do():
                 task=self.store.get_task(p["taskId"])
