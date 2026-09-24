@@ -612,6 +612,30 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(out["activeRunId"], "RUN-LIVE")
         self.assertTrue(event.is_set())
 
+    def test_cancel_after_finished_run_blocks_new_run_but_preserves_replay(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-FUTURE")
+        first=self._launch_request(p["taskId"],run_id="RUN-FINISHED")
+        fake={
+            "returncode":13,"stdout_tail":"","stderr_tail":"failed",
+            "result_head":"a"*40,"runner_relpath":"forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256":"f"*64,
+        }
+        with mock.patch.object(self.mod,"run_governed_worker",return_value=fake) as worker:
+            out1=self.daemon.dispatch(first,True)
+        self.assertEqual(out1["outcome"],"worker-failed")
+        cancel=self.daemon.dispatch(
+            {"method":"task.cancel","idempotencyKey":uuid.uuid4().hex,"params":{"taskId":p["taskId"]}},
+            True,
+        )
+        self.assertEqual(cancel["status"],"worker-failed")
+        replay=self.daemon.dispatch(self._launch_request(p["taskId"],run_id="RUN-FINISHED"),True)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["outcome"],"worker-failed")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(self._launch_request(p["taskId"],run_id="RUN-NEW"),True)
+        self.assertEqual(ctx.exception.code,"TASK_CANCELLED")
+        self.assertEqual(worker.call_count,1)
+
     def test_cancelled_run_replays_without_second_paid_worker(self):
         p, _ = self._create_governed_substantial("T-CANCEL-REPLAY")
         req = self._launch_request(p["taskId"], run_id="RUN-CANCEL-REPLAY")
