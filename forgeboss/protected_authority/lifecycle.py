@@ -226,10 +226,11 @@ class WindowsNamedPipeServer:
             self.handle=self.handles[0] if self.handles else None
             for i,(_t,h) in enumerate(threads):
                 if handle_value(h) in survivor_values:results[i]=AuthorityError('IPC_HANDLER_QUARANTINED')
-            # A post-authenticated worker that exceeds its bounded handler budget
-            # is a fail-closed authority fault. Do not keep serving new requests
-            # concurrently with work whose completion is no longer proven.
-            raise AuthorityError('IPC_WORKER_STUCK')
+            # Quarantine only the wedged pipe instances. Healthy instances keep
+            # serving. The host shuts down deliberately only after every instance
+            # has been quarantined.
+            if not self.handles:
+                raise AuthorityError('IPC_ALL_INSTANCES_QUARANTINED')
         if results and all(isinstance(x,AuthorityError) and x.code=='IPC_PREAUTH_TIMEOUT' for x in results):
             self._stop.wait(min(0.1,max(self.poll_interval,0.01)))
         return results
@@ -280,6 +281,9 @@ def run_windows_scm_service(*,service_name:str=FIXED_SERVICE_NAME,server_factory
                 try:srv.serve_batch()
                 except AuthorityError as e:
                     if state['stop'].is_set() or e.code=='IPC_STOPPED':break
+                    if e.code=='IPC_ALL_INSTANCES_QUARANTINED':
+                        state['stop'].set()
+                        break
         finally:
             try:
                 if state['server'] is not None:state['server'].close()
