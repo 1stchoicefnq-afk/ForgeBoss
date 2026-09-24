@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -64,6 +65,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.policy_secret = b"p" * 32
         self.daemon.launch_secret = b"l" * 32
         self.daemon.governed_launch_capability = "cap-" + ("x" * 40)
+        self.daemon.active_governed_runs = {}
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -527,6 +529,90 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
         self.assertIsNone(self.store.get_lease(p["taskId"]))
 
+    def test_queued_cancel_is_terminal_and_blocks_governed_launch(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-QUEUED")
+        out = self.daemon.dispatch(
+            {"method":"task.cancel","idempotencyKey":uuid.uuid4().hex,"params":{"taskId":p["taskId"]}},
+            True,
+        )
+        self.assertEqual(out["status"], "cancelled")
+        task = self.store.get_task(p["taskId"])
+        self.assertIsNotNone(task["cancel_requested_at"])
+        self.assertEqual(task["terminal_outcome"], "cancelled")
+        req = self._launch_request(p["taskId"], run_id="RUN-CANCELLED")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "TASK_CANCELLED")
+        self.assertIsNone(self.store.get_run("RUN-CANCELLED"))
+
+    def test_cancel_revokes_existing_writer_and_heartbeat_authority(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-AUTH")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        q = req["params"]
+        q["_governedLaunchCapability"] = self.daemon.governed_launch_capability
+        q["launchAttestation"] = issue_governed_launch_attestation(
+            root=self.root,secret=self.daemon.launch_secret,
+            task_id=q["taskId"],repository=q["repository"],base_sha=q["baseSha"],
+            run_id=q["runId"],worktree_path=q["worktreePath"],runtime_id=q["runtimeId"],
+            allowed_paths=q["allowedPaths"],allowed_tools=q["allowedTools"],
+            budget_usd=q.get("budgetUsd",0),ttl_seconds=60,
+        )
+        claim = self.daemon.dispatch(req, True)
+        lease = claim["lease"]
+        self.store.request_cancel(p["taskId"])
+        with self.assertRaisesRegex(PermissionError, "cancellation"):
+            self.store.assert_writer(p["taskId"], q["runId"], lease["owner_epoch"])
+        with self.assertRaisesRegex(PermissionError, "cancellation"):
+            self.store.heartbeat(p["taskId"], q["runId"], lease["owner_epoch"], 60)
+
+    def test_release_transaction_forces_cancelled_over_worker_success(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-RACE")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        q = req["params"]
+        q["_governedLaunchCapability"] = self.daemon.governed_launch_capability
+        q["launchAttestation"] = issue_governed_launch_attestation(
+            root=self.root,secret=self.daemon.launch_secret,
+            task_id=q["taskId"],repository=q["repository"],base_sha=q["baseSha"],
+            run_id=q["runId"],worktree_path=q["worktreePath"],runtime_id=q["runtimeId"],
+            allowed_paths=q["allowedPaths"],allowed_tools=q["allowedTools"],
+            budget_usd=q.get("budgetUsd",0),ttl_seconds=60,
+        )
+        claim = self.daemon.dispatch(req, True)
+        self.store.request_cancel(p["taskId"])
+        self.store.release(
+            p["taskId"],q["runId"],claim["lease"]["owner_epoch"],
+            "a"*40,"worker-complete",
+        )
+        self.assertEqual(self.store.get_run(q["runId"])["status"], "cancelled")
+        task=self.store.get_task(p["taskId"])
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["terminal_outcome"], "cancelled")
+
+    def test_task_cancel_sets_live_governed_cancel_event(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-LIVE")
+        event=threading.Event()
+        self.daemon.active_governed_runs[p["taskId"]]={"runId":"RUN-LIVE","event":event}
+        out=self.daemon.dispatch(
+            {"method":"task.cancel","idempotencyKey":uuid.uuid4().hex,"params":{"taskId":p["taskId"]}},
+            True,
+        )
+        self.assertEqual(out["activeRunId"], "RUN-LIVE")
+        self.assertTrue(event.is_set())
+
+    def test_cancelled_run_replays_without_second_paid_worker(self):
+        p, _ = self._create_governed_substantial("T-CANCEL-REPLAY")
+        req = self._launch_request(p["taskId"], run_id="RUN-CANCEL-REPLAY")
+        def cancelled_worker(**kwargs):
+            kwargs["cancel_event"].set()
+            raise self.mod.GovernedHostLaunchCancelled("cancelled")
+        with mock.patch.object(self.mod, "run_governed_worker", side_effect=cancelled_worker) as worker:
+            out1=self.daemon.dispatch(req,True)
+            out2=self.daemon.dispatch(self._launch_request(p["taskId"],run_id="RUN-CANCEL-REPLAY"),True)
+        self.assertEqual(out1["outcome"], "cancelled")
+        self.assertTrue(out2["replayed"])
+        self.assertEqual(out2["outcome"], "cancelled")
+        self.assertEqual(worker.call_count,1)
+
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
@@ -542,6 +628,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertIs(protocol_mutations, client_mutations)
         self.assertIn("task.create_governed", client_mutations)
         self.assertIn("run.launch_governed", client_mutations)
+        self.assertIn("task.cancel", client_mutations)
 
 
 if __name__ == "__main__":
