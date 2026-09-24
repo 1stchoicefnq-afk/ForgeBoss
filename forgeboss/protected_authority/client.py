@@ -9,6 +9,12 @@ from .lifecycle import FIXED_PIPE_NAME, FIXED_SOCKET_NAME
 from .protocol import AuthorityError, MAX_REQUEST_BYTES, build_request, canonical_digest, canonical_json, strict_loads
 from .signing import verify_signed_receipt
 
+_ERROR_FILE_NOT_FOUND=2
+_ERROR_SEM_TIMEOUT=121
+_ERROR_PIPE_BUSY=231
+_TRANSIENT_PIPE_ERRORS=frozenset({_ERROR_FILE_NOT_FOUND,_ERROR_SEM_TIMEOUT,_ERROR_PIPE_BUSY})
+_STOP_CLEANUP_OPERATIONS=frozenset({"revoke_self_build_worker"})
+
 
 def _load_private_key(path: str | os.PathLike[str]):
     raw=Path(path).read_bytes()
@@ -30,7 +36,8 @@ def _load_private_key(path: str | os.PathLike[str]):
 class ProtectedAuthorityClient:
     def __init__(self,*,peer_id:str,repository:str,control_revision:int,peer_private_key,
                  receipt_public_key_b64:str,unix_socket_path:str|os.PathLike[str]|None=None,
-                 pipe_name:str=FIXED_PIPE_NAME,timeout:float=5.0,transport:Callable[[bytes],bytes]|None=None):
+                 pipe_name:str=FIXED_PIPE_NAME,timeout:float=5.0,transport:Callable[[bytes],bytes]|None=None,
+                 cancellation_predicate:Callable[[],bool]|None=None):
         if not isinstance(peer_id,str) or not peer_id.strip(): raise AuthorityError("PEER_ID_INVALID")
         if not isinstance(repository,str) or "/" not in repository: raise AuthorityError("REPOSITORY_INVALID")
         if isinstance(control_revision,bool) or not isinstance(control_revision,int) or control_revision<1: raise AuthorityError("CONTROL_REVISION_INVALID")
@@ -40,19 +47,21 @@ class ProtectedAuthorityClient:
         self.peer_private_key=peer_private_key;self.receipt_public_key_b64=receipt_public_key_b64.strip()
         self.unix_socket_path=Path(unix_socket_path) if unix_socket_path is not None else None
         self.pipe_name=pipe_name;self.timeout=float(timeout);self.transport=transport
+        self.cancellation_predicate=cancellation_predicate
 
     @classmethod
     def from_files(cls,*,peer_id:str,repository:str,control_revision:int,peer_private_key_file:str,
                    receipt_public_key_file:str,unix_socket_path:str|None=None,pipe_name:str=FIXED_PIPE_NAME,
-                   timeout:float=5.0):
+                   timeout:float=5.0,cancellation_predicate:Callable[[],bool]|None=None):
         key=_load_private_key(peer_private_key_file)
         pin=Path(receipt_public_key_file).read_text(encoding="ascii").strip()
         return cls(peer_id=peer_id,repository=repository,control_revision=control_revision,
                    peer_private_key=key,receipt_public_key_b64=pin,unix_socket_path=unix_socket_path,
-                   pipe_name=pipe_name,timeout=timeout)
+                   pipe_name=pipe_name,timeout=timeout,cancellation_predicate=cancellation_predicate)
 
     @classmethod
-    def from_environment(cls,env:Mapping[str,str]|None=None,*,repository:str="1stchoicefnq-afk/ForgeBoss",timeout:float=5.0):
+    def from_environment(cls,env:Mapping[str,str]|None=None,*,repository:str="1stchoicefnq-afk/ForgeBoss",timeout:float=5.0,
+                         cancellation_predicate:Callable[[],bool]|None=None):
         env=dict(os.environ if env is None else env)
         peer_key=env.get("FORGEBOSS_AUTHORITY_PEER_KEY")
         receipt_pin=env.get("FORGEBOSS_AUTHORITY_RECEIPT_PUBLIC_KEY")
@@ -69,7 +78,7 @@ class ProtectedAuthorityClient:
         return cls.from_files(
             peer_id=peer_id,repository=repository,control_revision=revision,
             peer_private_key_file=peer_key,receipt_public_key_file=receipt_pin,
-            unix_socket_path=unix_socket,timeout=timeout,
+            unix_socket_path=unix_socket,timeout=timeout,cancellation_predicate=cancellation_predicate,
         )
 
     def _request(self,operation:str,payload:Mapping[str,Any])->tuple[dict,str]:
@@ -97,10 +106,21 @@ class ProtectedAuthorityClient:
             raise AuthorityError("REQUEST_DIGEST_MISMATCH")
         return request,digest
 
+    def _cancelled(self)->bool:
+        if self.cancellation_predicate is None:return False
+        try:return bool(self.cancellation_predicate())
+        except Exception as ex:raise AuthorityError("IPC_CANCEL_CHECK_FAILED","owner-stop state check failed") from ex
+
+    def _check_cancelled(self,*,allow_after_stop:bool=False)->None:
+        if not allow_after_stop and self._cancelled():
+            raise AuthorityError("IPC_STOPPED","owner safe stop requested")
+
     def call(self,operation:str,payload:Mapping[str,Any])->dict:
+        allow_after_stop=operation in _STOP_CLEANUP_OPERATIONS
+        self._check_cancelled(allow_after_stop=allow_after_stop)
         request,request_digest=self._request(operation,payload)
         raw=canonical_json(request)
-        response_raw=self.transport(raw) if self.transport is not None else self._exchange(raw)
+        response_raw=self.transport(raw) if self.transport is not None else self._exchange(raw,allow_after_stop=allow_after_stop)
         response=strict_loads(response_raw)
         if not verify_signed_receipt(response,self.receipt_public_key_b64):
             raise AuthorityError("SERVICE_RECEIPT_INVALID")
@@ -187,8 +207,9 @@ class ProtectedAuthorityClient:
             "ownerEpoch":int(owner_epoch),
         })
 
-    def _exchange(self,raw:bytes)->bytes:
-        if os.name=="nt": return self._exchange_windows(raw)
+    def _exchange(self,raw:bytes,*,allow_after_stop:bool=False)->bytes:
+        self._check_cancelled(allow_after_stop=allow_after_stop)
+        if os.name=="nt": return self._exchange_windows(raw,allow_after_stop=allow_after_stop)
         path=self.unix_socket_path
         if path is None:
             root=os.environ.get("FORGEBOSS_AUTHORITY_ENDPOINT_DIR")
@@ -197,7 +218,8 @@ class ProtectedAuthorityClient:
         if not path.is_absolute(): raise AuthorityError("IPC_ENDPOINT_INVALID")
         s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(self.timeout)
         try:
-            s.connect(str(path));s.sendall(raw);s.shutdown(socket.SHUT_WR)
+            s.connect(str(path));self._check_cancelled(allow_after_stop=allow_after_stop)
+            s.sendall(raw);s.shutdown(socket.SHUT_WR)
             chunks=[];total=0
             while True:
                 part=s.recv(65536)
@@ -213,7 +235,13 @@ class ProtectedAuthorityClient:
             try:s.close()
             except OSError:pass
 
-    def _exchange_windows(self,raw:bytes)->bytes:
+    def _connect_failed(self,last_error:int|None)->None:
+        err=int(last_error or 0)
+        message="protected authority pipe connection failed"
+        if err:message+=f"; win32={err}"
+        raise AuthorityError("IPC_CONNECT_FAILED",message)
+
+    def _exchange_windows(self,raw:bytes,*,allow_after_stop:bool=False)->bytes:
         if not isinstance(self.pipe_name,str) or not self.pipe_name.startswith("\\\\.\\pipe\\"):
             raise AuthorityError("IPC_ENDPOINT_INVALID")
         k=ctypes.WinDLL("kernel32",use_last_error=True)
@@ -223,37 +251,50 @@ class ProtectedAuthorityClient:
         k.WriteFile.argtypes=[wintypes.HANDLE,wintypes.LPCVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];k.WriteFile.restype=wintypes.BOOL
         k.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID];k.ReadFile.restype=wintypes.BOOL
         k.CloseHandle.argtypes=[wintypes.HANDLE];k.CloseHandle.restype=wintypes.BOOL
-        deadline=time.monotonic()+self.timeout
-        invalid=ctypes.c_void_p(-1).value
+        return self._exchange_windows_api(
+            raw,k=k,monotonic=time.monotonic,sleep=time.sleep,
+            get_last_error=ctypes.get_last_error,invalid=ctypes.c_void_p(-1).value,
+            allow_after_stop=allow_after_stop,
+        )
+
+    def _exchange_windows_api(self,raw:bytes,*,k,monotonic:Callable[[],float],sleep:Callable[[float],None],
+                              get_last_error:Callable[[],int],invalid:int,allow_after_stop:bool=False)->bytes:
+        deadline=monotonic()+self.timeout
+        last_error=0
         h=None
-        # WaitNamedPipeW returns immediately with ERROR_FILE_NOT_FOUND when the
-        # fixed pipe exists only between server batch/listen cycles. Treat that
-        # short listener turnover as transient, but stay bounded by the exact
-        # client timeout and fail closed once the deadline expires.
         while True:
-            remaining=deadline-time.monotonic()
-            if remaining<=0:
-                raise AuthorityError("IPC_CONNECT_FAILED")
-            wait_ms=max(100,min(1000,int(remaining*1000)))
-            ctypes.set_last_error(0)
+            self._check_cancelled(allow_after_stop=allow_after_stop)
+            remaining=deadline-monotonic()
+            remaining_ms=int(remaining*1000)
+            if remaining_ms<=0:self._connect_failed(last_error)
+            wait_ms=min(1000,remaining_ms)
             ready=bool(k.WaitNamedPipeW(self.pipe_name,wait_ms))
-            if ready:
-                ctypes.set_last_error(0)
-                candidate=k.CreateFileW(self.pipe_name,0xC0000000,0,None,3,0,None)
-                if candidate and int(candidate)!=invalid:
-                    h=candidate
-                    break
-            time.sleep(min(0.02,max(0.0,deadline-time.monotonic())))
-        if h is None:
-            raise AuthorityError("IPC_CONNECT_FAILED")
+            if not ready:
+                last_error=int(get_last_error() or 0)
+                self._check_cancelled(allow_after_stop=allow_after_stop)
+                if last_error not in _TRANSIENT_PIPE_ERRORS:self._connect_failed(last_error)
+                delay=min(0.02,max(0.0,deadline-monotonic()))
+                if delay>0:sleep(delay)
+                continue
+            self._check_cancelled(allow_after_stop=allow_after_stop)
+            candidate=k.CreateFileW(self.pipe_name,0xC0000000,0,None,3,0,None)
+            if candidate and int(candidate)!=invalid:
+                h=candidate
+                break
+            last_error=int(get_last_error() or 0)
+            if last_error not in _TRANSIENT_PIPE_ERRORS:self._connect_failed(last_error)
+            self._check_cancelled(allow_after_stop=allow_after_stop)
+            delay=min(0.02,max(0.0,deadline-monotonic()))
+            if delay>0:sleep(delay)
         try:
+            self._check_cancelled(allow_after_stop=allow_after_stop)
             written=wintypes.DWORD(0);buf=ctypes.create_string_buffer(raw)
             if not k.WriteFile(h,buf,len(raw),ctypes.byref(written),None) or written.value!=len(raw):
                 raise AuthorityError("IPC_WRITE_FAILED")
             out=[];total=0
             while True:
-                b=ctypes.create_string_buffer(65536);got=wintypes.DWORD(0);ctypes.set_last_error(0)
-                ok=k.ReadFile(h,b,len(b),ctypes.byref(got),None);err=ctypes.get_last_error()
+                b=ctypes.create_string_buffer(65536);got=wintypes.DWORD(0)
+                ok=k.ReadFile(h,b,len(b),ctypes.byref(got),None);err=int(get_last_error() or 0)
                 if got.value:
                     total+=got.value
                     if total>MAX_REQUEST_BYTES: raise AuthorityError("IPC_RESPONSE_TOO_LARGE")
@@ -264,4 +305,4 @@ class ProtectedAuthorityClient:
             if not out: raise AuthorityError("IPC_EMPTY_RESPONSE")
             return b"".join(out)
         finally:
-            k.CloseHandle(h)
+            if h is not None:k.CloseHandle(h)
