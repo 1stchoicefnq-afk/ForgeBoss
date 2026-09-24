@@ -55,6 +55,14 @@ try{
  if($LASTEXITCODE -ne 0){throw 'NO_CONSOLE_PROOF_FAILED'}
  Write-Host '[PASS] Native Windows no-console child-process proof'
 
+ $authorityContract=& $RuntimePy -I -B (Join-Path $PackageRoot 'Tools\prove_authority_contract.py') --engine-root $s.engineRoot 2>&1
+ if($LASTEXITCODE -ne 0){throw ("STAGE1_AUTHORITY_CONTRACT_FAILED: "+($authorityContract|Out-String))}
+ $authorityContractObj=($authorityContract|Out-String).Trim()|ConvertFrom-Json
+ if(-not $authorityContractObj.ok -or $authorityContractObj.legacyIssueStage1Operations -or $authorityContractObj.obsoleteStage1ServiceParameters){
+   throw 'STAGE1_AUTHORITY_CONTRACT_FAILED'
+ }
+ Write-Host '[PASS] Current Stage 1 authority contract loaded; obsolete issue_stage1 interface absent'
+
  & $s.docker.path image inspect $s.builderImage *> $null
  if($LASTEXITCODE -ne 0){throw 'PINNED_BUILDER_IMAGE_MISSING'}
  Write-Host '[PASS] Immutable builder image present'
