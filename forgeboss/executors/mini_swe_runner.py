@@ -5,6 +5,22 @@ from pathlib import Path
 GOVERNED_MINISWE_VERSION="2.4.6"
 GOVERNED_MINISWE_IMAGE="node@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
 
+def _cleanup_environment(env_obj):
+    if env_obj is None:return
+    try:
+        env_obj.cleanup();return
+    except Exception:
+        pass
+    container_id=str(getattr(env_obj,"container_id","") or "")
+    if container_id:
+        try:
+            subprocess.run(
+                ["docker","rm","-f",container_id],
+                capture_output=True,text=True,timeout=30,
+            )
+        except Exception:
+            pass
+
 def main() -> int:
     if len(sys.argv)<4:
         print("usage: mini_swe_runner.py PACKET.json WORKSPACE BUDGET_USD",file=sys.stderr);return 2
@@ -93,13 +109,13 @@ def main() -> int:
             def watch_cancel():
                 while not cancel_stop.wait(.1):
                     if cancel_path is not None and cancel_path.exists():
-                        try:env_obj.cleanup()
+                        try:_cleanup_environment(env_obj)
                         finally:os._exit(130)
             cancel_thread=threading.Thread(target=watch_cancel,name="forgeboss-cancel-watch",daemon=True)
             cancel_thread.start()
             if cancel_path is not None and cancel_path.exists():
-                try:env_obj.cleanup()
-                finally:return 130
+                _cleanup_environment(env_obj)
+                return 130
         model=LitellmModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.
 Your response must contain exactly ONE bash command block in this format:
@@ -164,9 +180,7 @@ Required acceptance intent:
         try:
             if cancel_thread is not None: cancel_thread.join(timeout=.5)
         except Exception: pass
-        try:
-            if env_obj is not None: env_obj.cleanup()
-        except Exception: pass
+        _cleanup_environment(env_obj)
         print("FORGEBOSS_RESULT_JSON="+json.dumps(result,separators=(",",":")))
 
 if __name__=="__main__":raise SystemExit(main())
