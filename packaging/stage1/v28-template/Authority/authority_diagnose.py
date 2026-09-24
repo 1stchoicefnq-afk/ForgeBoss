@@ -19,7 +19,7 @@ def main():
             peer_id=client_cfg["peerId"],repository=client_cfg["repository"],
             control_revision=int(client_cfg["controlRevision"]),
             peer_private_key_file=client_cfg["peerKeyFile"],
-            receipt_public_key_file=client_cfg["receiptPublicKeyFile"],timeout=3.0)
+            receipt_public_key_file=client_cfg["receiptPublicKeyFile"],pipe_name=client_cfg["pipeName"],timeout=3.0)
         response=client.self_build_current_known_good();result=response.get("result") or {}
         print(json.dumps({"ok":True,"receiptVerified":True,"trustGrade":result.get("trustGrade"),
               "revision":result.get("revision"),"phase":result.get("phase"),"generation":result.get("generation"),
