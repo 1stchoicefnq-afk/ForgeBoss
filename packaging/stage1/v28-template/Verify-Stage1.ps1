@@ -53,8 +53,9 @@ try{
  $clientCfg=Get-Content -LiteralPath (Join-Path $s.clientRoot 'client-config.json') -Raw|ConvertFrom-Json
  if([string]$clientCfg.pipeName -ne [string]$s.authorityPipe){throw 'AUTHORITY_PIPE_CONFIG_MISMATCH'}
  $diag=& $RuntimePy -I -B (Join-Path $s.launcherRoot 'authority_diagnose.py') --installed $Installed 2>&1
+ $diagRc=$LASTEXITCODE
  $d=($diag|Out-String).Trim()|ConvertFrom-Json
- if(-not $d.ok){throw ("AUTHORITY_DIAGNOSTIC_FAILED: "+($d|ConvertTo-Json -Compress))}
+ if($diagRc -ne 0 -or -not $d.ok){throw ("AUTHORITY_DIAGNOSTIC_FAILED rc="+$diagRc+": "+($d|ConvertTo-Json -Compress))}
  Write-Host ("[PASS] Signed protected authority receipt; trust="+$d.trustGrade)
  Write-Host ("[PASS] Known-good identity revision="+$d.revision+" phase="+$d.phase)
 
