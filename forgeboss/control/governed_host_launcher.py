@@ -118,7 +118,7 @@ def _issue_executor_guard_lease(
     return issued
 
 
-def _result_head(workspace: Path) -> str:
+def resolve_workspace_head(workspace: Path) -> str:
     p = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=str(workspace),
@@ -211,7 +211,7 @@ def run_governed_worker(
             "returncode": int(proc.returncode),
             "stdout_tail": (proc.stdout or "")[-4000:],
             "stderr_tail": (proc.stderr or "")[-4000:],
-            "result_head": _result_head(workspace_path),
+            "result_head": resolve_workspace_head(workspace_path),
             "runner_relpath": rel,
             "runner_sha256": final_runner_sha,
         }
