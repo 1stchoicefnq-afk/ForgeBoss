@@ -116,8 +116,8 @@ class ForgeBossDaemon:
                 if task.get("governance_mode")!="reuse-v1":
                     raise ProtocolError("GOVERNED_TASK_REQUIRED","trusted governed launch requires a governed task")
                 run_id=p.get("runId")
-                if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip():
-                    raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable runId")
+                if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip() or len(run_id)>128 or any(ord(ch)<32 or ord(ch)==127 for ch in run_id):
+                    raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable safe runId")
                 existing_run=self.store.get_run(run_id)
                 if existing_run:
                     if str(existing_run.get("task_id"))!=str(task["task_id"]):
@@ -144,8 +144,8 @@ class ForgeBossDaemon:
                     raise ProtocolError("BUDGET_INVALID","governed launch budget must be finite and positive")
                 model=str(p.get("model") or "openai/gpt-5.6-luna")
                 provider=str(p.get("provider") or "openai")
-                if not model or len(model)>200 or not provider or len(provider)>100:
-                    raise ProtocolError("MODEL_ID_INVALID","provider/model identity is invalid")
+                if provider!="openai" or not model.startswith("openai/") or len(model)>200 or any(ord(ch)<32 or ord(ch)==127 for ch in model):
+                    raise ProtocolError("MODEL_ID_INVALID","governed host launch r0 permits a safe OpenAI model identity only")
                 try:
                     allowed=json.loads(task.get("allowed_paths_json") or "[]")
                 except Exception as ex:
@@ -185,13 +185,14 @@ class ForgeBossDaemon:
                     "launchAttestation":attestation,
                     "_governedLaunchCapability":self.governed_launch_capability,
                 }
+                internal_key=hashlib.sha256((self.governed_launch_capability+":"+run_id).encode("utf-8")).hexdigest()
                 claim=self.dispatch(
-                    {"method":"workspace.claim","idempotencyKey":"governed-claim:"+run_id,"params":claim_params},
+                    {"method":"workspace.claim","idempotencyKey":"governed-claim:"+internal_key,"params":claim_params},
                     True,
                 )
                 env=claim["launchEnvelope"]
                 self.dispatch(
-                    {"method":"worker.admit","idempotencyKey":"governed-admit:"+run_id,
+                    {"method":"worker.admit","idempotencyKey":"governed-admit:"+internal_key,
                      "params":{"envelope":env,"expectedHead":current_head}},
                     True,
                 )
@@ -231,7 +232,6 @@ class ForgeBossDaemon:
                     "outcome":outcome,"resultHead":result_head,
                     "runnerSha256":worker["runner_sha256"],
                     "workerReturnCode":int(worker["returncode"]),
-                    "stdoutTail":worker["stdout_tail"],"stderrTail":worker["stderr_tail"],
                 }
             return launch()
         if m=="workspace.claim":
