@@ -22,7 +22,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         root = Path(td.name)
         baseline = {
             "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
-            "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\\\" set "ROOT=%ROOT:~0,-1%"\r\n',
+            "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "Start-ForgeBoss.ps1": b"$authorityHost='x'\n",
             "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root)\n",
         }
