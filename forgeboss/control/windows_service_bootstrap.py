@@ -6,7 +6,7 @@ import os
 import re
 import stat
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from forgeboss.control.windows_service_sid import (
     ServiceSidConfigError,
@@ -62,6 +62,16 @@ def _linklike_or_reparse(path: Path) -> bool:
     return bool(reparse and attrs & reparse)
 
 
+def _stat_identity(info) -> tuple[int, int, int, int, int]:
+    return (
+        int(getattr(info, "st_dev", 0)),
+        int(getattr(info, "st_ino", 0)),
+        int(info.st_size),
+        int(getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000))),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000))),
+    )
+
+
 def load_bootstrap_source_root(private_root: str | Path) -> str:
     root = Path(private_root)
     config = root / BOOTSTRAP_SOURCE_ROOT_FILE
@@ -70,33 +80,81 @@ def load_bootstrap_source_root(private_root: str | Path) -> str:
             "bootstrap source-root config must not be linklike/reparse"
         )
     try:
-        info = config.stat()
+        before = config.lstat()
     except OSError as ex:
         raise ServiceBootstrapError(
             "bootstrap source-root config is missing"
         ) from ex
-    if not config.is_file():
+    if not stat.S_ISREG(before.st_mode):
         raise ServiceBootstrapError(
             "bootstrap source-root config must be a regular file"
         )
-    if getattr(info, "st_nlink", 1) != 1:
+    if getattr(before, "st_nlink", 1) != 1:
         raise ServiceBootstrapError(
             "bootstrap source-root config must not be hard-linked"
         )
-    if info.st_size < 1 or info.st_size > _MAX_SOURCE_ROOT_BYTES:
+    if before.st_size < 1 or before.st_size > _MAX_SOURCE_ROOT_BYTES:
         raise ServiceBootstrapError(
             "bootstrap source-root config size is invalid"
         )
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     try:
-        raw = config.read_bytes()
+        fd = os.open(str(config), flags)
     except OSError as ex:
         raise ServiceBootstrapError(
-            "cannot read bootstrap source-root config"
+            "cannot open bootstrap source-root config"
         ) from ex
-    if len(raw) != info.st_size:
+    try:
+        opened = os.fstat(fd)
+        if _stat_identity(opened) != _stat_identity(before):
+            raise ServiceBootstrapError(
+                "bootstrap source-root config changed before open"
+            )
+        if not stat.S_ISREG(opened.st_mode) or getattr(opened, "st_nlink", 1) != 1:
+            raise ServiceBootstrapError(
+                "bootstrap source-root config open handle is not one regular unlinked file"
+            )
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(1024, _MAX_SOURCE_ROOT_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_SOURCE_ROOT_BYTES:
+                raise ServiceBootstrapError(
+                    "bootstrap source-root config size is invalid"
+                )
+        after_fd = os.fstat(fd)
+        if _stat_identity(after_fd) != _stat_identity(opened):
+            raise ServiceBootstrapError(
+                "bootstrap source-root config changed while being read"
+            )
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+
+    if _linklike_or_reparse(config):
         raise ServiceBootstrapError(
-            "bootstrap source-root config changed while being read"
+            "bootstrap source-root config became linklike/reparse"
         )
+    try:
+        after_path = config.lstat()
+    except OSError as ex:
+        raise ServiceBootstrapError(
+            "bootstrap source-root config disappeared while being read"
+        ) from ex
+    if _stat_identity(after_path) != _stat_identity(after_fd):
+        raise ServiceBootstrapError(
+            "bootstrap source-root path identity changed while being read"
+        )
+    if len(raw) != after_fd.st_size:
+        raise ServiceBootstrapError(
+            "bootstrap source-root config length changed while being read"
+        )
+
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as ex:
@@ -135,7 +193,6 @@ def load_bootstrap_source_root(private_root: str | Path) -> str:
         )
     return value
 
-
 def _same_windows_path(left: str, right: str) -> bool:
     return ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(
         ntpath.normpath(right)
@@ -156,12 +213,33 @@ def _bootstrap_result(
     })
 
 
+def _assert_not_cancelled(
+    cancelled: Callable[[], bool] | None,
+) -> None:
+    if cancelled is None:
+        return
+    try:
+        value = cancelled()
+    except Exception as ex:
+        raise ServiceBootstrapError(
+            "bootstrap cancellation state could not be read"
+        ) from ex
+    if type(value) is not bool:
+        raise ServiceBootstrapError(
+            "bootstrap cancellation callback returned a non-boolean value"
+        )
+    if value:
+        raise ServiceBootstrapError("bootstrap activation cancelled")
+
+
 def perform_bootstrap_activation(
     *,
     private_root: str | Path,
     desktop_sid: str,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Mapping[str, object]:
     _require_windows()
+    _assert_not_cancelled(cancelled)
 
     try:
         active = load_optional_verified_active_state(
@@ -203,6 +281,10 @@ def perform_bootstrap_activation(
             raise ServiceBootstrapError(
                 "verified migration source does not match protected bootstrap config"
             )
+
+        # A stop request during a long copy leaves only a verified candidate.
+        # Activation is withheld so restart can reverify and continue safely.
+        _assert_not_cancelled(cancelled)
 
         activated = activate_verified_state(
             private_root=private_root,
