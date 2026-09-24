@@ -62,6 +62,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.secret = b"k" * 32
         self.daemon.policy_secret = b"p" * 32
         self.daemon.launch_secret = b"l" * 32
+        self.daemon.governed_launch_capability = "cap-" + ("x" * 40)
         self.daemon.idempotency = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
@@ -298,13 +299,39 @@ class GovernedTaskCreateTests(unittest.TestCase):
             with self.subTest(runtime_id=runtime_id):
                 with self.assertRaises(self.mod.ProtocolError) as ctx:
                     self.daemon.dispatch(self._claim_request(p["taskId"], runtime_id), True)
-                self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_REQUIRED")
+                self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
         self.assertIsNone(self.store.get_lease("T-GOV"))
 
-    def test_valid_attested_governed_claim_creates_lease(self):
+    def test_even_valid_signed_direct_claim_is_denied_without_daemon_memory_capability(self):
         p, _ = self._create_governed_substantial("T-GOV-OK")
         req = self._claim_request(p["taskId"], "mini-swe")
         q = req["params"]
+        q["launchAttestation"] = issue_governed_launch_attestation(
+            root=self.root,
+            secret=self.daemon.launch_secret,
+            task_id=q["taskId"],
+            repository=q["repository"],
+            base_sha=q["baseSha"],
+            run_id=q["runId"],
+            worktree_path=q["worktreePath"],
+            runtime_id=q["runtimeId"],
+            allowed_paths=q["allowedPaths"],
+            allowed_tools=q["allowedTools"],
+            provider=q.get("provider"),
+            model=q.get("model"),
+            budget_usd=q.get("budgetUsd", 0),
+            ttl_seconds=60,
+        )
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
+        self.assertIsNone(self.store.get_lease(p["taskId"]))
+
+    def test_internal_attested_claim_with_memory_capability_creates_lease(self):
+        p, _ = self._create_governed_substantial("T-GOV-INTERNAL")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        q = req["params"]
+        q["_governedLaunchCapability"] = self.daemon.governed_launch_capability
         q["launchAttestation"] = issue_governed_launch_attestation(
             root=self.root,
             secret=self.daemon.launch_secret,
@@ -329,6 +356,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         p, _ = self._create_governed_substantial("T-GOV-BADKEY")
         req = self._claim_request(p["taskId"], "mini-swe")
         q = req["params"]
+        q["_governedLaunchCapability"] = self.daemon.governed_launch_capability
         q["launchAttestation"] = issue_governed_launch_attestation(
             root=self.root,
             secret=self.daemon.secret,
@@ -352,6 +380,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         p, _ = self._create_governed_substantial("T-GOV-REBIND")
         req = self._claim_request(p["taskId"], "mini-swe")
         q = req["params"]
+        q["_governedLaunchCapability"] = self.daemon.governed_launch_capability
         q["launchAttestation"] = issue_governed_launch_attestation(
             root=self.root,
             secret=self.daemon.launch_secret,
@@ -386,6 +415,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         client_mutations = Client.call.__globals__["MUTATIONS"]
         self.assertIs(protocol_mutations, client_mutations)
         self.assertIn("task.create_governed", client_mutations)
+        self.assertIn("run.launch_governed", client_mutations)
 
 
 if __name__ == "__main__":
