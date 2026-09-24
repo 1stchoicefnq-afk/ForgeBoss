@@ -11,10 +11,33 @@ class V28TemplateSecurityTests(unittest.TestCase):
     def test_acl_validate_only_and_exact_compare(self):
         s=text("Authority/Prepare-MachineAuthorityRoot.ps1")
         self.assertIn("[switch]$ValidateOnly",s)
-        self.assertIn(".Equals($expected,[StringComparison]::OrdinalIgnoreCase)",s)
+        self.assertIn("[string]::Equals($actual,$expected,[StringComparison]::OrdinalIgnoreCase)",s)
         self.assertIn("PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED",s)
         self.assertLess(s.index("PROTECTED_ROOT_IDENTITY_MISMATCH"),s.index("/setowner"))
         self.assertLess(s.index("PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED"),s.index("/setowner"))
+
+    def test_protected_root_runtime_table_is_wired_before_uac_and_verify(self):
+        turn=text("Turn-On-ForgeBoss.ps1")
+        install=text("Install-Stage1.ps1")
+        verify=text("Verify-Stage1.ps1")
+        for source in (turn,install,verify):
+            self.assertIn("Test-ProtectedRootIdentity.ps1",source)
+        self.assertLess(turn.index("Test-ProtectedRootIdentity.ps1"),turn.index("Install-Stage1.ps1"))
+        self.assertIn("PROTECTED_ROOT_PRE_UAC_VALIDATION_FAILED",turn)
+        helper=text("Authority/Prepare-MachineAuthorityRoot.ps1")
+        self.assertIn("$systemDrive",helper)
+        self.assertIn("PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED",helper)
+        self.assertIn("PROTECTED_ROOT_IDENTITY_MISMATCH",helper)
+
+    def test_current_stage1_receipt_contract_is_runtime_proven(self):
+        verify=text("Verify-Stage1.ps1")
+        diag=text("Authority/authority_diagnose.py")
+        proof=text("Tools/prove_authority_contract.py")
+        self.assertIn("prove_authority_contract.py",verify)
+        self.assertIn("self_build_current_known_good",diag)
+        self.assertIn("receiptOperation",diag)
+        self.assertIn("CURRENT_REQUIRED",proof)
+        self.assertIn("issue_stage1_",proof)
 
     def test_installed_state_rebinds_engine_env_before_gate(self):
         for rel in ("Install-Stage1.ps1","Start-ForgeBoss.ps1","Verify-Stage1.ps1"):
