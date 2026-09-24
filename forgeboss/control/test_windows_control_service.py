@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 
 from forgeboss.control.windows_control_service import (
+    ForgeBossControlService,
     MAX_RESPONSE_BYTES,
     WindowsControlServiceError,
     build_service_class,
@@ -30,6 +32,35 @@ def raw_request(method="health"):
 
 
 class WindowsControlServiceHostTests(unittest.TestCase):
+    def test_service_class_is_stable_module_attribute_for_scm_reload(self):
+        module = importlib.import_module(ForgeBossControlService.__module__)
+        self.assertIs(
+            getattr(module, ForgeBossControlService.__name__),
+            ForgeBossControlService,
+        )
+        self.assertEqual(
+            ForgeBossControlService.__name__,
+            "ForgeBossControlService",
+        )
+        self.assertEqual(
+            ForgeBossControlService.__module__,
+            "forgeboss.control.windows_control_service",
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows-native pywin32 registry test")
+    def test_pywin32_registry_class_string_resolves_to_same_service_class(self):
+        import win32serviceutil
+
+        cls = build_service_class()
+        class_string = win32serviceutil.GetServiceClassString(cls)
+        self.assertEqual(
+            class_string,
+            "forgeboss.control.windows_control_service.ForgeBossControlService",
+        )
+        module_name, class_name = class_string.rsplit(".", 1)
+        module = importlib.import_module(module_name)
+        self.assertIs(getattr(module, class_name), cls)
+
     def test_allowed_client_sid_file_requires_one_concrete_user_sid(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "sid.txt"
