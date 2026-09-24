@@ -69,7 +69,7 @@ class ForgeBossDaemon:
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
-                    "capabilities":["tasks","task-cancel","governed-task-create","governed-launch-attestation","governed-host-launch","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+                    "capabilities":["tasks","governed-task-cancel","governed-task-create","governed-launch-attestation","governed-host-launch","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
@@ -114,8 +114,11 @@ class ForgeBossDaemon:
             def cancel():
                 task_id=str(p.get("taskId") or "")
                 if not task_id:raise ProtocolError("INVALID_PARAMS","taskId required")
-                try:task=self.store.request_cancel(task_id)
-                except KeyError as ex:raise ProtocolError("TASK_NOT_FOUND","task not found") from ex
+                existing=self.store.get_task(task_id)
+                if not existing:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if existing.get("governance_mode")!="reuse-v1":
+                    raise ProtocolError("CANCEL_NOT_SUPPORTED","r0 physical cancellation is limited to governed tasks")
+                task=self.store.request_cancel(task_id)
                 active_run=None
                 with self.lock:
                     active=self.active_governed_runs.get(task_id)
