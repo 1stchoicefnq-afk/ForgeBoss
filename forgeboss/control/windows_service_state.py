@@ -26,6 +26,13 @@ _BROAD_SIDS = frozenset({
     "S-1-5-32-545",  # Builtin Users
 })
 
+# Stable Win32 ACL constants kept local to the pure verifier so exact-shape
+# tests do not need pywin32 or Windows merely to compare an inspection.
+_ACCESS_ALLOWED_ACE_TYPE = 0x00
+_OBJECT_INHERIT_ACE = 0x01
+_CONTAINER_INHERIT_ACE = 0x02
+_FILE_ALL_ACCESS = 0x001F01FF
+
 
 @dataclass(frozen=True)
 class PrivateAclPlan:
@@ -322,11 +329,11 @@ def verify_private_acl_exact(
     if any(sid in actual_sids for sid in plan.denied_broad_sids):
         raise ServicePrivateStateError("broad principal present in private DACL")
 
-    expected_flags = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE
+    expected_flags = _OBJECT_INHERIT_ACE | _CONTAINER_INHERIT_ACE
     for entry in inspection.entries:
-        if entry.ace_type != win32con.ACCESS_ALLOWED_ACE_TYPE:
+        if entry.ace_type != _ACCESS_ALLOWED_ACE_TYPE:
             raise ServicePrivateStateError("service-private DACL contains non-allow ACE")
-        if entry.access_mask != ntsecuritycon.FILE_ALL_ACCESS:
+        if entry.access_mask != _FILE_ALL_ACCESS:
             raise ServicePrivateStateError("service-private DACL ACE is not full control")
         if entry.ace_flags & expected_flags != expected_flags:
             raise ServicePrivateStateError("service-private DACL ACE is not inheritable")
