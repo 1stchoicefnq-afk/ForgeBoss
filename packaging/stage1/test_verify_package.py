@@ -21,7 +21,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         root = Path(td.name)
         baseline = {
-            "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\\\" set "ROOT=%ROOT:~0,-1%"\r\n',
+            "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "Start-ForgeBoss.ps1": b"$authorityHost='x'\n",
             "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root)\n",
@@ -46,7 +46,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
 
     def test_clean_pack_passes(self):
         root = self.make_pack({
-            "TURN-ON-FORGEBOSS.cmd": b"@echo off\r\n",
+            "README.txt": b"ok\n",
             "Tools/x.py": b"import os\nprint(os.name)\n",
         })
         out = verify_package(root)
