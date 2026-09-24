@@ -48,7 +48,8 @@ def main():
     )
     server=WindowsNamedPipeServer(service=service,boundary=service.boundary,protected_root=root,
                                   allowed_peer_sids={cfg["userSid"]},max_instances=4,
-                                  preauth_timeout_ms=1000,handler_timeout_ms=300000,poll_interval=0.01)
+                                  preauth_timeout_ms=1000,handler_timeout_ms=300000,poll_interval=0.01,
+                                  pipe_name=cfg["pipeName"])
     server.start()
     atomic_json(root/"authority.pid.json",{"schema":1,"pid":os.getpid(),"creationFileTime":creation_filetime(),
                 "executable":str(Path(sys.executable).resolve()),"script":str(Path(__file__).resolve()),"startedAt":time.time()})
