@@ -24,7 +24,12 @@ class Stage1PackageVerifierTests(unittest.TestCase):
             "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "Start-ForgeBoss.ps1": b"$authorityHost='x'\n",
-            "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root,[string]$PackageManifest)\n# PROTECTED_ROOT_IDENTITY_MISMATCH\n",
+            "Authority/Prepare-MachineAuthorityRoot.ps1":
+                b"param([string]$Root,[string]$PackageManifest)\n"
+                b"$expected='C:\\\\ForgeBossAuthorityStage1-v28'\n"
+                b"$actual=$Root\n"
+                b"if(-not $actual.Equals($expected,[StringComparison]::OrdinalIgnoreCase)){throw 'PROTECTED_ROOT_IDENTITY_MISMATCH'}\n"
+                b"if($false){throw 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'}\n",
         }
         baseline.update(files)
         files = baseline
