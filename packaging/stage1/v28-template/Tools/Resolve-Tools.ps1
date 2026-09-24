@@ -29,11 +29,13 @@ $python=FirstExisting $pythonCandidates
 if(!$python){throw 'PYTHON_3_13_NOT_FOUND'}
 $pv=& $python -I -S -c "import sys;print('%d.%d'%sys.version_info[:2])"
 if($LASTEXITCODE -ne 0 -or $pv.Trim() -ne '3.13'){throw 'PYTHON_3_13_REQUIRED'}
+$node=FirstExisting @((Join-Path $env:ProgramFiles 'nodejs\node.exe'))
 $payload=[ordered]@{
  schema=1
  git=@{path=$git;sha256=(Sha $git);size=(Get-Item $git).Length}
  docker=@{path=$docker;sha256=(Sha $docker);size=(Get-Item $docker).Length}
  python=@{path=$python;sha256=(Sha $python);size=(Get-Item $python).Length}
+ node=$(if($node){@{path=$node;sha256=(Sha $node);size=(Get-Item $node).Length}}else{$null})
 }
 $json=$payload|ConvertTo-Json -Depth 5 -Compress
 if($Output){
