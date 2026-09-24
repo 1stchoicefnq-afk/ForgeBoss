@@ -15,7 +15,7 @@ MAX_TTL_SECONDS = 600
 _RUNTIME_RUNNERS = {
     "mini-swe": {
         "path": "forgeboss/executors/mini_swe_runner.py",
-        "sha256": "9d12ff58d87f370892ceaebaab18e1ba89af7546e676643de87327fb77ce35a1",
+        "sha256": "be7d59991ee55b5b999dc14ede809647f843a19d8506b11d8b15777fc24cd2bc",
     },
 }
 _REQUIRED = {
