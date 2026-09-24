@@ -178,7 +178,7 @@ class ForgeBossDaemon:
                 claim_params={
                     "taskId":task["task_id"],"repository":task["repository"],"baseSha":task["base_sha"],
                     "allowedPaths":allowed,"allowedTools":tools,"worktreePath":worktree,"runId":run_id,
-                    "currentHead":current_head,"ttlSeconds":1200,"runtimeId":runtime_id,
+                    "currentHead":current_head,"ttlSeconds":1800,"runtimeId":runtime_id,
                     "provider":provider,"model":model,"budgetUsd":budget,
                     "launchAttestation":attestation,
                     "_governedLaunchCapability":self.governed_launch_capability,
