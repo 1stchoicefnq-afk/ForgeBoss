@@ -325,6 +325,8 @@ class ControlStore:
                 row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=? AND owner_run_id=? AND owner_epoch=? AND released_at IS NULL",(task_id,run_id,int(owner_epoch))).fetchone()
                 if not row: raise PermissionError("writer authority lost: lease/epoch mismatch")
                 if float(row["expires_at"])<=now: raise PermissionError("writer authority lost: lease expired")
+                task_state=self.db.execute("SELECT cancel_requested_at FROM tasks WHERE task_id=?",(task_id,)).fetchone()
+                if task_state and task_state["cancel_requested_at"] is not None:outcome="cancelled"
                 old_head=str(row["current_head"])
                 if expected_head is not None and old_head!=str(expected_head): raise PermissionError("writer authority lost: expected head mismatch")
                 final_head=old_head if result_head is None else str(result_head)
@@ -333,7 +335,7 @@ class ControlStore:
                 if cur.rowcount!=1: raise PermissionError("writer authority lost during release")
                 cur=self.db.execute("UPDATE task_runs SET status=?,finished_at=? WHERE run_id=? AND task_id=? AND owner_epoch=? AND status='running'",(outcome,now,run_id,task_id,int(owner_epoch)))
                 if cur.rowcount!=1: raise PermissionError("run authority lost during release")
-                cur=self.db.execute("UPDATE tasks SET status=?,revision=revision+1,result_head=?,updated_at=? WHERE task_id=? AND status='running'",(outcome,final_head,now,task_id))
+                cur=self.db.execute("UPDATE tasks SET status=?,terminal_outcome=?,current_step=?,revision=revision+1,result_head=?,updated_at=? WHERE task_id=? AND status='running'",(outcome,outcome,outcome,final_head,now,task_id))
                 if cur.rowcount!=1: raise PermissionError("task authority lost during release")
                 self._event_locked("workspace.released",{"ownerEpoch":int(owner_epoch),"outcome":outcome,"resultHead":final_head},task_id,run_id)
                 self.db.execute("COMMIT");begun=False
