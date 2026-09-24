@@ -241,6 +241,35 @@ def verify_build_manifest(manifest_path, expected_root=None, expected_revision=N
     return {"verified": True, "revision": revision, "codeRoot": str(root), "entrypoint": entrypoint, "manifestPath": str(path), "manifestSha256": digest, "identitySha256": hashlib.sha256(_canonical_json(canonical)).hexdigest(), "treeSha256": actual_tree, "inventoryMode": _INVENTORY_MODE, "fileCount": len(actual), "files": actual}
 
 
+def create_build_manifest(root, revision, entrypoint="forgeboss/control/daemon.py"):
+    root = Path(root).resolve(strict=True)
+    revision = str(revision or "").lower()
+    if not _SHA_RE.fullmatch(revision):
+        raise IdentityError("build manifest revision must be an exact git SHA")
+    entrypoint = _normal_rel(entrypoint)
+    if not entrypoint.startswith(_INVENTORY_ROOT + "/"):
+        raise IdentityError("build manifest entrypoint must be inside authoritative ForgeBoss package")
+    actual = _authoritative_inventory(root)
+    git_files = _git_bound_inventory(root, revision)
+    if set(actual) != set(git_files):
+        raise IdentityError("working package file set does not match declared git revision")
+    for rel, actual_hash in actual.items():
+        if git_files.get(rel) != actual_hash:
+            raise IdentityError("working package bytes do not match declared git revision: " + rel)
+    if entrypoint not in actual:
+        raise IdentityError("build manifest entrypoint is not in authoritative package inventory")
+    tree = _inventory_digest(actual)
+    return {
+        "schema": 1,
+        "inventoryMode": _INVENTORY_MODE,
+        "revision": revision,
+        "codeRoot": str(root),
+        "entrypoint": entrypoint,
+        "treeSha256": tree,
+        "files": actual,
+    }
+
+
 def runtime_identity_from_env(root):
     root = Path(root).resolve(strict=True)
     self_build = os.environ.get("FORGEBOSS_SELF_BUILD_MODE") == "YES"
