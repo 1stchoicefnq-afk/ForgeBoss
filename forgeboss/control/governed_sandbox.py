@@ -169,10 +169,34 @@ def _worker_command(values: object) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _docker_base() -> list[str]:
+def assert_docker_identity(identity: DockerIdentity) -> None:
+    path = Path(identity.path)
+    try:
+        if path.is_symlink():
+            raise GovernedSandboxError("Docker CLI became a symlink")
+        if hasattr(path, "is_junction") and path.is_junction():
+            raise GovernedSandboxError("Docker CLI became a junction")
+        resolved = path.resolve(strict=True)
+    except GovernedSandboxError:
+        raise
+    except OSError as ex:
+        raise GovernedSandboxError("Docker CLI identity cannot be revalidated") from ex
+    if str(resolved) != identity.path:
+        raise GovernedSandboxError("Docker CLI path identity changed")
+    if _sha256_file(resolved) != identity.sha256:
+        raise GovernedSandboxError("Docker CLI bytes changed after verification")
+
+
+def _docker_base(container_name: str) -> list[str]:
+    if not _VOLUME_NAME.fullmatch(container_name):
+        raise GovernedSandboxError("invalid Docker container name")
     return [
         "run",
         "--rm",
+        "--pull",
+        "never",
+        "--name",
+        container_name,
         "--network",
         "none",
         "--read-only",
@@ -191,13 +215,21 @@ def _docker_base() -> list[str]:
     ]
 
 
-def build_stage_argv(docker: DockerIdentity, image: str, volume: str, source: Path) -> tuple[str, ...]:
+def build_stage_argv(
+    docker: DockerIdentity,
+    image: str,
+    volume: str,
+    source: Path,
+    container_name: str | None = None,
+) -> tuple[str, ...]:
     if not _VOLUME_NAME.fullmatch(volume):
         raise GovernedSandboxError("invalid Docker volume name")
     return tuple(
         [docker.path]
-        + _docker_base()
+        + _docker_base(container_name or (volume + "_stage"))
         + [
+            "--entrypoint",
+            "/bin/cp",
             "--mount",
             f"type=bind,src={_mount_value(source)},dst=/source,readonly",
             "--mount",
@@ -218,13 +250,14 @@ def build_worker_argv(
     image: str,
     volume: str,
     command: Sequence[str],
+    container_name: str | None = None,
 ) -> tuple[str, ...]:
     if not _VOLUME_NAME.fullmatch(volume):
         raise GovernedSandboxError("invalid Docker volume name")
     cmd = _worker_command(command)
     return tuple(
         [docker.path]
-        + _docker_base()
+        + _docker_base(container_name or (volume + "_worker"))
         + [
             "--mount",
             f"type=volume,src={volume},dst=/workspace",
@@ -241,13 +274,16 @@ def build_extract_argv(
     image: str,
     volume: str,
     result_dir: Path,
+    container_name: str | None = None,
 ) -> tuple[str, ...]:
     if not _VOLUME_NAME.fullmatch(volume):
         raise GovernedSandboxError("invalid Docker volume name")
     return tuple(
         [docker.path]
-        + _docker_base()
+        + _docker_base(container_name or (volume + "_extract"))
         + [
+            "--entrypoint",
+            "/bin/cp",
             "--mount",
             f"type=volume,src={volume},dst=/workspace,readonly",
             "--mount",
@@ -409,26 +445,24 @@ def run_governed_sandbox(
     docker = resolve_docker_identity(docker_path)
     command = _worker_command(worker_command)
     volume = "forgeboss_gov_" + secrets.token_hex(12)
+    names = {
+        "stage": volume + "_stage",
+        "worker": volume + "_worker",
+        "extract": volume + "_extract",
+    }
 
-    create = (docker.path, "volume", "create", volume)
-    remove = (docker.path, "volume", "rm", "-f", volume)
+    create = (docker.path, "volume", "create", "--driver", "local", volume)
+    remove_volume = (docker.path, "volume", "rm", "-f", volume)
     created = False
     worker_result: ProcessResult | None = None
+    primary_error: BaseException | None = None
+    cleanup_errors: list[str] = []
+
+    def run_docker(argv: Sequence[str], *, timeout_seconds: int) -> ProcessResult:
+        assert_docker_identity(docker)
+        return process_runner(argv, timeout_seconds=timeout_seconds)
 
     try:
-        _require_ok(
-            process_runner(create, timeout_seconds=60),
-            "Docker volume create",
-        )
-        created = True
-        _require_ok(
-            process_runner(
-                build_stage_argv(docker, pinned_image, volume, source),
-                timeout_seconds=min(timeout_seconds, 300),
-            ),
-            "Docker workspace stage",
-        )
-
         with paid_start_authority(
             lease_path,
             lease_token,
@@ -438,20 +472,57 @@ def run_governed_sandbox(
             control_envelope,
             cli_budget=cli_budget,
         ):
-            worker_result = process_runner(
-                build_worker_argv(docker, pinned_image, volume, command),
+            created_result = _require_ok(
+                run_docker(create, timeout_seconds=60),
+                "Docker volume create",
+            )
+            if created_result.stdout.strip() != volume:
+                raise GovernedSandboxError(
+                    "Docker volume create returned unexpected identity"
+                )
+            created = True
+
+            _require_ok(
+                run_docker(
+                    build_stage_argv(
+                        docker,
+                        pinned_image,
+                        volume,
+                        source,
+                        names["stage"],
+                    ),
+                    timeout_seconds=min(timeout_seconds, 300),
+                ),
+                "Docker workspace stage",
+            )
+
+            worker_result = run_docker(
+                build_worker_argv(
+                    docker,
+                    pinned_image,
+                    volume,
+                    command,
+                    names["worker"],
+                ),
                 timeout_seconds=timeout_seconds,
             )
-        _require_ok(worker_result, "sandbox worker")
+            _require_ok(worker_result, "sandbox worker")
 
-        _require_ok(
-            process_runner(
-                build_extract_argv(docker, pinned_image, volume, result),
-                timeout_seconds=min(timeout_seconds, 300),
-            ),
-            "Docker result extraction",
-        )
-        _assert_result_tree_safe(result)
+            _require_ok(
+                run_docker(
+                    build_extract_argv(
+                        docker,
+                        pinned_image,
+                        volume,
+                        result,
+                        names["extract"],
+                    ),
+                    timeout_seconds=min(timeout_seconds, 300),
+                ),
+                "Docker result extraction",
+            )
+            _assert_result_tree_safe(result)
+
         return SandboxResult(
             docker=docker,
             image=pinned_image,
@@ -460,13 +531,44 @@ def run_governed_sandbox(
             result_dir=str(result),
         )
     except SecurityError as ex:
-        raise GovernedSandboxError(f"host authority denied sandbox launch: {ex}") from ex
+        primary_error = GovernedSandboxError(
+            f"host authority denied sandbox launch: {ex}"
+        )
+        raise primary_error from ex
+    except BaseException as ex:
+        primary_error = ex
+        raise
     finally:
         if created:
+            for name in names.values():
+                try:
+                    assert_docker_identity(docker)
+                    result_cleanup = process_runner(
+                        (docker.path, "container", "rm", "-f", name),
+                        timeout_seconds=60,
+                    )
+                    # Missing --rm containers are expected after successful runs.
+                    # Any other text is retained as cleanup evidence, not silently lost.
+                    if result_cleanup.returncode not in (0, 1):
+                        cleanup_errors.append(
+                            f"container cleanup {name} exit {result_cleanup.returncode}"
+                        )
+                except Exception as ex:
+                    cleanup_errors.append(f"container cleanup {name}: {ex}")
             try:
-                process_runner(remove, timeout_seconds=60)
-            except Exception:
-                # Cleanup failure must be visible to callers; preserving the first
-                # exception is still more useful than masking it here. Production
-                # integration must record cleanup debt separately.
-                pass
+                assert_docker_identity(docker)
+                volume_cleanup = process_runner(
+                    remove_volume,
+                    timeout_seconds=60,
+                )
+                if volume_cleanup.returncode != 0:
+                    cleanup_errors.append(
+                        f"volume cleanup exit {volume_cleanup.returncode}: "
+                        f"{volume_cleanup.stderr[-1000:]}"
+                    )
+            except Exception as ex:
+                cleanup_errors.append(f"volume cleanup: {ex}")
+        if cleanup_errors and primary_error is None:
+            raise GovernedSandboxError(
+                "sandbox cleanup failed: " + "; ".join(cleanup_errors)
+            )
