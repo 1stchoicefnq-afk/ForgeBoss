@@ -1,0 +1,57 @@
+name: PR343 release test
+
+on:
+  push:
+    branches:
+      - test/pr343-f0e3512d-release
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prove source delta is workflow-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only f0e3512d6ba37b77bdeb8b26bcf7d9ce4da4875a HEAD | tee /tmp/pr343-delta.txt
+          test "$(wc -l < /tmp/pr343-delta.txt | tr -d ' ')" = "1"
+          grep -Fx ".github/workflows/pr343-release-test.yml" /tmp/pr343-delta.txt
+
+      - name: Compile authority code
+        run: python -m compileall -q forgeboss/control forgeboss/policy forgeboss/security forgeboss/executors
+
+      - name: Focused governed-launch tests
+        run: |
+          python -m unittest -v forgeboss.control.test_governed_launch
+          python -m unittest -v forgeboss.control.test_governed_task_create
+
+      - name: Control tests
+        run: python -m unittest discover -v -s forgeboss/control -p "test_*.py"
+
+      - name: Security tests
+        run: python -m unittest discover -v -s forgeboss/security -p "test_*.py"
+
+      - name: Final clean-source check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain
+          test -z "$(git status --porcelain)"
