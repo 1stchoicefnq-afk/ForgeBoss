@@ -143,6 +143,94 @@ def _require_pywin32():
     return ntsecuritycon, win32con, win32security
 
 
+def _private_security_attributes(plan: PrivateAclPlan):
+    ntsecuritycon, win32con, win32security = _require_pywin32()
+    try:
+        import pywintypes
+    except ImportError as ex:
+        raise ServicePrivateStateError("pywintypes is unavailable") from ex
+
+    acl = win32security.ACL()
+    inherit_flags = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE
+    for sid_text in plan.allowed_sids:
+        sid = win32security.ConvertStringSidToSid(sid_text)
+        acl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION,
+            inherit_flags,
+            ntsecuritycon.FILE_ALL_ACCESS,
+            sid,
+        )
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorDacl(1, acl, 0)
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    return attributes
+
+
+def _is_linklike(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+    except OSError:
+        return True
+    try:
+        if hasattr(path, "is_junction") and path.is_junction():
+            return True
+    except OSError:
+        return True
+    return False
+
+
+def create_private_root_atomic(
+    service_sid: str,
+    *,
+    desktop_sid: str | None = None,
+    root: str | Path | None = None,
+) -> PrivateAclPlan:
+    if os.name != "nt":
+        raise ServicePrivateStateError(
+            "Windows service-private state is unavailable on this platform"
+        )
+    plan = build_private_acl_plan(
+        service_sid,
+        desktop_sid=desktop_sid,
+        root=root,
+    )
+    target = Path(plan.root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.exists() or _is_linklike(target):
+        if _is_linklike(target) or not target.is_dir():
+            raise ServicePrivateStateError(
+                "existing service-private root is linklike or not a directory"
+            )
+        inspection = inspect_private_directory_acl(target)
+        verify_private_acl_exact(plan, inspection)
+        return plan
+
+    try:
+        import win32file
+    except ImportError as ex:
+        raise ServicePrivateStateError("win32file is unavailable") from ex
+
+    attributes = _private_security_attributes(plan)
+    try:
+        win32file.CreateDirectory(str(target), attributes)
+    except Exception as ex:
+        # A concurrent creator is never trusted implicitly. Re-inspect only if the
+        # final path now exists as a real directory with the exact protected DACL.
+        if not target.exists() or _is_linklike(target) or not target.is_dir():
+            raise ServicePrivateStateError(
+                "failed to atomically create service-private root"
+            ) from ex
+        inspection = inspect_private_directory_acl(target)
+        verify_private_acl_exact(plan, inspection)
+
+    inspection = inspect_private_directory_acl(target)
+    verify_private_acl_exact(plan, inspection)
+    return plan
+
+
 def apply_private_directory_acl(
     service_sid: str,
     *,
@@ -159,17 +247,8 @@ def apply_private_directory_acl(
     target = Path(plan.root)
     target.mkdir(parents=True, exist_ok=True)
 
-    acl = win32security.ACL()
-    inherit_flags = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE
-    for sid_text in plan.allowed_sids:
-        sid = win32security.ConvertStringSidToSid(sid_text)
-        acl.AddAccessAllowedAceEx(
-            win32security.ACL_REVISION,
-            inherit_flags,
-            ntsecuritycon.FILE_ALL_ACCESS,
-            sid,
-        )
-
+    attributes = _private_security_attributes(plan)
+    acl = attributes.SECURITY_DESCRIPTOR.GetSecurityDescriptorDacl()
     info = (
         win32security.DACL_SECURITY_INFORMATION
         | win32security.PROTECTED_DACL_SECURITY_INFORMATION
