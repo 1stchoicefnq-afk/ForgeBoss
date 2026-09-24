@@ -32,6 +32,14 @@ try{
  AssertHash (Join-Path $s.launcherRoot 'prove_no_console.py') ([string]$s.launcherFiles.noConsole) 'no-console proof'
  Write-Host '[PASS] Package manifest + exact file-set + behaviour scan'
 
+ $rootProof=& (Join-Path $PackageRoot 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $PackageRoot 2>&1
+ $rootRc=$LASTEXITCODE
+ if($rootRc -ne 0){throw ("PROTECTED_ROOT_VALIDATION_FAILED rc="+$rootRc+": "+($rootProof|Out-String))}
+ $rootObj=($rootProof|Out-String).Trim()|ConvertFrom-Json
+ if(-not $rootObj.ok){throw 'PROTECTED_ROOT_VALIDATION_FAILED'}
+ if([string]$s.protectedRoot -ne [string]$rootObj.expectedRoot){throw 'INSTALLED_PROTECTED_ROOT_IDENTITY_MISMATCH'}
+ Write-Host ("[PASS] Protected root identity executed across "+$rootObj.cases.Count+" cases; root="+$rootObj.expectedRoot)
+
  $env:FORGEBOSS_ENGINE_ROOT=(Resolve-Path -LiteralPath $s.engineRoot).Path
  & $RuntimePy -I -B (Join-Path $s.engineRoot 'packaging\stage1\stage1_gate.py') $Installed
  if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
