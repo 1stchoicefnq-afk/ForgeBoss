@@ -136,7 +136,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         root = self.make_pack({"Start-ForgeBoss.ps1": b"$host='bad'\n"})
         with self.assertRaises(PackageVerificationError) as cm:
             verify_package(root)
-        self.assertEqual(str(cm.exception), "POWERSHELL_RESERVED_HOST_ASSIGNMENT")
+        self.assertIn("POWERSHELL_AUTOMATIC_VARIABLE_ASSIGNMENT", str(cm.exception))
 
     def test_hardcoded_authority_root_version_rejected(self):
         root = self.make_pack({
