@@ -122,6 +122,9 @@ jobs:
             if($LASTEXITCODE -eq 0){throw ("Dangerous protected root accepted: "+$candidate)}
             Write-Host ("[PASS] refused dangerous root: "+$candidate)
           }
+          # The last child is expected to return non-zero. Do not leak that
+          # expected child exit code as this successful workflow step's status.
+          exit 0
       - name: Prove engine self-build budget policy
         shell: pwsh
         run: python packaging/stage1/v28-template/Tools/prove_budget_policy.py --engine-root .
