@@ -401,6 +401,131 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "GOVERNED_LAUNCH_ATTESTATION_INVALID")
         self.assertIsNone(self.store.get_lease(p["taskId"]))
 
+    def _launch_request(self, task_id, run_id="RUN-1", runtime_id="mini-swe"):
+        work = self.worktrees / ("launch-" + uuid.uuid4().hex)
+        (work / "src").mkdir(parents=True)
+        (work / "tests").mkdir(parents=True)
+        (work / "src" / "terminal.py").write_text("x = 1\n", encoding="utf-8")
+        (work / "tests" / "test_terminal.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+        return {
+            "method": "run.launch_governed",
+            "idempotencyKey": uuid.uuid4().hex,
+            "params": {
+                "taskId": task_id,
+                "runId": run_id,
+                "runtimeId": runtime_id,
+                "worktreePath": str(work),
+                "currentHead": "a" * 40,
+                "budgetUsd": 0.25,
+                "provider": "openai",
+                "model": "openai/gpt-5.6-luna",
+                # These must never override the stored task authority.
+                "repository": "attacker/other",
+                "baseSha": "b" * 40,
+                "allowedPaths": ["outside.txt"],
+            },
+        }
+
+    def test_daemon_owned_governed_launch_uses_stored_task_authority_and_releases(self):
+        p, _ = self._create_governed_substantial("T-LAUNCH")
+        req = self._launch_request(p["taskId"], run_id="RUN-LAUNCH")
+        fake = {
+            "returncode": 0,
+            "stdout_tail": "done",
+            "stderr_tail": "",
+            "result_head": "a" * 40,
+            "runner_relpath": "forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256": "f" * 64,
+        }
+        with mock.patch.object(self.mod, "run_governed_worker", return_value=fake) as worker:
+            out = self.daemon.dispatch(req, True)
+        self.assertEqual(out["outcome"], "worker-complete")
+        self.assertEqual(out["runId"], "RUN-LAUNCH")
+        self.assertIsNotNone(self.store.get_lease(p["taskId"]))
+        self.assertIsNotNone(self.store.get_lease(p["taskId"])["released_at"])
+        self.assertEqual(self.store.get_run("RUN-LAUNCH")["status"], "worker-complete")
+        task = self.store.get_task(p["taskId"])
+        self.assertEqual(task["status"], "worker-complete")
+        kwargs = worker.call_args.kwargs
+        self.assertEqual(kwargs["task"]["repository"], "owner/repo")
+        self.assertEqual(kwargs["task"]["base_sha"], "a" * 40)
+        self.assertEqual(
+            json.loads(kwargs["task"]["allowed_paths_json"]),
+            ["src/terminal.py", "tests/test_terminal.py"],
+        )
+
+    def test_finished_run_id_replays_without_second_paid_worker(self):
+        p, _ = self._create_governed_substantial("T-REPLAY")
+        first = self._launch_request(p["taskId"], run_id="RUN-REPLAY")
+        fake = {
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "result_head": "a" * 40,
+            "runner_relpath": "forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256": "f" * 64,
+        }
+        with mock.patch.object(self.mod, "run_governed_worker", return_value=fake) as worker:
+            out1 = self.daemon.dispatch(first, True)
+            second = self._launch_request(p["taskId"], run_id="RUN-REPLAY")
+            out2 = self.daemon.dispatch(second, True)
+        self.assertEqual(out1["outcome"], "worker-complete")
+        self.assertTrue(out2["replayed"])
+        self.assertEqual(out2["outcome"], "worker-complete")
+        self.assertEqual(worker.call_count, 1)
+
+    def test_failed_worker_is_released_and_same_run_cannot_pay_twice(self):
+        p, _ = self._create_governed_substantial("T-FAIL")
+        req = self._launch_request(p["taskId"], run_id="RUN-FAIL")
+        fake = {
+            "returncode": 13,
+            "stdout_tail": "",
+            "stderr_tail": "denied",
+            "result_head": "a" * 40,
+            "runner_relpath": "forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256": "f" * 64,
+        }
+        with mock.patch.object(self.mod, "run_governed_worker", return_value=fake) as worker:
+            out1 = self.daemon.dispatch(req, True)
+            out2 = self.daemon.dispatch(self._launch_request(p["taskId"], run_id="RUN-FAIL"), True)
+        self.assertEqual(out1["outcome"], "worker-failed")
+        self.assertTrue(out2["replayed"])
+        self.assertEqual(out2["outcome"], "worker-failed")
+        self.assertEqual(worker.call_count, 1)
+
+    def test_host_launcher_exception_releases_run_before_error(self):
+        p, _ = self._create_governed_substantial("T-HOST-FAIL")
+        req = self._launch_request(p["taskId"], run_id="RUN-HOST-FAIL")
+        err = self.mod.GovernedHostLaunchError("guard refused")
+        with mock.patch.object(self.mod, "run_governed_worker", side_effect=err) as worker:
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_HOST_LAUNCH_FAILED")
+        self.assertEqual(self.store.get_run("RUN-HOST-FAIL")["status"], "worker-failed")
+        with mock.patch.object(self.mod, "run_governed_worker") as second_worker:
+            replay = self.daemon.dispatch(self._launch_request(p["taskId"], run_id="RUN-HOST-FAIL"), True)
+        self.assertTrue(replay["replayed"])
+        second_worker.assert_not_called()
+        self.assertEqual(worker.call_count, 1)
+
+    def test_governed_host_launch_rejects_unapproved_runtime_before_claim(self):
+        p, _ = self._create_governed_substantial("T-RUNTIME")
+        req = self._launch_request(p["taskId"], run_id="RUN-RUNTIME", runtime_id="openhands")
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "RUNTIME_NOT_APPROVED")
+        self.assertIsNone(self.store.get_run("RUN-RUNTIME"))
+        self.assertIsNone(self.store.get_lease(p["taskId"]))
+
+    def test_wrong_memory_capability_cannot_unlock_direct_governed_claim(self):
+        p, _ = self._create_governed_substantial("T-CAP")
+        req = self._claim_request(p["taskId"], "mini-swe")
+        req["params"]["_governedLaunchCapability"] = "wrong-capability"
+        with self.assertRaises(self.mod.ProtocolError) as ctx:
+            self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
+        self.assertIsNone(self.store.get_lease(p["taskId"]))
+
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
