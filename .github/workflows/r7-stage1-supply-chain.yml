@@ -105,6 +105,23 @@ jobs:
       - name: Build exact self-verifying v28 candidate
         shell: pwsh
         run: python packaging/stage1/build_v28_package.py --template packaging/stage1/v28-template --verifier packaging/stage1/verify_package.py --lock stage1-input/lock/stage1-requirements.lock --image-digest stage1-input/image/python-image-digest.txt --engine-sha "$env:ENGINE_SHA" --engine-ref "$env:ENGINE_REF" --out-dir dist-v28
+      - name: Prove protected root identity refuses system directories before UAC
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          $helper=Join-Path $root 'Authority\Prepare-MachineAuthorityRoot.ps1'
+          $manifest=Join-Path $root 'PACKAGE-MANIFEST.json'
+          $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & $ps -NoLogo -NoProfile -ExecutionPolicy Bypass -File $helper -Root 'C:\ForgeBossAuthorityStage1-v28' -UserSid $sid -PackageManifest $manifest -ValidateOnly
+          if($LASTEXITCODE -ne 0){throw 'Expected protected root was rejected'}
+          $drive=[IO.Path]::GetPathRoot($env:SystemRoot)
+          $bad=@($env:SystemRoot,(Join-Path $drive 'Users'),$env:ProgramFiles,$env:ProgramData)
+          foreach($candidate in $bad){
+            & $ps -NoLogo -NoProfile -ExecutionPolicy Bypass -File $helper -Root $candidate -UserSid $sid -PackageManifest $manifest -ValidateOnly *> $null
+            if($LASTEXITCODE -eq 0){throw ("Dangerous protected root accepted: "+$candidate)}
+            Write-Host ("[PASS] refused dangerous root: "+$candidate)
+          }
       - name: Prove engine self-build budget policy
         shell: pwsh
         run: python packaging/stage1/v28-template/Tools/prove_budget_policy.py --engine-root .
@@ -139,8 +156,8 @@ jobs:
           Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ForgeBoss-Stage1-v28.3-R8.3-root-verify-candidate
+          name: ForgeBoss-Stage1-v28.4-R8.4-root-identity-candidate
           path: |
-            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.3-R8.3-ROOT-VERIFY-CANDIDATE.zip
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.4-R8.4-ROOT-IDENTITY-CANDIDATE.zip
             dist-v28/V28-PACKAGE-BUILD-REPORT.json
           if-no-files-found: error
