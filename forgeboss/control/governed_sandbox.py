@@ -15,6 +15,7 @@ from typing import Callable, Sequence
 
 from forgeboss.security.executor_guard import (
     SecurityError,
+    _assert_live_control_lease,
     paid_start_authority,
 )
 
@@ -318,6 +319,7 @@ def run_process_bounded(
     *,
     timeout_seconds: int,
     max_output: int = _DEFAULT_MAX_OUTPUT,
+    watchdog: Callable[[], None] | None = None,
 ) -> ProcessResult:
     if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool):
         raise GovernedSandboxError("timeout_seconds must be an integer")
@@ -364,16 +366,32 @@ def run_process_bounded(
     ]
     for thread in threads:
         thread.start()
+    deadline = time.monotonic() + timeout_seconds
     try:
-        rc = proc.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as ex:
-        try:
-            proc.kill()
-        finally:
-            proc.wait(timeout=10)
-        raise GovernedSandboxError(
-            f"Docker process timed out after {timeout_seconds}s"
-        ) from ex
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            if watchdog is not None:
+                try:
+                    watchdog()
+                except Exception as ex:
+                    try:
+                        proc.kill()
+                    finally:
+                        proc.wait(timeout=10)
+                    raise GovernedSandboxError(
+                        f"live authority revoked during Docker execution: {ex}"
+                    ) from ex
+            if time.monotonic() >= deadline:
+                try:
+                    proc.kill()
+                finally:
+                    proc.wait(timeout=10)
+                raise GovernedSandboxError(
+                    f"Docker process timed out after {timeout_seconds}s"
+                )
+            time.sleep(0.25)
     finally:
         for thread in threads:
             thread.join(timeout=5)
@@ -451,14 +469,24 @@ def run_governed_sandbox(
 
     create = (docker.path, "volume", "create", "--driver", "local", volume)
     remove_volume = (docker.path, "volume", "rm", "-f", volume)
+    volume_attempted = False
     created = False
     worker_result: ProcessResult | None = None
     primary_error: BaseException | None = None
     cleanup_errors: list[str] = []
 
-    def run_docker(argv: Sequence[str], *, timeout_seconds: int) -> ProcessResult:
+    def run_docker(
+        argv: Sequence[str],
+        *,
+        timeout_seconds: int,
+        watchdog: Callable[[], None] | None = None,
+    ) -> ProcessResult:
         assert_docker_identity(docker)
-        return process_runner(argv, timeout_seconds=timeout_seconds)
+        return process_runner(
+            argv,
+            timeout_seconds=timeout_seconds,
+            watchdog=watchdog,
+        )
 
     try:
         with paid_start_authority(
@@ -469,7 +497,8 @@ def run_governed_sandbox(
             executor,
             control_envelope,
             cli_budget=cli_budget,
-        ):
+        ) as authority:
+            volume_attempted = True
             created_result = _require_ok(
                 run_docker(create, timeout_seconds=60),
                 "Docker volume create",
@@ -503,6 +532,7 @@ def run_governed_sandbox(
                     names["worker"],
                 ),
                 timeout_seconds=timeout_seconds,
+                watchdog=lambda: _assert_live_control_lease(authority, executor),
             )
             _require_ok(worker_result, "sandbox worker")
 
@@ -544,6 +574,7 @@ def run_governed_sandbox(
                     result_cleanup = process_runner(
                         (docker.path, "container", "rm", "-f", name),
                         timeout_seconds=60,
+                        watchdog=None,
                     )
                     # Missing --rm containers are expected after successful runs.
                     # Any other text is retained as cleanup evidence, not silently lost.
@@ -553,11 +584,13 @@ def run_governed_sandbox(
                         )
                 except Exception as ex:
                     cleanup_errors.append(f"container cleanup {name}: {ex}")
+        if volume_attempted:
             try:
                 assert_docker_identity(docker)
                 volume_cleanup = process_runner(
                     remove_volume,
                     timeout_seconds=60,
+                    watchdog=None,
                 )
                 if volume_cleanup.returncode != 0:
                     cleanup_errors.append(
