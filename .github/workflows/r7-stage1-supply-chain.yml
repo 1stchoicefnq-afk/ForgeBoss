@@ -24,7 +24,7 @@ jobs:
       - name: Generate fully hashed Windows runtime lock
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check "pip==25.3" "pip-tools==7.5.1"
+          python -m pip install --disable-pip-version-check "pip==24.3.1" "pip-tools==7.5.1"
           python -m piptools compile --resolver=backtracking --generate-hashes --strip-extras --output-file stage1-requirements.lock packaging/stage1/requirements.in
           Get-Content stage1-requirements.lock
       - uses: actions/upload-artifact@v4
