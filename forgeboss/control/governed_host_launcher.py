@@ -100,6 +100,8 @@ def _issue_executor_guard_lease(
             str(workspace),
             "--executor",
             runtime_id,
+            "--ttl",
+            "1800",
         ],
         cwd=str(Path(root).resolve()),
         env=env,
