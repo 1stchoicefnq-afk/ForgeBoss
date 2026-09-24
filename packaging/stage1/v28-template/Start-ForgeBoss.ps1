@@ -16,9 +16,9 @@ AssertFileHash ([string]$s.git.path) ([string]$s.git.sha256) 'git.exe'
 AssertFileHash ([string]$s.docker.path) ([string]$s.docker.sha256) 'docker.exe'
 if($null -ne $s.node){AssertFileHash ([string]$s.node.path) ([string]$s.node.sha256) 'node.exe'}
 if($PSCommandPath){AssertFileHash $PSCommandPath ([string]$s.launcherFiles.start) 'Start-ForgeBoss.ps1'}
-$host=Join-Path $s.launcherRoot 'authority_user_host.py'
+$authorityHost=Join-Path $s.launcherRoot 'authority_user_host.py'
 $diag=Join-Path $s.launcherRoot 'authority_diagnose.py'
-AssertFileHash $host ([string]$s.launcherFiles.host) 'authority host'
+AssertFileHash $authorityHost ([string]$s.launcherFiles.host) 'authority host'
 AssertFileHash $diag ([string]$s.launcherFiles.diagnose) 'authority diagnose'
 
 & $RuntimePy -I (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $InstalledState
@@ -59,7 +59,7 @@ function Diagnose(){
 
 $d=Diagnose
 if(-not $d.ok){
- Start-Process -FilePath $RuntimePy -ArgumentList @('-I','-B',$host,'--installed',$InstalledState) -WindowStyle Hidden | Out-Null
+ Start-Process -FilePath $RuntimePy -ArgumentList @('-I','-B',$authorityHost,'--installed',$InstalledState) -WindowStyle Hidden | Out-Null
  $last=$null
  for($i=0;$i -lt 80;$i++){
   Start-Sleep -Milliseconds 250
