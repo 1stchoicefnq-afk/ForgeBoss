@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Callable, Sequence
@@ -27,7 +28,28 @@ class GovernedSandboxError(RuntimeError):
 _IMAGE_DIGEST = re.compile(r"^[A-Za-z0-9._/:@+-]+@sha256:[0-9a-f]{64}$")
 _VOLUME_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _DEFAULT_MAX_OUTPUT = 64 * 1024
+_DEFAULT_MAX_SOURCE_BYTES = 512 * 1024 * 1024
+_DEFAULT_MAX_SOURCE_FILES = 100_000
+_DEFAULT_WORKSPACE_TMPFS = "768m"
 _TRUNCATION = "\n[...TRUNCATED...]\n"
+_READ_DENY_PREFIXES = (
+    ".git/",
+    "secrets/",
+    "appdata/",
+    ".openhands/",
+    "ci/credentials/",
+    "build/credentials/",
+    "state/forgebossd/",
+    "state/learning/",
+    ".aws/",
+    ".ssh/",
+    ".gnupg/",
+)
+_READ_DENY_EXACT = {
+    ".git",
+    ".npmrc",
+    ".pypirc",
+}
 
 
 @dataclass(frozen=True)
@@ -148,6 +170,77 @@ def _absolute_dir(path: str | Path, label: str, *, must_exist: bool = True) -> P
     if must_exist and not resolved.is_dir():
         raise GovernedSandboxError(f"{label} must be a directory")
     return resolved
+
+
+def _read_denied(relative: str) -> bool:
+    key = relative.replace("\\", "/").casefold().strip("/")
+    if not key:
+        return False
+    name = key.rsplit("/", 1)[-1]
+    if name == ".env" or name.startswith(".env."):
+        return True
+    if key in _READ_DENY_EXACT:
+        return True
+    return any(key.startswith(prefix) for prefix in _READ_DENY_PREFIXES)
+
+
+def create_sanitized_source(
+    source: Path,
+    destination: Path,
+    *,
+    max_bytes: int = _DEFAULT_MAX_SOURCE_BYTES,
+    max_files: int = _DEFAULT_MAX_SOURCE_FILES,
+) -> tuple[int, int]:
+    if max_bytes <= 0 or max_files <= 0:
+        raise GovernedSandboxError("sandbox source limits must be positive")
+    source = source.resolve(strict=True)
+    destination = destination.resolve(strict=True)
+    total_bytes = 0
+    total_files = 0
+
+    for root, dirnames, filenames in os.walk(source, topdown=True, followlinks=False):
+        root_path = Path(root)
+        rel_root = root_path.relative_to(source)
+
+        kept_dirs = []
+        for name in dirnames:
+            src = root_path / name
+            rel = (rel_root / name).as_posix()
+            try:
+                if src.is_symlink() or (hasattr(src, "is_junction") and src.is_junction()):
+                    raise GovernedSandboxError(f"source contains linklike directory: {rel}")
+            except OSError as ex:
+                raise GovernedSandboxError(f"source directory identity unreadable: {rel}") from ex
+            if _read_denied(rel):
+                continue
+            kept_dirs.append(name)
+            (destination / rel).mkdir(parents=True, exist_ok=True)
+        dirnames[:] = kept_dirs
+
+        for name in filenames:
+            src = root_path / name
+            rel = (rel_root / name).as_posix()
+            if _read_denied(rel):
+                continue
+            try:
+                if src.is_symlink() or (hasattr(src, "is_junction") and src.is_junction()):
+                    raise GovernedSandboxError(f"source contains linklike file: {rel}")
+                stat = src.stat()
+            except OSError as ex:
+                raise GovernedSandboxError(f"source file identity unreadable: {rel}") from ex
+            if not src.is_file():
+                raise GovernedSandboxError(f"source contains non-regular file: {rel}")
+            total_files += 1
+            total_bytes += int(stat.st_size)
+            if total_files > max_files:
+                raise GovernedSandboxError("sandbox source file-count limit exceeded")
+            if total_bytes > max_bytes:
+                raise GovernedSandboxError("sandbox source byte limit exceeded")
+            dst = destination / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    return total_files, total_bytes
 
 
 def _mount_value(path: Path) -> str:
@@ -467,7 +560,20 @@ def run_governed_sandbox(
         "extract": volume + "_extract",
     }
 
-    create = (docker.path, "volume", "create", "--driver", "local", volume)
+    create = (
+        docker.path,
+        "volume",
+        "create",
+        "--driver",
+        "local",
+        "--opt",
+        "type=tmpfs",
+        "--opt",
+        "device=tmpfs",
+        "--opt",
+        f"o=size={_DEFAULT_WORKSPACE_TMPFS}",
+        volume,
+    )
     remove_volume = (docker.path, "volume", "rm", "-f", volume)
     volume_attempted = False
     created = False
