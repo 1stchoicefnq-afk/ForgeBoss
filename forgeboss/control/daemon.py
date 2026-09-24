@@ -3,11 +3,12 @@ import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
 from pathlib import Path
 from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
-from .envelope import secret_file,policy_secret_file,sign_envelope,verify_envelope,canonical
+from .envelope import secret_file,policy_secret_file,launch_secret_file,sign_envelope,verify_envelope,canonical
 from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
+from .governed_launch import GovernedLaunchAttestationError,verify_governed_launch_attestation
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -23,8 +24,12 @@ class ForgeBossDaemon:
         self.store=ControlStore(DB)
         self.secret_path,self.secret=secret_file(ROOT)
         self.policy_secret_path,self.policy_secret=policy_secret_file(ROOT)
-        if self.secret_path==self.policy_secret_path or hmac.compare_digest(self.secret,self.policy_secret):
-            raise RuntimeError("policy approval key must be distinct from daemon authentication key")
+        self.launch_secret_path,self.launch_secret=launch_secret_file(ROOT)
+        key_paths={self.secret_path.resolve(),self.policy_secret_path.resolve(),self.launch_secret_path.resolve()}
+        if len(key_paths)!=3:
+            raise RuntimeError("daemon, policy approval and governed launch keys must use distinct files")
+        if hmac.compare_digest(self.secret,self.policy_secret) or hmac.compare_digest(self.secret,self.launch_secret) or hmac.compare_digest(self.policy_secret,self.launch_secret):
+            raise RuntimeError("daemon, policy approval and governed launch keys must be distinct")
         self.connect_nonces={}
         self.started=time.time()
         self.idempotency={}
@@ -61,7 +66,7 @@ class ForgeBossDaemon:
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
-                    "capabilities":["tasks","governed-task-create","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+                    "capabilities":["tasks","governed-task-create","governed-launch-attestation","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
@@ -107,10 +112,31 @@ class ForgeBossDaemon:
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
                 if task.get("governance_mode")=="reuse-v1":
-                    raise ProtocolError(
-                        "GOVERNED_LAUNCH_ATTESTATION_REQUIRED",
-                        "governed tasks cannot claim a workspace through caller-supplied runtime identity; use the future attested governed-launch path",
-                    )
+                    attestation=p.get("launchAttestation")
+                    if not attestation:
+                        raise ProtocolError(
+                            "GOVERNED_LAUNCH_ATTESTATION_REQUIRED",
+                            "governed tasks require a trusted launch attestation before workspace claim",
+                        )
+                    try:
+                        verify_governed_launch_attestation(
+                            attestation,
+                            root=ROOT,
+                            secret=self.launch_secret,
+                            task_id=p.get("taskId"),
+                            repository=p.get("repository"),
+                            base_sha=p.get("baseSha"),
+                            run_id=p.get("runId"),
+                            worktree_path=p.get("worktreePath"),
+                            runtime_id=p.get("runtimeId"),
+                            allowed_paths=p.get("allowedPaths",[]),
+                            allowed_tools=p.get("allowedTools",[]),
+                            provider=p.get("provider"),
+                            model=p.get("model"),
+                            budget_usd=p.get("budgetUsd",0),
+                        )
+                    except GovernedLaunchAttestationError as ex:
+                        raise ProtocolError("GOVERNED_LAUNCH_ATTESTATION_INVALID",str(ex)) from ex
                 if str(p.get("repository") or "")!=str(task["repository"]):raise ProtocolError("TASK_BINDING_MISMATCH","repository differs from task")
                 if str(p.get("baseSha") or "")!=str(task["base_sha"]):raise ProtocolError("TASK_BINDING_MISMATCH","baseSha differs from task")
                 try:allowed,_=validate_packet({"allowed_files":p.get("allowedPaths",[]),"context_files":[]})

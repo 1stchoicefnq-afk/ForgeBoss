@@ -26,6 +26,9 @@ def secret_file(root:Path):
 def policy_secret_file(root:Path):
     return _secret_file(root,"policy-approval-secret.bin","forgeboss policy approval")
 
+def launch_secret_file(root:Path):
+    return _secret_file(root,"governed-launch-secret.bin","forgeboss governed launch")
+
 def sign_envelope(payload,secret:bytes):
     body=dict(payload)
     body.pop("signature",None)
