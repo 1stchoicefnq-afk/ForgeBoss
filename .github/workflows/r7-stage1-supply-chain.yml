@@ -47,7 +47,7 @@ jobs:
           python -m piptools compile --resolver=backtracking --generate-hashes --strip-extras --output-file stage1-requirements.lock packaging/stage1/requirements.in
           Get-Content stage1-requirements.lock
           python -m venv stage1-lock-smoke
-          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps --only-binary=:all: -r stage1-requirements.lock
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps -r stage1-requirements.lock
           & .\\stage1-lock-smoke\\Scripts\\python.exe -c "import cryptography, litellm, webview; from minisweagent.agents.default import DefaultAgent; print('LOCK_IMPORT_OK')"
       - uses: actions/upload-artifact@v4
         with:
