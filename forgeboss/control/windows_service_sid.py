@@ -157,6 +157,62 @@ def query_service_sid_type() -> int:
     return value
 
 
+def current_process_token_sids() -> tuple[str, ...]:
+    win32service, win32security = _require_pywin32_service()
+    try:
+        import ntsecuritycon
+        import win32api
+    except ImportError as ex:
+        raise ServiceSidConfigError("required token inspection APIs are unavailable") from ex
+
+    token = win32security.OpenProcessToken(
+        win32api.GetCurrentProcess(),
+        win32security.TOKEN_QUERY,
+    )
+    try:
+        user_sid = win32security.GetTokenInformation(
+            token,
+            win32security.TokenUser,
+        )[0]
+        groups = win32security.GetTokenInformation(
+            token,
+            win32security.TokenGroups,
+        )
+        values = {
+            win32security.ConvertSidToStringSid(user_sid).upper()
+        }
+        for group_sid, attributes in groups:
+            enabled = bool(attributes & ntsecuritycon.SE_GROUP_ENABLED)
+            deny_only = bool(attributes & ntsecuritycon.SE_GROUP_USE_FOR_DENY_ONLY)
+            if enabled and not deny_only:
+                values.add(
+                    win32security.ConvertSidToStringSid(group_sid).upper()
+                )
+        return tuple(sorted(values))
+    except Exception as ex:
+        raise ServiceSidConfigError(
+            "failed to inspect current Windows process token"
+        ) from ex
+    finally:
+        token.Close()
+
+
+def assert_service_sid_in_current_token(
+    service_sid: str,
+) -> tuple[str, ...]:
+    expected = service_sid.strip().upper()
+    try:
+        validate_service_sid(expected)
+    except ServicePrivateStateError as ex:
+        raise ServiceSidConfigError(str(ex)) from ex
+    actual = current_process_token_sids()
+    if expected not in actual:
+        raise ServiceSidConfigError(
+            "ForgeBossControl service SID is absent from the current process token"
+        )
+    return actual
+
+
 def resolve_service_sid(*, desktop_sid: str | None = None) -> str:
     _, win32security = _require_pywin32_service()
     try:
