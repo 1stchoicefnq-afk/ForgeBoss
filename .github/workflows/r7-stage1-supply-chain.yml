@@ -49,7 +49,7 @@ jobs:
           if(Select-String -LiteralPath stage1-requirements.lock -Pattern '^proxy[-_]tools==' -Quiet){throw 'vendored proxy_tools leaked into lock'}
           Get-Content stage1-requirements.lock
           python -m venv stage1-lock-smoke
-          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps -r stage1-requirements.lock
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps --only-binary :all: -r stage1-requirements.lock
           $site=(& .\\stage1-lock-smoke\\Scripts\\python.exe -I -c "import site;print(site.getsitepackages()[0])").Trim()
           Copy-Item -LiteralPath packaging/stage1/v28-template/Vendor/proxy_tools -Destination (Join-Path $site 'proxy_tools') -Recurse -Force
           & .\\stage1-lock-smoke\\Scripts\\python.exe -I -c "import cryptography, litellm, webview, proxy_tools; from minisweagent.agents.default import DefaultAgent; print('LOCK_IMPORT_OK')"
@@ -105,6 +105,12 @@ jobs:
       - name: Build exact self-verifying v28 candidate
         shell: pwsh
         run: python packaging/stage1/build_v28_package.py --template packaging/stage1/v28-template --verifier packaging/stage1/verify_package.py --lock stage1-input/lock/stage1-requirements.lock --image-digest stage1-input/image/python-image-digest.txt --engine-sha "$env:ENGINE_SHA" --engine-ref "$env:ENGINE_REF" --out-dir dist-v28
+      - name: Prove engine self-build budget policy
+        shell: pwsh
+        run: python packaging/stage1/v28-template/Tools/prove_budget_policy.py --engine-root .
+      - name: Prove ForgeBoss hidden-child mechanism on Windows
+        shell: pwsh
+        run: python packaging/stage1/v28-template/Tools/prove_no_console.py --engine-root .
       - name: Parse every PowerShell file
         shell: pwsh
         run: |

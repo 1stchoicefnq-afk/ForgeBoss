@@ -7,15 +7,21 @@ $PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
 $EngineSha='@@ENGINE_SHA@@'
 $EngineRef='@@ENGINE_REF@@'
 $BuilderImage='@@IMAGE_DIGEST@@'
+$PackageManifest=Join-Path $PackageRoot 'PACKAGE-MANIFEST.json'
+$PackageInfo=Get-Content -LiteralPath $PackageManifest -Raw | ConvertFrom-Json
+$PackageVersion=[string]$PackageInfo.packageVersion
+if($PackageVersion -notmatch '^v([0-9]+)(?:\.[0-9]+)?-r[0-9]+(?:\.[0-9]+)?$'){throw 'PACKAGE_VERSION_INVALID'}
+$Stage1Major=$Matches[1]
 $Base=Join-Path $env:LOCALAPPDATA 'ForgeBoss'
 $EngineRoot=Join-Path $Base ('engine\'+$EngineSha)
-$RuntimeRoot=Join-Path $Base 'runtime\v28'
+$RuntimeRoot=Join-Path $Base ('runtime\v'+$Stage1Major)
 $RuntimePy=Join-Path $RuntimeRoot 'Scripts\python.exe'
-$ProtectedRoot='C:\ForgeBossAuthorityStage1-v28'
-$ClientRoot=Join-Path $Base 'authority-client-stage1-v28'
+$ProtectedRoot=('C:\ForgeBossAuthorityStage1-v'+$Stage1Major)
+$ClientRoot=Join-Path $Base ('authority-client-stage1-v'+$Stage1Major)
 $StateRoot=Join-Path $Base 'state'
-$LauncherRoot=Join-Path $Base 'launcher\v28'
+$LauncherRoot=Join-Path $Base ('launcher\v'+$Stage1Major)
 $Installed=Join-Path $Base 'stage1-installed.json'
+$AuthorityPipe=('\\.\pipe\ForgeBossAuthorityStage1-v'+$Stage1Major)
 $SystemPS=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Sha([string]$p){(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -66,13 +72,25 @@ $head=(& $Git -C $EngineRoot rev-parse --verify HEAD).Trim().ToLowerInvariant()
 if($head -ne $EngineSha){throw 'ENGINE_SHA_MISMATCH'}
 $dirty=(& $Git -C $EngineRoot status --porcelain=v1 --untracked-files=all | Out-String)
 if(-not [string]::IsNullOrWhiteSpace($dirty)){throw 'ENGINE_TREE_DIRTY'}
-Write-Host '[PASS] Exact clean ForgeBoss engine'
+$blobCount=0
+$treeLines=& $Git -C $EngineRoot ls-tree -r --full-tree $EngineSha
+if($LASTEXITCODE -ne 0){throw 'ENGINE_TREE_ENUMERATION_FAILED'}
+foreach($line in $treeLines){
+ $entry=[string]$line
+ if($entry -notmatch '^([0-9]{6}) blob ([0-9a-fA-F]{40,64})\t(.+)$'){continue}
+ $want=$Matches[2].ToLowerInvariant();$rel=$Matches[3]
+ $gotHash=(& $Git -C $EngineRoot hash-object --no-filters -- $rel).Trim().ToLowerInvariant()
+ if($LASTEXITCODE -ne 0 -or $gotHash -ne $want){throw ('ENGINE_BLOB_BYTES_MISMATCH: '+$rel)}
+ $blobCount++
+}
+if($blobCount -lt 1){throw 'ENGINE_BLOB_VERIFICATION_EMPTY'}
+Write-Host ("[PASS] Exact clean ForgeBoss engine; blob bytes verified="+$blobCount)
 
 if(Test-Path -LiteralPath $RuntimeRoot){Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force}
 AssertTool $t.python 'python.exe'
 & $BootstrapPython -I -m venv $RuntimeRoot
 if($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $RuntimePy -PathType Leaf)){throw 'RUNTIME_VENV_FAILED'}
-& $RuntimePy -I -m pip install --disable-pip-version-check --require-hashes --no-deps -r (Join-Path $PackageRoot 'requirements.lock')
+& $RuntimePy -I -m pip install --disable-pip-version-check --require-hashes --no-deps --only-binary :all: -r (Join-Path $PackageRoot 'requirements.lock')
 if($LASTEXITCODE -ne 0){throw 'HASH_PINNED_RUNTIME_INSTALL_FAILED'}
 $site=(& $RuntimePy -I -c "import site;print(site.getsitepackages()[0])").Trim()
 if([string]::IsNullOrWhiteSpace($site)){throw 'RUNTIME_SITE_PACKAGES_UNAVAILABLE'}
@@ -90,7 +108,7 @@ Write-Host '[PASS] Digest-pinned builder image'
 
 $userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $prep=Join-Path $PackageRoot 'Authority\Prepare-MachineAuthorityRoot.ps1'
-$argLine='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" -Root "{1}" -UserSid "{2}"' -f $prep,$ProtectedRoot,$userSid
+$argLine='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" -Root "{1}" -UserSid "{2}" -PackageManifest "{3}"' -f $prep,$ProtectedRoot,$userSid,$PackageManifest
 Write-Host 'Stage 1 needs one Windows UAC approval for the protected authority root/ACL only.'
 $p=Start-Process -FilePath $SystemPS -ArgumentList $argLine -Verb RunAs -Wait -PassThru
 if($p.ExitCode -ne 0){throw 'PROTECTED_ROOT_UAC_STEP_FAILED'}
@@ -103,7 +121,7 @@ if($LASTEXITCODE -ne 0){throw 'CLIENT_ROOT_ACL_FAILED'}
 
 $env:FORGEBOSS_INSTALL_USER_SID=$userSid
 try{
- & $RuntimePy -I (Join-Path $PackageRoot 'Authority\generate_authority_material.py') --root $ProtectedRoot --client-root $ClientRoot --engine-root $EngineRoot --engine-sha $EngineSha
+ & $RuntimePy -I (Join-Path $PackageRoot 'Authority\generate_authority_material.py') --root $ProtectedRoot --client-root $ClientRoot --engine-root $EngineRoot --engine-sha $EngineSha --pipe-name $AuthorityPipe
  if($LASTEXITCODE -ne 0){throw 'AUTHORITY_MATERIAL_FAILED'}
 }finally{
  Remove-Item Env:\FORGEBOSS_INSTALL_USER_SID -ErrorAction SilentlyContinue
@@ -126,7 +144,7 @@ Copy-Item -LiteralPath (Join-Path $PackageRoot 'Tools\prove_no_console.py') -Des
 $packageManifest=Join-Path $PackageRoot 'PACKAGE-MANIFEST.json'
 $state=[ordered]@{
  schema=2
- version='v28'
+ version=$PackageVersion
  engineRoot=$EngineRoot
  engineSha=$EngineSha
  engineRef=$EngineRef
@@ -137,7 +155,7 @@ $state=[ordered]@{
  docker=@{path=$t.docker.path;sha256=$t.docker.sha256;size=$t.docker.size}
  node=$(if($null -ne $t.node){@{path=$t.node.path;sha256=$t.node.sha256;size=$t.node.size}}else{$null})
  builderImage=$BuilderImage
- authorityPipe='\\.\pipe\ForgeBossAuthorityStage1-v28'
+ authorityPipe=$AuthorityPipe
  protectedRoot=$ProtectedRoot
  clientRoot=$ClientRoot
  stateRoot=$StateRoot

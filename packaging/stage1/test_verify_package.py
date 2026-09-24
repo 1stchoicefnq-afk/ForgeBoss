@@ -24,7 +24,7 @@ class Stage1PackageVerifierTests(unittest.TestCase):
             "TURN-ON-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "VERIFY-FORGEBOSS.cmd": b'@echo off\r\nset "ROOT=%~dp0"\r\nif "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"\r\n',
             "Start-ForgeBoss.ps1": b"$authorityHost='x'\n",
-            "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root)\n",
+            "Authority/Prepare-MachineAuthorityRoot.ps1": b"param([string]$Root,[string]$PackageManifest)\n# PROTECTED_ROOT_IDENTITY_MISMATCH\n",
         }
         baseline.update(files)
         files = baseline
@@ -160,6 +160,43 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         out = verify_package(root)
         self.assertTrue(out["ok"])
 
+
+    def test_computed_setattr_name_is_detected(self):
+        root=self.make_pack({"Tools/x.py":b"import subprocess\nsetattr(subprocess,'Po'+'pen',object)\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED",str(cm.exception))
+
+    def test_importlib_module_monkeypatch_is_detected(self):
+        root=self.make_pack({"Tools/x.py":b"import importlib\nimportlib.import_module('subprocess').Popen=object\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED",str(cm.exception))
+
+    def test_vars_module_monkeypatch_is_detected(self):
+        root=self.make_pack({"Tools/x.py":b"import subprocess\nvars(subprocess)['Popen']=object\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("PROCESSWIDE_MONKEYPATCH_DENIED",str(cm.exception))
+
+    def test_subprocess_run_monkeypatch_is_detected(self):
+        root=self.make_pack({"Tools/x.py":b"import subprocess\nsubprocess.run=object\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("subprocess.run",str(cm.exception))
+
+    def test_builtins_open_monkeypatch_is_detected(self):
+        root=self.make_pack({"Tools/x.py":b"import builtins\nbuiltins.open=object\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("builtins.open",str(cm.exception))
+
+    def test_dynamic_setattr_fails_closed(self):
+        root=self.make_pack({"Tools/x.py":b"import subprocess\nname='Popen'\nsetattr(subprocess,name,object)\n"})
+        with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+        self.assertIn("DYNAMIC_PROCESSWIDE_MONKEYPATCH_DENIED",str(cm.exception))
+
+    def test_powershell_automatic_variables_are_case_insensitive(self):
+        for name in ("host","args","input","error","psitem","true","false","null","pwd","pid","home"):
+            with self.subTest(name=name):
+                root=self.make_pack({"Extra.ps1":("$"+name.upper()+" = 'bad'\n").encode()})
+                with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
+                self.assertIn("POWERSHELL_AUTOMATIC_VARIABLE_ASSIGNMENT",str(cm.exception))
 
 if __name__ == "__main__":
     unittest.main()

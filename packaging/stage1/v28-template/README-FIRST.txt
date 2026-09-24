@@ -11,7 +11,8 @@ Security changes:
 - PACKAGE-VERIFICATION.json is not used or shipped;
 - package Python is behavior-scanned for forbidden process-wide os.mkdir/subprocess.Popen monkeypatches;
 - exact engine selection comes from stage1-installed.json and a mismatched FORGEBOSS_ENGINE_ROOT is rejected;
-- runtime dependencies install from a fully hashed Windows lock with --require-hashes --no-deps --only-binary;
+- runtime dependencies install from a fully hashed Windows lock with --require-hashes --no-deps --only-binary :all:;
+- VERIFY exercises the engine's own self-build budget policy and hidden-child no-console mechanism;
 - builder image is digest-pinned;
 - only the protected machine-root/ACL step is elevated;
 - VERIFY does not clean or delete engine evidence;

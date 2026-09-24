@@ -16,9 +16,12 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--root",required=True);ap.add_argument("--client-root",required=True)
     ap.add_argument("--engine-root",required=True);ap.add_argument("--engine-sha",required=True)
+    ap.add_argument("--pipe-name",required=True)
     ns=ap.parse_args()
     root=Path(ns.root).resolve(strict=True);client=Path(ns.client_root).resolve(strict=True)
     engine=Path(ns.engine_root).resolve(strict=True);sha=ns.engine_sha.lower()
+    pipe_name=str(ns.pipe_name);prefix=r"\\.\pipe\ForgeBossAuthorityStage1-v"
+    if not pipe_name.startswith(prefix) or not pipe_name[len(prefix):].isdigit():raise RuntimeError("AUTHORITY_PIPE_IDENTITY_INVALID")
     sys.path.insert(0,str(engine))
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -54,7 +57,7 @@ def main():
     cfg={
       "schema":2,"repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":1,
       "protectedRoot":str(root),"engineRoot":str(engine),"engineSha":sha,
-      "pipeName":r"\\.\pipe\ForgeBossAuthorityStage1-v28",
+      "pipeName":pipe_name,
       "userSid":sid,"peerId":"controller-a","peerPublicKeyB64":base64.b64encode(peer_pub).decode(),
       "receiptSigningKeyFile":str(receipt_path),"receiptPublicKeyFile":str(client/"receipt-public.b64"),
       "githubPrivateKeyFile":str(github_key),"githubEnabled":False,

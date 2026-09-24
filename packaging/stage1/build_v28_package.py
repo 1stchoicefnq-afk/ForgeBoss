@@ -152,6 +152,8 @@ def main()->int:
     out.mkdir(parents=True)
     root=out/PACKAGE_DIR_NAME
     shutil.copytree(Path(ns.template),root)
+    vendor_init=root/"Vendor"/"proxy_tools"/"__init__.py"
+    if vendor_init.is_file():vendor_init.write_bytes(vendor_init.read_bytes().replace(b"\r\n",b"\n"))
     shutil.copy2(ns.verifier,root/"Tools"/"verify_package.py")
     shutil.copy2(ns.lock,root/"requirements.lock")
 

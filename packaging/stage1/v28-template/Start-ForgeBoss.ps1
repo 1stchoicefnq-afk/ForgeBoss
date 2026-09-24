@@ -21,7 +21,7 @@ $diag=Join-Path $s.launcherRoot 'authority_diagnose.py'
 AssertFileHash $authorityHost ([string]$s.launcherFiles.host) 'authority host'
 AssertFileHash $diag ([string]$s.launcherFiles.diagnose) 'authority diagnose'
 
-& $RuntimePy -I (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $InstalledState
+& $RuntimePy -I -B (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $InstalledState
 if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
 
 $clientCfg=Get-Content -LiteralPath (Join-Path $s.clientRoot 'client-config.json') -Raw | ConvertFrom-Json

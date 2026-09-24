@@ -32,11 +32,17 @@ try{
  AssertHash (Join-Path $s.launcherRoot 'prove_no_console.py') ([string]$s.launcherFiles.noConsole) 'no-console proof'
  Write-Host '[PASS] Package manifest + exact file-set + behaviour scan'
 
- & $RuntimePy -I (Join-Path $s.engineRoot 'packaging\stage1\stage1_gate.py') $Installed
+ & $RuntimePy -I -B (Join-Path $s.engineRoot 'packaging\stage1\stage1_gate.py') $Installed
  if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
  Write-Host '[PASS] Start and VERIFY share exact installed engine authority'
 
- & $RuntimePy -I -B (Join-Path $s.launcherRoot 'prove_no_console.py')
+ $budget=& $RuntimePy -I -B (Join-Path $PackageRoot 'Tools\prove_budget_policy.py') --engine-root $s.engineRoot 2>&1
+ if($LASTEXITCODE -ne 0){throw ("ENGINE_BUDGET_POLICY_FAILED: "+($budget|Out-String))}
+ $budgetObj=($budget|Out-String).Trim()|ConvertFrom-Json
+ if(-not $budgetObj.ok){throw 'ENGINE_BUDGET_POLICY_FAILED'}
+ Write-Host ("[PASS] Engine self-build budget policy maxAutomaticUsd="+$budgetObj.maxAutomaticUsd+" cycles="+$budgetObj.maxAutomaticCycles)
+
+ & $RuntimePy -I -B (Join-Path $s.launcherRoot 'prove_no_console.py') --engine-root $s.engineRoot
  if($LASTEXITCODE -ne 0){throw 'NO_CONSOLE_PROOF_FAILED'}
  Write-Host '[PASS] Native Windows no-console child-process proof'
 
@@ -61,7 +67,7 @@ try{
  Write-Host ("[PASS] Known-good identity revision="+$d.revision+" phase="+$d.phase)
 
  if([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)){throw 'OPENAI_API_KEY_MISSING'}
- Write-Host '[PASS] OpenAI API credential present'
+ Write-Host '[INFO] OpenAI API credential is present; VERIFY does not claim provider validity or spend API budget'
  Write-Host '[PASS] VERIFY performed no engine-tree cleanup or evidence deletion'
  Write-Host '============================================================'
  Write-Host '[PASS] STAGE 1 IS READY FOR OWNER DECISION'

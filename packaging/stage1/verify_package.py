@@ -10,7 +10,14 @@ from pathlib import Path, PurePosixPath
 
 MANIFEST = "PACKAGE-MANIFEST.json"
 STATIC_VERIFICATION = "PACKAGE-VERIFICATION.json"
-_FORBIDDEN_STDLIB_ATTRS = {("os", "mkdir"), ("subprocess", "Popen")}
+_SENSITIVE_STDLIB_MODULES = {"os", "subprocess", "builtins"}
+_FORBIDDEN_STDLIB_ATTRS = {
+    ("os", "mkdir"), ("os", "makedirs"), ("os", "remove"), ("os", "unlink"),
+    ("os", "replace"), ("os", "rename"), ("os", "rmdir"),
+    ("subprocess", "Popen"), ("subprocess", "run"), ("subprocess", "call"),
+    ("subprocess", "check_call"), ("subprocess", "check_output"), ("builtins", "open"),
+}
+_RESERVED_POWERSHELL_VARIABLES = {"host","args","input","error","psitem","true","false","null","pwd","pid","home"}
 
 
 class PackageVerificationError(RuntimeError):
@@ -83,9 +90,9 @@ def _stdlib_aliases(tree: ast.AST) -> tuple[dict[str, str], dict[str, tuple[str,
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in {"os", "subprocess"}:
+                if alias.name in _SENSITIVE_STDLIB_MODULES or alias.name == "importlib":
                     modules[alias.asname or alias.name] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module in {"os", "subprocess"}:
+        elif isinstance(node, ast.ImportFrom) and node.module in _SENSITIVE_STDLIB_MODULES:
             for alias in node.names:
                 if alias.name == "*":
                     raise PackageVerificationError("PYTHON_STAR_IMPORT_DENIED")
@@ -124,13 +131,38 @@ def _stdlib_aliases(tree: ast.AST) -> tuple[dict[str, str], dict[str, tuple[str,
     return modules, attrs
 
 
+def _static_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str): return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left=_static_string(node.left);right=_static_string(node.right)
+        if left is not None and right is not None:return left+right
+    return None
+
+def _module_identity(node: ast.AST, modules: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        module=modules.get(node.id);return module if module in _SENSITIVE_STDLIB_MODULES else None
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            owner=modules.get(node.func.value.id)
+            if owner=="importlib" and node.func.attr=="import_module" and node.args:
+                value=_static_string(node.args[0]);return value if value in _SENSITIVE_STDLIB_MODULES else None
+        if isinstance(node.func, ast.Name) and node.func.id=="__import__" and node.args:
+            value=_static_string(node.args[0]);return value if value in _SENSITIVE_STDLIB_MODULES else None
+    return None
+
 def _target_identity(target: ast.AST, modules: dict[str, str], attrs: dict[str, tuple[str, str]]):
-    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-        module = modules.get(target.value.id)
-        if module:
-            return module, target.attr
-    if isinstance(target, ast.Name):
-        return attrs.get(target.id)
+    if isinstance(target, ast.Attribute):
+        module=_module_identity(target.value,modules)
+        if module:return module,target.attr
+    if isinstance(target, ast.Subscript):
+        value=target.value
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id=="vars" and value.args:
+            module=_module_identity(value.args[0],modules)
+            if module:
+                name=_static_string(target.slice)
+                if name is None:raise PackageVerificationError("DYNAMIC_PROCESSWIDE_MONKEYPATCH_DENIED:"+module)
+                return module,name
+    if isinstance(target, ast.Name):return attrs.get(target.id)
     return None
 
 
@@ -156,14 +188,15 @@ def _check_python_no_processwide_monkeypatch(path: Path) -> None:
                     "PROCESSWIDE_MONKEYPATCH_DENIED:" + path.as_posix() + ":" + ".".join(ident)
                 )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"setattr", "delattr"}:
-            args = node.args
-            if len(args) >= 2 and isinstance(args[0], ast.Name) and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
-                module = modules.get(args[0].id)
-                ident = (module, args[1].value) if module else None
-                if ident in _FORBIDDEN_STDLIB_ATTRS:
-                    raise PackageVerificationError(
-                        "PROCESSWIDE_MONKEYPATCH_DENIED:" + path.as_posix() + ":" + ".".join(ident)
-                    )
+            args=node.args
+            if len(args)>=2:
+                module=_module_identity(args[0],modules)
+                if module:
+                    name=_static_string(args[1])
+                    if name is None:raise PackageVerificationError("DYNAMIC_PROCESSWIDE_MONKEYPATCH_DENIED:"+path.as_posix()+":"+module)
+                    ident=(module,name)
+                    if ident in _FORBIDDEN_STDLIB_ATTRS:
+                        raise PackageVerificationError("PROCESSWIDE_MONKEYPATCH_DENIED:"+path.as_posix()+":"+".".join(ident))
 
 
 def _check_all_python(root: Path) -> int:
@@ -188,17 +221,18 @@ def _check_package_semantics(root: Path) -> None:
         if 'if "%ROOT:~-1%"=="\\" set "ROOT=%ROOT:~0,-1%"' not in text:
             raise PackageVerificationError("CMD_ROOT_NORMALIZATION_MISSING:" + name)
 
-    start = (root / "Start-ForgeBoss.ps1").read_text(encoding="utf-8-sig")
-    for line in start.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("$host=") or stripped.lower().startswith("$host ="):
-            raise PackageVerificationError("POWERSHELL_RESERVED_HOST_ASSIGNMENT")
-
-    helper = (root / "Authority" / "Prepare-MachineAuthorityRoot.ps1").read_text(encoding="utf-8-sig")
     import re
-    stale = re.search(r"ForgeBossAuthorityStage1-v(\d+)", helper, re.I)
-    if stale:
-        raise PackageVerificationError("HARDCODED_AUTHORITY_ROOT_VERSION:" + stale.group(0))
+    reserved="|".join(sorted(re.escape(x) for x in _RESERVED_POWERSHELL_VARIABLES))
+    assignment=re.compile(r"(?im)^\s*\$(" + reserved + r")\s*(?:=|\+=|-=|\*=|/=|%=)")
+    set_variable=re.compile(r"(?im)\bSet-Variable\b[^\r\n]*\b-Name\s+['\"]?(" + reserved + r")\b")
+    for ps1 in sorted(root.rglob("*.ps1")):
+        text=ps1.read_text(encoding="utf-8-sig");match=assignment.search(text) or set_variable.search(text)
+        if match:raise PackageVerificationError("POWERSHELL_AUTOMATIC_VARIABLE_ASSIGNMENT:"+ps1.relative_to(root).as_posix()+":"+match.group(1).lower())
+    helper=(root/"Authority"/"Prepare-MachineAuthorityRoot.ps1").read_text(encoding="utf-8-sig")
+    stale=re.search(r"ForgeBossAuthorityStage1-v(\d+)",helper,re.I)
+    if stale:raise PackageVerificationError("HARDCODED_AUTHORITY_ROOT_VERSION:"+stale.group(0))
+    if "PackageManifest" not in helper or "PROTECTED_ROOT_IDENTITY_MISMATCH" not in helper:raise PackageVerificationError("PROTECTED_ROOT_IDENTITY_GUARD_MISSING")
+    if re.search(r"if\s*\(\s*\$Root\s+-notmatch\s+['\"]\^\[A-Za-z\]",helper,re.I):raise PackageVerificationError("PROTECTED_ROOT_SHAPE_ONLY_GUARD_DENIED")
 
 
 def verify_package(root: Path) -> dict:
