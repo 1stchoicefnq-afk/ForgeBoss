@@ -160,9 +160,10 @@ def query_service_sid_type() -> int:
 def current_process_token_sids() -> tuple[str, ...]:
     win32service, win32security = _require_pywin32_service()
     try:
+        import ntsecuritycon
         import win32api
     except ImportError as ex:
-        raise ServiceSidConfigError("win32api is unavailable") from ex
+        raise ServiceSidConfigError("required token inspection APIs are unavailable") from ex
 
     token = win32security.OpenProcessToken(
         win32api.GetCurrentProcess(),
@@ -180,10 +181,13 @@ def current_process_token_sids() -> tuple[str, ...]:
         values = {
             win32security.ConvertSidToStringSid(user_sid).upper()
         }
-        for group_sid, _attributes in groups:
-            values.add(
-                win32security.ConvertSidToStringSid(group_sid).upper()
-            )
+        for group_sid, attributes in groups:
+            enabled = bool(attributes & ntsecuritycon.SE_GROUP_ENABLED)
+            deny_only = bool(attributes & ntsecuritycon.SE_GROUP_USE_FOR_DENY_ONLY)
+            if enabled and not deny_only:
+                values.add(
+                    win32security.ConvertSidToStringSid(group_sid).upper()
+                )
         return tuple(sorted(values))
     except Exception as ex:
         raise ServiceSidConfigError(
