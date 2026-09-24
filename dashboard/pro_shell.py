@@ -1,5 +1,6 @@
 from __future__ import annotations
-import json, os, sys, threading, time, subprocess, traceback, ctypes, uuid
+import json, os, sys, threading, time, subprocess, traceback, ctypes, uuid, re
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -172,7 +173,7 @@ def friendly_activity(text):
                 events.append({"time":"","message":"WORKING NOW","detail":st.get("ops_detail") or st.get("message") or "ForgeBoss is actively working; waiting for the next bounded result.","kind":"active","key":"heartbeat"})
     except Exception:
         pass
-    return events[-12:]
+    return list(reversed(events[-12:]))
 
 import re
 
@@ -223,6 +224,67 @@ def forgebossd_health():
 
 SELECTED_PROJECT_PATH=DASH_STATE_ROOT/"dashboard"/"selected-project.json"
 SELF_BUILD_EVIDENCE_ROOT=DASH_STATE_ROOT/"dashboard"/"self-build-sessions"
+PRODUCT_PROJECT_ROOT=DASH_STATE_ROOT/"projects"
+CHAT_ROOT=DASH_STATE_ROOT/"chat"
+
+def _safe_slug(value):
+    raw=str(value or "").strip().lower()
+    slug=re.sub(r"[^a-z0-9]+","-",raw).strip("-")[:64]
+    return slug or ("project-"+uuid.uuid4().hex[:8])
+
+def _atomic_text(path:Path,text:str):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_name(path.name+"."+uuid.uuid4().hex+".tmp")
+    with tmp.open("w",encoding="utf-8",newline="\n") as fh:
+        fh.write(text);fh.flush();os.fsync(fh.fileno())
+    os.replace(tmp,path)
+
+def _product_project(project_id):
+    slug=_safe_slug(project_id)
+    root=(PRODUCT_PROJECT_ROOT/slug).resolve()
+    parent=PRODUCT_PROJECT_ROOT.resolve()
+    if Path(os.path.commonpath([str(parent),str(root)]))!=parent:
+        raise RuntimeError("project path escapes ForgeBoss project root")
+    return root
+
+def _authority_snapshot():
+    try:
+        client=ProtectedAuthorityClient.from_environment(os.environ,timeout=2.0)
+        response=client.self_build_current_known_good()
+        result=response.get("result") or {}
+        return {
+            "ok":True,
+            "trust_grade":result.get("trustGrade"),
+            "revision":result.get("revision"),
+            "phase":result.get("phase"),
+            "generation":result.get("generation"),
+            "identity_sha256":result.get("identity_sha256"),
+            "tree_sha256":result.get("tree_sha256"),
+        }
+    except Exception as ex:
+        return {"ok":False,"trust_grade":None,"detail":str(ex)[:300]}
+
+def _validate_repo_url(raw):
+    value=str(raw or "").strip()
+    if not value:
+        raise ValueError("Repository URL is required.")
+    if value.startswith("git@"):
+        m=re.fullmatch(r"git@([A-Za-z0-9.-]+):([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?",value)
+        if not m:raise ValueError("SSH repository URL is invalid.")
+        host=m.group(1).lower()
+        return {"url":value,"scheme":"ssh","host":host,"owner":m.group(2),"repo":m.group(3)}
+    p=urlparse(value)
+    if p.scheme not in {"https","ssh"}:
+        raise ValueError("Repository URL must use https or ssh.")
+    if not p.hostname:
+        raise ValueError("Repository host is missing.")
+    parts=[x for x in p.path.strip("/").split("/") if x]
+    if len(parts)!=2:
+        raise ValueError("Repository URL must identify exactly owner/repository.")
+    repo=parts[1][:-4] if parts[1].endswith(".git") else parts[1]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+",parts[0]) or not re.fullmatch(r"[A-Za-z0-9_.-]+",repo):
+        raise ValueError("Repository owner/name is invalid.")
+    return {"url":value,"scheme":p.scheme,"host":p.hostname.lower(),"owner":parts[0],"repo":repo}
 from forgeboss.control.project_intake import detect_project_source,load_selected_project as _load_selected_project,save_selected_project as _save_selected_project
 
 def load_selected_project():
