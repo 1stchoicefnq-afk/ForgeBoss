@@ -9,7 +9,7 @@ from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
 from .governed_launch import GovernedLaunchAttestationError,issue_governed_launch_attestation,runner_identity,verify_governed_launch_attestation
-from .governed_host_launcher import GovernedHostLaunchError,resolve_workspace_head,run_governed_worker
+from .governed_host_launcher import GovernedHostLaunchCancelled,GovernedHostLaunchError,resolve_workspace_head,run_governed_worker
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -33,6 +33,7 @@ class ForgeBossDaemon:
             raise RuntimeError("daemon, policy approval and governed launch keys must be distinct")
         self.connect_nonces={}
         self.governed_launch_capability=secrets.token_urlsafe(32)
+        self.active_governed_runs={}
         self.started=time.time()
         self.idempotency={}
         self.lock=threading.RLock()
@@ -68,7 +69,7 @@ class ForgeBossDaemon:
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
-                    "capabilities":["tasks","governed-task-create","governed-launch-attestation","governed-host-launch","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+                    "capabilities":["tasks","task-cancel","governed-task-create","governed-launch-attestation","governed-host-launch","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
@@ -109,12 +110,32 @@ class ForgeBossDaemon:
             t=self.store.get_task(p["taskId"])
             if not t:raise ProtocolError("TASK_NOT_FOUND","task not found")
             return t
+        if m=="task.cancel":
+            def cancel():
+                task_id=str(p.get("taskId") or "")
+                if not task_id:raise ProtocolError("INVALID_PARAMS","taskId required")
+                try:task=self.store.request_cancel(task_id)
+                except KeyError as ex:raise ProtocolError("TASK_NOT_FOUND","task not found") from ex
+                active_run=None
+                with self.lock:
+                    active=self.active_governed_runs.get(task_id)
+                    if active:
+                        active["event"].set();active_run=active["runId"]
+                return {
+                    "taskId":task_id,
+                    "status":task.get("status"),
+                    "cancelRequestedAt":task.get("cancel_requested_at"),
+                    "activeRunId":active_run,
+                }
+            return self._idem(req,cancel)
         if m=="run.launch_governed":
             def launch():
                 task=self.store.get_task(p.get("taskId"))
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
                 if task.get("governance_mode")!="reuse-v1":
                     raise ProtocolError("GOVERNED_TASK_REQUIRED","trusted governed launch requires a governed task")
+                if task.get("cancel_requested_at") is not None:
+                    raise ProtocolError("TASK_CANCELLED","task cancellation has revoked launch authority")
                 run_id=p.get("runId")
                 if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip() or len(run_id)>128 or any(ord(ch)<32 or ord(ch)==127 for ch in run_id):
                     raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable safe runId")
@@ -178,7 +199,7 @@ class ForgeBossDaemon:
                 claim_params={
                     "taskId":task["task_id"],"repository":task["repository"],"baseSha":task["base_sha"],
                     "allowedPaths":allowed,"allowedTools":tools,"worktreePath":worktree,"runId":run_id,
-                    "currentHead":current_head,"ttlSeconds":1200,"runtimeId":runtime_id,
+                    "currentHead":current_head,"ttlSeconds":1800,"runtimeId":runtime_id,
                     "provider":provider,"model":model,"budgetUsd":budget,
                     "launchAttestation":attestation,
                     "_governedLaunchCapability":self.governed_launch_capability,
@@ -188,49 +209,78 @@ class ForgeBossDaemon:
                     {"method":"workspace.claim","idempotencyKey":"governed-claim:"+internal_key,"params":claim_params},
                     True,
                 )
+                cancel_event=threading.Event()
+                with self.lock:
+                    if task["task_id"] in self.active_governed_runs:
+                        try:self.store.release(task["task_id"],run_id,int(claim["lease"]["owner_epoch"]),current_head,"worker-failed")
+                        except Exception:pass
+                        raise ProtocolError("RUN_ALREADY_ACTIVE","task already has an active governed host run")
+                    self.active_governed_runs[task["task_id"]]={"runId":run_id,"event":cancel_event}
+                worker=None;failure=None;outcome="worker-failed";result_head=current_head
                 env=claim["launchEnvelope"]
-                self.dispatch(
-                    {"method":"worker.admit","idempotencyKey":"governed-admit:"+internal_key,
-                     "params":{"envelope":env,"expectedHead":current_head}},
-                    True,
-                )
-                worker=None
-                failure=None
-                outcome="worker-failed"
-                result_head=current_head
                 try:
-                    worker=run_governed_worker(
-                        root=ROOT,
-                        state_dir=STATE/"launch-packets",
-                        task=task,
-                        workspace=claim["lease"]["worktree_path"],
-                        current_head=current_head,
-                        runtime_id=runtime_id,
-                        launch_envelope=env,
-                        expected_runner_sha256=runner_sha,
-                        budget_usd=budget,
-                        model=model,
-                        timeout_seconds=1200,
-                    )
-                    result_head=worker["result_head"]
-                    outcome="worker-complete" if int(worker["returncode"])==0 else "worker-failed"
-                except GovernedHostLaunchError as ex:
-                    failure=str(ex)
-                    try:result_head=resolve_workspace_head(Path(claim["lease"]["worktree_path"]))
-                    except Exception:result_head=current_head
+                    refreshed=self.store.get_task(task["task_id"])
+                    if refreshed and refreshed.get("cancel_requested_at") is not None:cancel_event.set()
+                    if cancel_event.is_set():
+                        outcome="cancelled"
+                    else:
+                        self.dispatch(
+                            {"method":"worker.admit","idempotencyKey":"governed-admit:"+internal_key,
+                             "params":{"envelope":env,"expectedHead":current_head}},
+                            True,
+                        )
+                        try:
+                            worker=run_governed_worker(
+                                root=ROOT,
+                                state_dir=STATE/"launch-packets",
+                                task=task,
+                                workspace=claim["lease"]["worktree_path"],
+                                current_head=current_head,
+                                runtime_id=runtime_id,
+                                launch_envelope=env,
+                                expected_runner_sha256=runner_sha,
+                                budget_usd=budget,
+                                model=model,
+                                cancel_event=cancel_event,
+                                timeout_seconds=1200,
+                            )
+                            result_head=worker["result_head"]
+                            outcome="worker-complete" if int(worker["returncode"])==0 else "worker-failed"
+                        except GovernedHostLaunchCancelled:
+                            outcome="cancelled"
+                            try:result_head=resolve_workspace_head(Path(claim["lease"]["worktree_path"]))
+                            except Exception:result_head=current_head
+                        except GovernedHostLaunchError as ex:
+                            failure=str(ex)
+                            try:result_head=resolve_workspace_head(Path(claim["lease"]["worktree_path"]))
+                            except Exception:result_head=current_head
+                    refreshed=self.store.get_task(task["task_id"])
+                    if cancel_event.is_set() or (refreshed and refreshed.get("cancel_requested_at") is not None):
+                        outcome="cancelled"
+                except ProtocolError as ex:
+                    if ex.code=="TASK_CANCELLED":outcome="cancelled"
+                    else:failure=str(ex)
                 finally:
-                    self.store.release(
-                        task["task_id"],run_id,int(claim["lease"]["owner_epoch"]),
-                        result_head,outcome,
-                    )
-                if failure is not None:
+                    try:
+                        self.store.release(
+                            task["task_id"],run_id,int(claim["lease"]["owner_epoch"]),
+                            result_head,outcome,
+                        )
+                        final_run=self.store.get_run(run_id)
+                        if final_run:outcome=str(final_run.get("status") or outcome)
+                    finally:
+                        with self.lock:
+                            active=self.active_governed_runs.get(task["task_id"])
+                            if active and active.get("runId")==run_id:self.active_governed_runs.pop(task["task_id"],None)
+                if failure is not None and outcome!="cancelled":
                     raise ProtocolError("GOVERNED_HOST_LAUNCH_FAILED",failure)
-                return {
+                out={
                     "taskId":task["task_id"],"runId":run_id,"runtimeId":runtime_id,
                     "outcome":outcome,"resultHead":result_head,
-                    "runnerSha256":worker["runner_sha256"],
-                    "workerReturnCode":int(worker["returncode"]),
+                    "runnerSha256":runner_sha,
                 }
+                if worker is not None:out["workerReturnCode"]=int(worker["returncode"])
+                return out
             return launch()
         if m=="workspace.claim":
             def do():
