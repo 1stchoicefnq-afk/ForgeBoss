@@ -127,11 +127,14 @@ class GovernedSandboxTests(unittest.TestCase):
 
         paid_authority.side_effect = authority
 
-        def runner(argv, *, timeout_seconds):
+        def runner(argv, *, timeout_seconds, watchdog=None):
             argv = tuple(argv)
             calls.append((argv, inside["value"]))
             if len(argv) >= 3 and argv[1:3] == ("volume", "create"):
                 return ProcessResult(argv, 0, argv[-1], "", 0.01)
+            if IMAGE in argv and "worker.py" in argv:
+                self.assertIsNotNone(watchdog)
+                watchdog()
             if "/result/" in argv:
                 (self.result / "a.txt").write_text("changed", encoding="utf-8")
             return ProcessResult(argv, 0, "", "", 0.01)
@@ -179,7 +182,7 @@ class GovernedSandboxTests(unittest.TestCase):
         paid_authority.side_effect = authority
         calls = []
 
-        def runner(argv, *, timeout_seconds):
+        def runner(argv, *, timeout_seconds, watchdog=None):
             argv = tuple(argv)
             calls.append(argv)
             if len(argv) >= 3 and argv[1:3] == ("volume", "create"):
@@ -216,7 +219,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         paid_authority.side_effect = authority
 
-        def runner(argv, *, timeout_seconds):
+        def runner(argv, *, timeout_seconds, watchdog=None):
             argv = tuple(argv)
             if len(argv) >= 3 and argv[1:3] == ("volume", "create"):
                 return ProcessResult(argv, 0, "wrong-volume-name", "", 0.01)
@@ -249,7 +252,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         paid_authority.side_effect = authority
 
-        def runner(argv, *, timeout_seconds):
+        def runner(argv, *, timeout_seconds, watchdog=None):
             argv = tuple(argv)
             if len(argv) >= 3 and argv[1:3] == ("volume", "create"):
                 return ProcessResult(argv, 0, argv[-1], "", 0.01)
@@ -274,6 +277,52 @@ class GovernedSandboxTests(unittest.TestCase):
                 docker_path=self.docker,
                 process_runner=runner,
             )
+
+    @mock.patch("forgeboss.control.governed_sandbox._assert_live_control_lease")
+    @mock.patch("forgeboss.control.governed_sandbox.paid_start_authority")
+    @mock.patch("forgeboss.control.governed_sandbox.resolve_docker_identity")
+    def test_live_authority_revocation_aborts_worker_and_cleans_up(
+        self,
+        resolve_identity,
+        paid_authority,
+        live_check,
+    ):
+        resolve_identity.return_value = self.identity()
+
+        @contextmanager
+        def authority(*args, **kwargs):
+            yield {"taskId": "T1"}
+
+        paid_authority.side_effect = authority
+        live_check.side_effect = RuntimeError("cancelled")
+        calls = []
+
+        def runner(argv, *, timeout_seconds, watchdog=None):
+            argv = tuple(argv)
+            calls.append(argv)
+            if len(argv) >= 3 and argv[1:3] == ("volume", "create"):
+                return ProcessResult(argv, 0, argv[-1], "", 0.01)
+            if IMAGE in argv and "worker.py" in argv:
+                self.assertIsNotNone(watchdog)
+                watchdog()
+            return ProcessResult(argv, 0, "", "", 0.01)
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            run_governed_sandbox(
+                source_workspace=self.source,
+                result_dir=self.result,
+                image=IMAGE,
+                worker_command=["python", "worker.py"],
+                lease_path=self.root / "lease.json",
+                lease_token="token",
+                packet_path=self.root / "packet.json",
+                executor="mini-swe",
+                control_envelope={"signed": True},
+                cli_budget=1.0,
+                docker_path=self.docker,
+                process_runner=runner,
+            )
+        self.assertTrue(any(call[1:4] == ("volume", "rm", "-f") for call in calls))
 
     def test_result_tree_rejects_symlink(self):
         target = self.root / "outside.txt"
