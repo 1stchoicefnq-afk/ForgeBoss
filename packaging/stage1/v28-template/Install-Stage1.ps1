@@ -53,9 +53,12 @@ if(Test-Path -LiteralPath $EngineRoot){
  AssertTool $t.git 'git.exe'
  & $Git clone --filter=blob:none --no-checkout https://github.com/1stchoicefnq-afk/ForgeBoss.git $EngineRoot
  if($LASTEXITCODE -ne 0){throw 'ENGINE_CLONE_FAILED'}
+ & $Git -C $EngineRoot config core.autocrlf false
+ & $Git -C $EngineRoot config core.eol lf
+ & $Git -C $EngineRoot config core.safecrlf false
  & $Git -C $EngineRoot fetch --no-tags origin $EngineRef
  if($LASTEXITCODE -ne 0){throw 'ENGINE_REF_FETCH_FAILED'}
- & $Git -C $EngineRoot checkout --detach $EngineSha
+ & $Git -c core.autocrlf=false -c core.eol=lf -C $EngineRoot checkout --force --detach $EngineSha
  if($LASTEXITCODE -ne 0){throw 'ENGINE_CHECKOUT_FAILED'}
 }
 AssertTool $t.git 'git.exe'
