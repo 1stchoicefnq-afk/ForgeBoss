@@ -175,7 +175,7 @@ class GovernedSandboxTests(unittest.TestCase):
         def authority(*args, **kwargs):
             inside["value"] = True
             try:
-                yield {"taskId": "T1"}
+                yield {"taskId": "T1", "runId": "RUN1", "ownerEpoch": 7}
             finally:
                 inside["value"] = False
 
@@ -230,6 +230,11 @@ class GovernedSandboxTests(unittest.TestCase):
         self.assertTrue(cleanup_calls)
         self.assertTrue(all(not flag for _, flag in cleanup_calls))
         self.assertEqual(out.result_dir, str(self.result.resolve()))
+        self.assertEqual(out.task_id, "T1")
+        self.assertEqual(out.run_id, "RUN1")
+        self.assertEqual(out.owner_epoch, 7)
+        self.assertRegex(out.source_manifest_sha256, r"^[0-9a-f]{64}$")
+        self.assertRegex(out.result_manifest_sha256, r"^[0-9a-f]{64}$")
         self.assertEqual(calls[-1][0][1:4], ("volume", "rm", "-f"))
 
     @mock.patch("forgeboss.control.governed_sandbox.paid_start_authority")
@@ -239,7 +244,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         @contextmanager
         def authority(*args, **kwargs):
-            yield {"taskId": "T1"}
+            yield {"taskId": "T1", "runId": "RUN1", "ownerEpoch": 7}
 
         paid_authority.side_effect = authority
         calls = []
@@ -277,7 +282,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         @contextmanager
         def authority(*args, **kwargs):
-            yield {"taskId": "T1"}
+            yield {"taskId": "T1", "runId": "RUN1", "ownerEpoch": 7}
 
         paid_authority.side_effect = authority
 
@@ -310,7 +315,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         @contextmanager
         def authority(*args, **kwargs):
-            yield {"taskId": "T1"}
+            yield {"taskId": "T1", "runId": "RUN1", "ownerEpoch": 7}
 
         paid_authority.side_effect = authority
 
@@ -353,7 +358,7 @@ class GovernedSandboxTests(unittest.TestCase):
 
         @contextmanager
         def authority(*args, **kwargs):
-            yield {"taskId": "T1"}
+            yield {"taskId": "T1", "runId": "RUN1", "ownerEpoch": 7}
 
         paid_authority.side_effect = authority
         live_check.side_effect = RuntimeError("cancelled")
