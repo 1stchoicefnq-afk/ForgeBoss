@@ -90,6 +90,37 @@ def _stdlib_aliases(tree: ast.AST) -> tuple[dict[str, str], dict[str, tuple[str,
                 if alias.name == "*":
                     raise PackageVerificationError("PYTHON_STAR_IMPORT_DENIED")
                 attrs[alias.asname or alias.name] = (node.module, alias.name)
+
+    # Propagate simple module/attribute aliases until stable, so forms such as
+    # "_m=subprocess; _n=_m; _n.Popen=..." cannot bypass the behavior gate.
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(value, ast.Name):
+                module = modules.get(value.id)
+                attr = attrs.get(value.id)
+                for target in targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if module and modules.get(target.id) != module:
+                        modules[target.id] = module
+                        changed = True
+                    if attr and attrs.get(target.id) != attr:
+                        attrs[target.id] = attr
+                        changed = True
+            elif isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                module = modules.get(value.value.id)
+                if module:
+                    ident = (module, value.attr)
+                    for target in targets:
+                        if isinstance(target, ast.Name) and attrs.get(target.id) != ident:
+                            attrs[target.id] = ident
+                            changed = True
     return modules, attrs
 
 
@@ -145,6 +176,31 @@ def _check_all_python(root: Path) -> int:
     return count
 
 
+def _check_package_semantics(root: Path) -> None:
+    for name in ("TURN-ON-FORGEBOSS.cmd", "VERIFY-FORGEBOSS.cmd"):
+        path = root / name
+        if not path.is_file():
+            raise PackageVerificationError("PACKAGE_ENTRYPOINT_MISSING:" + name)
+        raw = path.read_bytes()
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raise PackageVerificationError("CMD_UTF8_BOM_DENIED:" + name)
+        text = raw.decode("utf-8")
+        if 'if "%ROOT:~-1%"=="\\\" set "ROOT=%ROOT:~0,-1%"' not in text:
+            raise PackageVerificationError("CMD_ROOT_NORMALIZATION_MISSING:" + name)
+
+    start = (root / "Start-ForgeBoss.ps1").read_text(encoding="utf-8-sig")
+    for line in start.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("$host=") or stripped.lower().startswith("$host ="):
+            raise PackageVerificationError("POWERSHELL_RESERVED_HOST_ASSIGNMENT")
+
+    helper = (root / "Authority" / "Prepare-MachineAuthorityRoot.ps1").read_text(encoding="utf-8-sig")
+    import re
+    stale = re.search(r"ForgeBossAuthorityStage1-v(\d+)", helper, re.I)
+    if stale:
+        raise PackageVerificationError("HARDCODED_AUTHORITY_ROOT_VERSION:" + stale.group(0))
+
+
 def verify_package(root: Path) -> dict:
     root = root.resolve(strict=True)
     if not root.is_dir():
@@ -188,6 +244,7 @@ def verify_package(root: Path) -> dict:
         checked.append(rel)
 
     python_files = _check_all_python(root)
+    _check_package_semantics(root)
     return {
         "ok": True,
         "root": str(root),
