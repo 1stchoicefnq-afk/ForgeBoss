@@ -6,6 +6,10 @@ import tempfile
 import unittest
 
 from forgeboss.control.windows_service_state import (
+    _ACCESS_ALLOWED_ACE_TYPE,
+    _CONTAINER_INHERIT_ACE,
+    _FILE_ALL_ACCESS,
+    _OBJECT_INHERIT_ACE,
     PrivateAce,
     PrivateAclInspection,
     PrivateAclPlan,
@@ -136,6 +140,16 @@ class WindowsServicePrivateStateTests(unittest.TestCase):
             with self.subTest(inspection=inspection):
                 with self.assertRaises(ServicePrivateStateError):
                     verify_private_acl_exact(plan, inspection)
+
+    @unittest.skipUnless(os.name == "nt", "Windows-native constant identity test")
+    def test_pure_acl_constants_match_pywin32(self):
+        import ntsecuritycon
+        import win32con
+
+        self.assertEqual(_ACCESS_ALLOWED_ACE_TYPE, win32con.ACCESS_ALLOWED_ACE_TYPE)
+        self.assertEqual(_OBJECT_INHERIT_ACE, win32con.OBJECT_INHERIT_ACE)
+        self.assertEqual(_CONTAINER_INHERIT_ACE, win32con.CONTAINER_INHERIT_ACE)
+        self.assertEqual(_FILE_ALL_ACCESS, ntsecuritycon.FILE_ALL_ACCESS)
 
     @unittest.skipIf(os.name == "nt", "non-Windows fail-closed test")
     def test_windows_acl_functions_are_inert_off_windows(self):
