@@ -604,58 +604,66 @@ def run_governed_sandbox(
             control_envelope,
             cli_budget=cli_budget,
         ) as authority:
-            volume_attempted = True
-            created_result = _require_ok(
-                run_docker(create, timeout_seconds=60),
-                "Docker volume create",
-            )
-            if created_result.stdout.strip() != volume:
-                raise GovernedSandboxError(
-                    "Docker volume create returned unexpected identity"
+            with tempfile.TemporaryDirectory(
+                prefix="forgeboss-sandbox-source-"
+            ) as safe_dir_raw:
+                safe_dir = Path(safe_dir_raw).resolve(strict=True)
+                create_sanitized_source(source, safe_dir)
+
+                volume_attempted = True
+                created_result = _require_ok(
+                    run_docker(create, timeout_seconds=60),
+                    "Docker volume create",
                 )
-            created = True
+                if created_result.stdout.strip() != volume:
+                    raise GovernedSandboxError(
+                        "Docker volume create returned unexpected identity"
+                    )
+                created = True
 
-            _require_ok(
-                run_docker(
-                    build_stage_argv(
+                _require_ok(
+                    run_docker(
+                        build_stage_argv(
+                            docker,
+                            pinned_image,
+                            volume,
+                            safe_dir,
+                            names["stage"],
+                        ),
+                        timeout_seconds=min(timeout_seconds, 300),
+                    ),
+                    "Docker workspace stage",
+                )
+
+                worker_result = run_docker(
+                    build_worker_argv(
                         docker,
                         pinned_image,
                         volume,
-                        source,
-                        names["stage"],
+                        command,
+                        names["worker"],
                     ),
-                    timeout_seconds=min(timeout_seconds, 300),
-                ),
-                "Docker workspace stage",
-            )
-
-            worker_result = run_docker(
-                build_worker_argv(
-                    docker,
-                    pinned_image,
-                    volume,
-                    command,
-                    names["worker"],
-                ),
-                timeout_seconds=timeout_seconds,
-                watchdog=lambda: _assert_live_control_lease(authority, executor),
-            )
-            _require_ok(worker_result, "sandbox worker")
-
-            _require_ok(
-                run_docker(
-                    build_extract_argv(
-                        docker,
-                        pinned_image,
-                        volume,
-                        result,
-                        names["extract"],
+                    timeout_seconds=timeout_seconds,
+                    watchdog=lambda: _assert_live_control_lease(
+                        authority, executor
                     ),
-                    timeout_seconds=min(timeout_seconds, 300),
-                ),
-                "Docker result extraction",
-            )
-            _assert_result_tree_safe(result)
+                )
+                _require_ok(worker_result, "sandbox worker")
+
+                _require_ok(
+                    run_docker(
+                        build_extract_argv(
+                            docker,
+                            pinned_image,
+                            volume,
+                            result,
+                            names["extract"],
+                        ),
+                        timeout_seconds=min(timeout_seconds, 300),
+                    ),
+                    "Docker result extraction",
+                )
+                _assert_result_tree_safe(result)
 
         return SandboxResult(
             docker=docker,
