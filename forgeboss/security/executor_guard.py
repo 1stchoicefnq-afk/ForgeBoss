@@ -273,10 +273,35 @@ def _assert_windows_git_trust(resolved:Path):
         _assert_windows_acl_trust(ancestor)
         if ancestor.parent==ancestor:raise SecurityError("Git trust chain has no stable volume boundary")
         ancestor=ancestor.parent
+def _resolve_windows_git_executable():
+    # Do not consult PATH on Windows. The trusted Git-for-Windows install root
+    # comes from HKLM and is ACL-validated, so a user-writable PATH decoy cannot
+    # participate in engine identity checks.
+    roots=_windows_trusted_roots()
+    candidates=[]
+    for root in roots:
+        for rel in (("cmd","git.exe"),("bin","git.exe")):
+            candidates.append(root.joinpath(*rel))
+    for p in candidates:
+        try:
+            if is_linklike(p):continue
+            resolved=p.resolve(strict=True)
+            if is_linklike(resolved) or not resolved.is_file():continue
+            _assert_windows_git_trust(resolved)
+            return resolved
+        except FileNotFoundError:
+            continue
+        except SecurityError:
+            raise
+        except Exception as e:
+            raise SecurityError("unable to resolve Git executable: "+str(e)) from e
+    raise SecurityError("Git executable unavailable in trusted Git-for-Windows install root")
+
 def _resolve_git_executable():
-    name="git.exe" if os.name=="nt" else "git"
-    raw=shutil.which(name)
-    if not raw:raise SecurityError("Git executable unavailable: "+name)
+    if os.name=="nt":
+        return _resolve_windows_git_executable()
+    raw=shutil.which("git")
+    if not raw:raise SecurityError("Git executable unavailable: git")
     p=Path(raw)
     try:
         if not p.is_absolute():raise SecurityError("Git executable resolution is not absolute: "+str(p))
@@ -284,9 +309,8 @@ def _resolve_git_executable():
         resolved=p.resolve(strict=True)
         if is_linklike(resolved):raise SecurityError("linklike Git executable denied: "+str(resolved))
         if not resolved.is_file():raise SecurityError("Git executable is not a regular file: "+str(resolved))
-        if os.name!="nt" and not os.access(resolved,os.X_OK):raise SecurityError("Git executable is not executable: "+str(resolved))
-        if os.name=="nt":_assert_windows_git_trust(resolved)
-        else:_assert_posix_git_trust(resolved)
+        if not os.access(resolved,os.X_OK):raise SecurityError("Git executable is not executable: "+str(resolved))
+        _assert_posix_git_trust(resolved)
     except SecurityError:raise
     except Exception as e:raise SecurityError("unable to resolve Git executable: "+str(e)) from e
     return resolved
