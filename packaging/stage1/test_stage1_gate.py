@@ -6,7 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from packaging.stage1.stage1_gate import Stage1GateError, installed_engine, verify_engine
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import stage1_gate
+from stage1_gate import Stage1GateError, installed_engine, verify_engine
 
 
 class CP:
@@ -43,8 +46,8 @@ class Stage1GateTests(unittest.TestCase):
             if args and args[0]=="status":return CP("")
             if args[:2]==["rev-parse","--show-toplevel"]:return CP(str(self.root.resolve())+"\n")
             raise AssertionError(argv)
-        with patch("packaging.stage1.stage1_gate._resolve_git_executable",return_value=git.resolve()), \
-             patch("packaging.stage1.stage1_gate.subprocess.run",side_effect=run):
+        with patch.object(stage1_gate,"_resolve_git_executable",return_value=git.resolve()), \
+             patch.object(stage1_gate.subprocess,"run",side_effect=run):
             out=verify_engine(self.state,{})
         self.assertTrue(out["ok"]);self.assertTrue(out["readOnly"])
         self.assertTrue(all(row[0]==str(git.resolve()) for row in calls))
@@ -55,8 +58,8 @@ class Stage1GateTests(unittest.TestCase):
         git=Path(self.td.name)/"git.exe";git.write_bytes(b"git")
         def run(argv,**kw):
             return CP("b"*40+"\n")
-        with patch("packaging.stage1.stage1_gate._resolve_git_executable",return_value=git.resolve()), \
-             patch("packaging.stage1.stage1_gate.subprocess.run",side_effect=run):
+        with patch.object(stage1_gate,"_resolve_git_executable",return_value=git.resolve()), \
+             patch.object(stage1_gate.subprocess,"run",side_effect=run):
             with self.assertRaises(Stage1GateError) as cm:
                 verify_engine(self.state,{})
         self.assertEqual(str(cm.exception),"ENGINE_SHA_MISMATCH")
