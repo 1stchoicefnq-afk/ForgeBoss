@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, hashlib, hmac, json, os, socketserver, threading, time, uuid
+import argparse, hashlib, hmac, json, math, os, secrets, socketserver, threading, time, uuid
 from pathlib import Path
 from .store import ControlStore,BudgetReservationError,SCHEMA_VERSION
 from .protocol import parse_frame,response,ProtocolError,PROTOCOL_MIN,PROTOCOL_MAX
@@ -8,7 +8,8 @@ from .projects import list_profiles,load_profile
 from .auth import verify_connect_proof
 from forgeboss.security.executor_guard import validate_packet,assert_paths_contained,assert_no_link_escape,SecurityError
 from forgeboss.policy.reuse_review_authority import ReuseReviewAuthorityError,evaluate_authorized_reuse_readiness
-from .governed_launch import GovernedLaunchAttestationError,verify_governed_launch_attestation
+from .governed_launch import GovernedLaunchAttestationError,issue_governed_launch_attestation,runner_identity,verify_governed_launch_attestation
+from .governed_host_launcher import GovernedHostLaunchError,resolve_workspace_head,run_governed_worker
 
 ROOT=Path(__file__).resolve().parents[2]
 STATE=ROOT/"state"/"forgebossd"
@@ -31,6 +32,7 @@ class ForgeBossDaemon:
         if hmac.compare_digest(self.secret,self.policy_secret) or hmac.compare_digest(self.secret,self.launch_secret) or hmac.compare_digest(self.policy_secret,self.launch_secret):
             raise RuntimeError("daemon, policy approval and governed launch keys must be distinct")
         self.connect_nonces={}
+        self.governed_launch_capability=secrets.token_urlsafe(32)
         self.started=time.time()
         self.idempotency={}
         self.lock=threading.RLock()
@@ -66,7 +68,7 @@ class ForgeBossDaemon:
                 if nonce in self.connect_nonces:raise ProtocolError("AUTH_REPLAY","connect nonce already used")
                 self.connect_nonces[nonce]=now
             return {"connected":True,"protocolVersion":1,"server":"forgebossd","schemaVersion":SCHEMA_VERSION,
-                    "capabilities":["tasks","governed-task-create","governed-launch-attestation","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
+                    "capabilities":["tasks","governed-task-create","governed-launch-attestation","governed-host-launch","workspace-leases","owner-epochs","signed-envelopes","events","idempotency","project-profiles","smart-parallel","validated-learning","authenticated-connect","guarded-workspaces","windows-acl"],
                     "state":self.store.snapshot()}
         if m=="health":
             return {"status":"HEALTHY","uptimeSeconds":round(time.time()-self.started,1),"db":str(DB),"state":self.store.snapshot()}
@@ -107,16 +109,132 @@ class ForgeBossDaemon:
             t=self.store.get_task(p["taskId"])
             if not t:raise ProtocolError("TASK_NOT_FOUND","task not found")
             return t
+        if m=="run.launch_governed":
+            def launch():
+                task=self.store.get_task(p.get("taskId"))
+                if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("governance_mode")!="reuse-v1":
+                    raise ProtocolError("GOVERNED_TASK_REQUIRED","trusted governed launch requires a governed task")
+                run_id=p.get("runId")
+                if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip():
+                    raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable runId")
+                runtime_id=str(p.get("runtimeId") or "")
+                if runtime_id!="mini-swe":
+                    raise ProtocolError("RUNTIME_NOT_APPROVED","governed host launch r0 permits mini-swe only")
+                try:
+                    budget=float(p.get("budgetUsd"))
+                except Exception as ex:
+                    raise ProtocolError("BUDGET_INVALID","governed launch budget must be numeric") from ex
+                if not math.isfinite(budget) or budget<=0:
+                    raise ProtocolError("BUDGET_INVALID","governed launch budget must be finite and positive")
+                model=str(p.get("model") or "openai/gpt-5.6-luna")
+                provider=str(p.get("provider") or "openai")
+                if not model or len(model)>200 or not provider or len(provider)>100:
+                    raise ProtocolError("MODEL_ID_INVALID","provider/model identity is invalid")
+                try:
+                    allowed=json.loads(task.get("allowed_paths_json") or "[]")
+                except Exception as ex:
+                    raise ProtocolError("TASK_STATE_INVALID","task writable scope is invalid") from ex
+                if not isinstance(allowed,list) or not allowed:
+                    raise ProtocolError("TASK_STATE_INVALID","task writable scope is empty")
+                tools=["python","docker"]
+                worktree=str(p.get("worktreePath") or "")
+                current_head=str(p.get("currentHead") or "")
+                if not worktree or not current_head:
+                    raise ProtocolError("INVALID_PARAMS","worktreePath and currentHead are required")
+                try:
+                    _,runner_sha=runner_identity(ROOT,runtime_id)
+                    attestation=issue_governed_launch_attestation(
+                        root=ROOT,
+                        secret=self.launch_secret,
+                        task_id=task["task_id"],
+                        repository=task["repository"],
+                        base_sha=task["base_sha"],
+                        run_id=run_id,
+                        worktree_path=worktree,
+                        runtime_id=runtime_id,
+                        allowed_paths=allowed,
+                        allowed_tools=tools,
+                        provider=provider,
+                        model=model,
+                        budget_usd=budget,
+                        ttl_seconds=120,
+                    )
+                except GovernedLaunchAttestationError as ex:
+                    raise ProtocolError("GOVERNED_LAUNCH_ATTESTATION_INVALID",str(ex)) from ex
+                claim_params={
+                    "taskId":task["task_id"],"repository":task["repository"],"baseSha":task["base_sha"],
+                    "allowedPaths":allowed,"allowedTools":tools,"worktreePath":worktree,"runId":run_id,
+                    "currentHead":current_head,"ttlSeconds":1200,"runtimeId":runtime_id,
+                    "provider":provider,"model":model,"budgetUsd":budget,
+                    "launchAttestation":attestation,
+                    "_governedLaunchCapability":self.governed_launch_capability,
+                }
+                claim=self.dispatch(
+                    {"method":"workspace.claim","idempotencyKey":"governed-claim:"+run_id,"params":claim_params},
+                    True,
+                )
+                env=claim["launchEnvelope"]
+                self.dispatch(
+                    {"method":"worker.admit","idempotencyKey":"governed-admit:"+run_id,
+                     "params":{"envelope":env,"expectedHead":current_head}},
+                    True,
+                )
+                worker=None
+                failure=None
+                outcome="worker-failed"
+                result_head=current_head
+                try:
+                    worker=run_governed_worker(
+                        root=ROOT,
+                        state_dir=STATE/"launch-packets",
+                        task=task,
+                        workspace=claim["lease"]["worktree_path"],
+                        current_head=current_head,
+                        runtime_id=runtime_id,
+                        launch_envelope=env,
+                        expected_runner_sha256=runner_sha,
+                        budget_usd=budget,
+                        model=model,
+                        timeout_seconds=1200,
+                    )
+                    result_head=worker["result_head"]
+                    outcome="worker-complete" if int(worker["returncode"])==0 else "worker-failed"
+                except GovernedHostLaunchError as ex:
+                    failure=str(ex)
+                    try:result_head=resolve_workspace_head(Path(claim["lease"]["worktree_path"]))
+                    except Exception:result_head=current_head
+                finally:
+                    self.store.release(
+                        task["task_id"],run_id,int(claim["lease"]["owner_epoch"]),
+                        result_head,outcome,
+                    )
+                if failure is not None:
+                    raise ProtocolError("GOVERNED_HOST_LAUNCH_FAILED",failure)
+                return {
+                    "taskId":task["task_id"],"runId":run_id,"runtimeId":runtime_id,
+                    "outcome":outcome,"resultHead":result_head,
+                    "runnerSha256":worker["runner_sha256"],
+                    "workerReturnCode":int(worker["returncode"]),
+                    "stdoutTail":worker["stdout_tail"],"stderrTail":worker["stderr_tail"],
+                }
+            return self._idem(req,launch)
         if m=="workspace.claim":
             def do():
                 task=self.store.get_task(p["taskId"])
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
                 if task.get("governance_mode")=="reuse-v1":
+                    supplied=str(p.get("_governedLaunchCapability") or "")
+                    if not supplied or not hmac.compare_digest(supplied,self.governed_launch_capability):
+                        raise ProtocolError(
+                            "GOVERNED_DIRECT_CLAIM_DENIED",
+                            "governed workspace claims are daemon-internal; use run.launch_governed",
+                        )
                     attestation=p.get("launchAttestation")
                     if not attestation:
                         raise ProtocolError(
                             "GOVERNED_LAUNCH_ATTESTATION_REQUIRED",
-                            "governed tasks require a trusted launch attestation before workspace claim",
+                            "internal governed launch attestation missing",
                         )
                     try:
                         verify_governed_launch_attestation(
