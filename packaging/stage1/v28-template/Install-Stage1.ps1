@@ -172,7 +172,8 @@ $state=[ordered]@{
 }
 $state|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $Installed -Encoding UTF8
 
-& $RuntimePy -I (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $Installed
+$env:FORGEBOSS_ENGINE_ROOT=$EngineRoot
+& $RuntimePy -I -B (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $Installed
 if($LASTEXITCODE -ne 0){throw 'INSTALLED_ENGINE_GATE_FAILED'}
 Write-Host '[PASS] Installed engine gate'
 
