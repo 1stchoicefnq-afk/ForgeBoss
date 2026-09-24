@@ -74,7 +74,10 @@ AssertTool $t.python 'python.exe'
 if($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $RuntimePy -PathType Leaf)){throw 'RUNTIME_VENV_FAILED'}
 & $RuntimePy -I -m pip install --disable-pip-version-check --require-hashes --no-deps -r (Join-Path $PackageRoot 'requirements.lock')
 if($LASTEXITCODE -ne 0){throw 'HASH_PINNED_RUNTIME_INSTALL_FAILED'}
-& $RuntimePy -I -c "import cryptography,litellm,webview;from minisweagent.agents.default import DefaultAgent;print('RUNTIME_IMPORT_OK')"
+$site=(& $RuntimePy -I -c "import site;print(site.getsitepackages()[0])").Trim()
+if([string]::IsNullOrWhiteSpace($site)){throw 'RUNTIME_SITE_PACKAGES_UNAVAILABLE'}
+Copy-Item -LiteralPath (Join-Path $PackageRoot 'Vendor\proxy_tools') -Destination (Join-Path $site 'proxy_tools') -Recurse -Force
+& $RuntimePy -I -c "import cryptography,litellm,webview,proxy_tools;from minisweagent.agents.default import DefaultAgent;print('RUNTIME_IMPORT_OK')"
 if($LASTEXITCODE -ne 0){throw 'RUNTIME_IMPORT_FAILED'}
 Write-Host '[PASS] Hash-pinned user runtime'
 
