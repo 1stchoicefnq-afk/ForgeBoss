@@ -39,6 +39,21 @@ class WindowsControlServiceError(RuntimeError):
     """Raised when the R0 Windows service host cannot fail safely."""
 
 
+if os.name == "nt":
+    try:
+        import win32serviceutil as _win32serviceutil
+    except ImportError:
+        _win32serviceutil = None
+else:
+    _win32serviceutil = None
+
+_ServiceFrameworkBase = (
+    _win32serviceutil.ServiceFramework
+    if _win32serviceutil is not None
+    else object
+)
+
+
 ALLOWED_CLIENT_SID_FILE = "allowed-client-sid.txt"
 MAX_RESPONSE_BYTES = 64 * 1024
 _MAX_SID_FILE_BYTES = 256
@@ -255,7 +270,7 @@ def serve_one_connection(
             pass
 
 
-def build_service_class():
+def _require_service_host_api():
     if os.name != "nt":
         raise WindowsControlServiceError(
             "Windows control service host is unavailable on this platform"
@@ -264,115 +279,176 @@ def build_service_class():
         _require_windows_pywin32()
     except WindowsServiceBoundaryError as ex:
         raise WindowsControlServiceError(str(ex)) from ex
+    if _win32serviceutil is None:
+        raise WindowsControlServiceError(
+            "required pywin32 service utilities are unavailable"
+        )
     try:
         import servicemanager
         import win32event
         import win32file
         import win32service
-        import win32serviceutil
     except ImportError as ex:
         raise WindowsControlServiceError(
             "required pywin32 service APIs are unavailable"
         ) from ex
+    return (
+        servicemanager,
+        win32event,
+        win32file,
+        win32service,
+        _win32serviceutil,
+    )
 
-    class ForgeBossControlService(win32serviceutil.ServiceFramework):
-        _svc_name_ = SERVICE_NAME
-        _svc_display_name_ = "ForgeBoss Control Service"
-        _svc_description_ = (
-            "Isolated local control-plane service for ForgeBoss governed execution."
-        )
 
-        def __init__(self, args):
-            super().__init__(args)
-            self._stop_event = win32event.CreateEvent(None, True, False, None)
-            self._pipe_lock = threading.RLock()
+class ForgeBossControlService(_ServiceFrameworkBase):
+    """SCM-importable pywin32 service class.
+
+    The class must remain a top-level module attribute because pywin32 stores
+    module.ClassName in the service registry and pythonservice.exe imports that
+    exact object on SCM start.
+    """
+
+    _svc_name_ = SERVICE_NAME
+    _svc_display_name_ = "ForgeBoss Control Service"
+    _svc_description_ = (
+        "Isolated local control-plane service for ForgeBoss governed execution."
+    )
+
+    def __init__(self, args):
+        (
+            _servicemanager,
+            win32event,
+            _win32file,
+            _win32service,
+            _serviceutil,
+        ) = _require_service_host_api()
+        super().__init__(args)
+        self._stop_event = win32event.CreateEvent(None, True, False, None)
+        self._pipe_lock = threading.RLock()
+        self._active_pipe = None
+
+    def SvcStop(self):
+        (
+            _servicemanager,
+            win32event,
+            win32file,
+            win32service,
+            _serviceutil,
+        ) = _require_service_host_api()
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        win32event.SetEvent(self._stop_event)
+        with self._pipe_lock:
+            handle = self._active_pipe
             self._active_pipe = None
-
-        def SvcStop(self):
-            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-            win32event.SetEvent(self._stop_event)
-            with self._pipe_lock:
-                handle = self._active_pipe
-                self._active_pipe = None
-            if handle is not None:
-                try:
-                    win32file.CloseHandle(handle)
-                except Exception:
-                    pass
-
-        def SvcDoRun(self):
-            sid = load_allowed_client_sid()
+        if handle is not None:
             try:
-                private_root = default_private_root()
-                active_state = load_optional_verified_active_state(
-                    private_root=private_root,
-                    desktop_sid=sid,
-                )
-            except (ActiveStateError, ServicePrivateStateError) as ex:
-                raise WindowsControlServiceError(
-                    "service active-state verification failed"
-                ) from ex
-            if active_state is None:
-                servicemanager.LogInfoMsg(
-                    f"{SERVICE_NAME} bootstrap mode: no active-state record"
-                )
-            else:
-                servicemanager.LogInfoMsg(
-                    f"{SERVICE_NAME} active-state verified "
-                    f"schema={active_state.schema_version} "
-                    f"manifest={active_state.migration_manifest_sha256[:16]}"
-                )
-            bootstrap_handler = None
-            if active_state is None:
-                bootstrap_handler = lambda: perform_bootstrap_activation(
-                    private_root=private_root,
-                    desktop_sid=sid,
-                    cancelled=lambda: (
-                        win32event.WaitForSingleObject(self._stop_event, 0)
-                        == win32event.WAIT_OBJECT_0
-                    ),
-                )
-            servicemanager.LogInfoMsg(
-                f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
+                win32file.CloseHandle(handle)
+            except Exception:
+                pass
+
+    def SvcDoRun(self):
+        (
+            servicemanager,
+            win32event,
+            win32file,
+            _win32service,
+            _serviceutil,
+        ) = _require_service_host_api()
+        sid = load_allowed_client_sid()
+        try:
+            private_root = default_private_root()
+            active_state = load_optional_verified_active_state(
+                private_root=private_root,
+                desktop_sid=sid,
             )
-            while (
-                win32event.WaitForSingleObject(self._stop_event, 0)
-                != win32event.WAIT_OBJECT_0
-            ):
-                pipe = create_r0_server_pipe(sid)
-                with self._pipe_lock:
-                    if (
-                        win32event.WaitForSingleObject(self._stop_event, 0)
-                        == win32event.WAIT_OBJECT_0
-                    ):
-                        try:
-                            win32file.CloseHandle(pipe)
-                        except Exception:
-                            pass
-                        break
-                    self._active_pipe = pipe
-                try:
-                    serve_one_connection(
-                        pipe,
-                        bootstrap_handler=bootstrap_handler,
-                        active_state_present=active_state is not None,
+        except (ActiveStateError, ServicePrivateStateError) as ex:
+            raise WindowsControlServiceError(
+                "service active-state verification failed"
+            ) from ex
+        if active_state is None:
+            servicemanager.LogInfoMsg(
+                f"{SERVICE_NAME} bootstrap mode: no active-state record"
+            )
+        else:
+            servicemanager.LogInfoMsg(
+                f"{SERVICE_NAME} active-state verified "
+                f"schema={active_state.schema_version} "
+                f"manifest={active_state.migration_manifest_sha256[:16]}"
+            )
+        bootstrap_handler = None
+        if active_state is None:
+            bootstrap_handler = lambda: perform_bootstrap_activation(
+                private_root=private_root,
+                desktop_sid=sid,
+                cancelled=lambda: (
+                    win32event.WaitForSingleObject(self._stop_event, 0)
+                    == win32event.WAIT_OBJECT_0
+                ),
+            )
+        servicemanager.LogInfoMsg(
+            f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
+        )
+        while (
+            win32event.WaitForSingleObject(self._stop_event, 0)
+            != win32event.WAIT_OBJECT_0
+        ):
+            pipe = create_r0_server_pipe(sid)
+            with self._pipe_lock:
+                if (
+                    win32event.WaitForSingleObject(self._stop_event, 0)
+                    == win32event.WAIT_OBJECT_0
+                ):
+                    try:
+                        win32file.CloseHandle(pipe)
+                    except Exception:
+                        pass
+                    break
+                self._active_pipe = pipe
+            try:
+                serve_one_connection(
+                    pipe,
+                    bootstrap_handler=bootstrap_handler,
+                    active_state_present=active_state is not None,
+                )
+            except Exception as ex:
+                if (
+                    win32event.WaitForSingleObject(self._stop_event, 0)
+                    != win32event.WAIT_OBJECT_0
+                ):
+                    servicemanager.LogErrorMsg(
+                        f"{SERVICE_NAME} R0 pipe failure: {type(ex).__name__}: {ex}"
                     )
-                except Exception as ex:
-                    if (
-                        win32event.WaitForSingleObject(self._stop_event, 0)
-                        != win32event.WAIT_OBJECT_0
-                    ):
-                        servicemanager.LogErrorMsg(
-                            f"{SERVICE_NAME} R0 pipe failure: {type(ex).__name__}: {ex}"
-                        )
-                finally:
-                    with self._pipe_lock:
-                        if self._active_pipe == pipe:
-                            self._active_pipe = None
-            servicemanager.LogInfoMsg(f"{SERVICE_NAME} R0 stopped")
+            finally:
+                with self._pipe_lock:
+                    if self._active_pipe == pipe:
+                        self._active_pipe = None
+        servicemanager.LogInfoMsg(f"{SERVICE_NAME} R0 stopped")
 
+
+def build_service_class():
+    _require_service_host_api()
+    # Fail closed if a future refactor hides or aliases the class. The SCM must
+    # be able to import exactly module.ForgeBossControlService.
+    import sys
+
+    module = sys.modules.get(__name__)
+    if (
+        module is None
+        or getattr(module, "ForgeBossControlService", None)
+        is not ForgeBossControlService
+    ):
+        raise WindowsControlServiceError(
+            "ForgeBossControlService is not a stable module-level service class"
+        )
+    if _win32serviceutil is None or not issubclass(
+        ForgeBossControlService,
+        _win32serviceutil.ServiceFramework,
+    ):
+        raise WindowsControlServiceError(
+            "ForgeBossControlService is not backed by pywin32 ServiceFramework"
+        )
     return ForgeBossControlService
-
 
 def service_command_line() -> int:
     if os.name != "nt":
