@@ -102,16 +102,12 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
                 "FORGEBOSS_AUTHORITY_PEER_ID":"controller-a",
                 "FORGEBOSS_CONTROL_REVISION":"1",
                 "FORGEBOSS_AUTHORITY_PIPE_NAME":pipe,
+                # Non-Windows also needs its Unix endpoint; Windows ignores it.
+                # Do not monkeypatch os.name here because pathlib selects its
+                # concrete path class from that global value.
+                "FORGEBOSS_AUTHORITY_ENDPOINT_DIR":str(root),
             }
-            old=os.name
-            try:
-                # from_environment only requires endpoint-dir on non-Windows.
-                import forgeboss.protected_authority.client as mod
-                from unittest.mock import patch
-                with patch.object(mod.os,"name","nt"):
-                    client=ProtectedAuthorityClient.from_environment(env)
-            finally:
-                pass
+            client=ProtectedAuthorityClient.from_environment(env)
             self.assertEqual(client.pipe_name,pipe)
 
     def test_from_files_loads_raw_ed25519_key_and_pin(self):
