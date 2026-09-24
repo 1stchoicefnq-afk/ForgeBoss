@@ -38,6 +38,8 @@ Write-Host '============================================================'
 Write-Host "Exact engine: $EngineSha"
 
 & (Join-Path $PackageRoot 'Tools\Verify-Package.ps1') -Root $PackageRoot | Write-Host
+& (Join-Path $PackageRoot 'Tools\Test-ProtectedRootIdentity.ps1') -PackageRoot $PackageRoot | Write-Host
+if($LASTEXITCODE -ne 0){throw 'PROTECTED_ROOT_PRE_UAC_VALIDATION_FAILED'}
 $t=Get-Content -LiteralPath $ToolsJson -Raw | ConvertFrom-Json
 AssertTool $t.git 'git.exe'
 AssertTool $t.docker 'docker.exe'
