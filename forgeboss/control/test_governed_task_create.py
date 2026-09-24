@@ -603,6 +603,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         p, _ = self._create_governed_substantial("T-CANCEL-REPLAY")
         req = self._launch_request(p["taskId"], run_id="RUN-CANCEL-REPLAY")
         def cancelled_worker(**kwargs):
+            self.store.request_cancel(kwargs["task"]["task_id"])
             kwargs["cancel_event"].set()
             raise self.mod.GovernedHostLaunchCancelled("cancelled")
         with mock.patch.object(self.mod, "run_governed_worker", side_effect=cancelled_worker) as worker:
