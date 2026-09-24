@@ -1,5 +1,5 @@
 from __future__ import annotations
-import unittest
+import ast,unittest
 from pathlib import Path
 TEMPLATE=Path(__file__).resolve().parent/"v28-template"
 def text(rel):return (TEMPLATE/rel).read_text(encoding="utf-8-sig")
