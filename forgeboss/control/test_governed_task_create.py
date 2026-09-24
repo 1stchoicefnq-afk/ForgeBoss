@@ -66,6 +66,7 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.launch_secret = b"l" * 32
         self.daemon.governed_launch_capability = "cap-" + ("x" * 40)
         self.daemon.idempotency = {}
+        self.daemon.connect_nonces = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
 
