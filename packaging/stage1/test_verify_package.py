@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import sys\nsys.path.insert(0,str(Path(__file__).resolve().parent))\nfrom verify_package import PackageVerificationError, verify_package
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from verify_package import PackageVerificationError, verify_package
 
 
 def sha(path: Path) -> str:
