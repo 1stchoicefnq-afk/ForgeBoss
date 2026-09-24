@@ -554,15 +554,10 @@ def main():
     ap=argparse.ArgumentParser();sp=ap.add_subparsers(dest="cmd",required=True);x=sp.add_parser("issue");x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True);x.add_argument("--ttl",type=int,default=1200)
     for n in ("verify","postflight"):
         x=sp.add_parser(n);x.add_argument("--lease",required=True);x.add_argument("--token",required=True);x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True)
-    x=sp.add_parser("paid-start");x.add_argument("--lease",required=True);x.add_argument("--token",required=True);x.add_argument("--packet",required=True);x.add_argument("--workspace",required=True);x.add_argument("--executor",required=True);x.add_argument("--control-envelope",required=True);x.add_argument("--budget",required=True)
     ns=ap.parse_args()
     try:
         if ns.cmd=="issue":return issue(ns.packet,ns.workspace,ns.executor,ns.ttl)
         if ns.cmd=="verify":verify(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor);print(json.dumps({"ok":True}));return 0
-        if ns.cmd=="paid-start":
-            with paid_start_authority(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor,ns.control_envelope,ns.budget) as authority:
-                print(json.dumps({"ok":True,"taskId":authority["taskId"],"runId":authority["runId"],"ownerEpoch":authority["ownerEpoch"]},separators=(",",":")))
-            return 0
         return postflight(ns.lease,ns.token,ns.packet,ns.workspace,ns.executor)
     except Exception as e:print(json.dumps({"ok":False,"error":f"{type(e).__name__}: {e}"}));return 13
 if __name__=="__main__":raise SystemExit(main())
