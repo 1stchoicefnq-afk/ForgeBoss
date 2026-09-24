@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat as statmod
 import subprocess
 import tempfile
 import threading
@@ -31,6 +32,8 @@ _DEFAULT_MAX_OUTPUT = 64 * 1024
 _DEFAULT_MAX_SOURCE_BYTES = 512 * 1024 * 1024
 _DEFAULT_MAX_SOURCE_FILES = 100_000
 _DEFAULT_WORKSPACE_TMPFS = "768m"
+_DEFAULT_MAX_RESULT_BYTES = 768 * 1024 * 1024
+_DEFAULT_MAX_RESULT_FILES = 100_000
 _TRUNCATION = "\n[...TRUNCATED...]\n"
 _READ_DENY_PREFIXES = (
     ".git/",
@@ -176,12 +179,81 @@ def _read_denied(relative: str) -> bool:
     key = relative.replace("\\", "/").casefold().strip("/")
     if not key:
         return False
-    name = key.rsplit("/", 1)[-1]
+    parts = tuple(part for part in key.split("/") if part)
+    name = parts[-1]
     if name == ".env" or name.startswith(".env."):
+        return True
+    if any(part in {".git", "secrets", ".aws", ".ssh", ".gnupg"} for part in parts):
         return True
     if key in _READ_DENY_EXACT:
         return True
     return any(key.startswith(prefix) for prefix in _READ_DENY_PREFIXES)
+
+
+def _copy_regular_file(source: Path, destination: Path, relative: str) -> int:
+    try:
+        before = os.lstat(source)
+    except OSError as ex:
+        raise GovernedSandboxError(f"source file identity unreadable: {relative}") from ex
+    if not statmod.S_ISREG(before.st_mode):
+        raise GovernedSandboxError(f"source contains non-regular file: {relative}")
+    if int(getattr(before, "st_nlink", 1)) != 1:
+        raise GovernedSandboxError(f"source contains hardlinked file: {relative}")
+    if os.name == "nt" and int(getattr(before, "st_file_attributes", 0)) & 0x400:
+        raise GovernedSandboxError(f"source contains reparse-point file: {relative}")
+
+    flags = os.O_RDONLY
+    flags |= int(getattr(os, "O_BINARY", 0))
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(source, flags)
+    except OSError as ex:
+        raise GovernedSandboxError(f"source file could not be opened safely: {relative}") from ex
+    try:
+        current = os.fstat(fd)
+        if (
+            current.st_dev != before.st_dev
+            or current.st_ino != before.st_ino
+            or current.st_size != before.st_size
+        ):
+            raise GovernedSandboxError(f"source file changed during safe-open: {relative}")
+        if not statmod.S_ISREG(current.st_mode):
+            raise GovernedSandboxError(f"source became non-regular: {relative}")
+        if int(getattr(current, "st_nlink", 1)) != 1:
+            raise GovernedSandboxError(f"source became hardlinked: {relative}")
+        if os.name == "nt" and int(getattr(current, "st_file_attributes", 0)) & 0x400:
+            raise GovernedSandboxError(f"source became a reparse point: {relative}")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            out_fd = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_BINARY", 0)),
+                0o600,
+            )
+        except OSError as ex:
+            raise GovernedSandboxError(f"sanitized destination collision: {relative}") from ex
+        try:
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(out_fd, view)
+                    if written <= 0:
+                        raise GovernedSandboxError(f"short write while staging: {relative}")
+                    view = view[written:]
+            os.fsync(out_fd)
+        finally:
+            os.close(out_fd)
+        try:
+            os.chmod(destination, statmod.S_IMODE(current.st_mode) & 0o777)
+        except OSError:
+            pass
+        return int(current.st_size)
+    finally:
+        os.close(fd)
 
 
 def create_sanitized_source(
@@ -222,23 +294,18 @@ def create_sanitized_source(
             rel = (rel_root / name).as_posix()
             if _read_denied(rel):
                 continue
-            try:
-                if src.is_symlink() or (hasattr(src, "is_junction") and src.is_junction()):
-                    raise GovernedSandboxError(f"source contains linklike file: {rel}")
-                stat = src.stat()
-            except OSError as ex:
-                raise GovernedSandboxError(f"source file identity unreadable: {rel}") from ex
-            if not src.is_file():
-                raise GovernedSandboxError(f"source contains non-regular file: {rel}")
             total_files += 1
-            total_bytes += int(stat.st_size)
             if total_files > max_files:
                 raise GovernedSandboxError("sandbox source file-count limit exceeded")
-            if total_bytes > max_bytes:
-                raise GovernedSandboxError("sandbox source byte limit exceeded")
             dst = destination / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            copied = _copy_regular_file(src, dst, rel)
+            total_bytes += copied
+            if total_bytes > max_bytes:
+                try:
+                    dst.unlink()
+                except OSError:
+                    pass
+                raise GovernedSandboxError("sandbox source byte limit exceeded")
 
     return total_files, total_bytes
 
@@ -506,18 +573,37 @@ def _require_ok(result: ProcessResult, label: str) -> ProcessResult:
     return result
 
 
-def _assert_result_tree_safe(root: Path) -> None:
+def _assert_result_tree_safe(
+    root: Path,
+    *,
+    max_bytes: int = _DEFAULT_MAX_RESULT_BYTES,
+    max_files: int = _DEFAULT_MAX_RESULT_FILES,
+) -> None:
     root = root.resolve(strict=True)
+    total_files = 0
+    total_bytes = 0
     for path in root.rglob("*"):
         try:
+            rel = path.relative_to(root)
             if path.is_symlink():
-                raise GovernedSandboxError(
-                    f"sandbox result contains symlink: {path.relative_to(root)}"
-                )
+                raise GovernedSandboxError(f"sandbox result contains symlink: {rel}")
             if hasattr(path, "is_junction") and path.is_junction():
-                raise GovernedSandboxError(
-                    f"sandbox result contains junction: {path.relative_to(root)}"
-                )
+                raise GovernedSandboxError(f"sandbox result contains junction: {rel}")
+            st = os.lstat(path)
+            if path.is_dir():
+                continue
+            if not statmod.S_ISREG(st.st_mode):
+                raise GovernedSandboxError(f"sandbox result contains non-regular file: {rel}")
+            if int(getattr(st, "st_nlink", 1)) != 1:
+                raise GovernedSandboxError(f"sandbox result contains hardlinked file: {rel}")
+            total_files += 1
+            total_bytes += int(st.st_size)
+            if total_files > max_files:
+                raise GovernedSandboxError("sandbox result file-count limit exceeded")
+            if total_bytes > max_bytes:
+                raise GovernedSandboxError("sandbox result byte limit exceeded")
+        except GovernedSandboxError:
+            raise
         except OSError as ex:
             raise GovernedSandboxError("sandbox result identity cannot be inspected") from ex
 
@@ -571,7 +657,7 @@ def run_governed_sandbox(
         "--opt",
         "device=tmpfs",
         "--opt",
-        f"o=size={_DEFAULT_WORKSPACE_TMPFS}",
+        f"o=size={_DEFAULT_WORKSPACE_TMPFS},nr_inodes={_DEFAULT_MAX_RESULT_FILES}",
         volume,
     )
     remove_volume = (docker.path, "volume", "rm", "-f", volume)
@@ -690,12 +776,16 @@ def run_governed_sandbox(
                         timeout_seconds=60,
                         watchdog=None,
                     )
-                    # Missing --rm containers are expected after successful runs.
-                    # Any other text is retained as cleanup evidence, not silently lost.
-                    if result_cleanup.returncode not in (0, 1):
-                        cleanup_errors.append(
-                            f"container cleanup {name} exit {result_cleanup.returncode}"
+                    if result_cleanup.returncode != 0:
+                        missing = "no such container" in (
+                            (result_cleanup.stdout + "\n" + result_cleanup.stderr).casefold()
                         )
+                        if not (result_cleanup.returncode == 1 and missing):
+                            cleanup_errors.append(
+                                f"container cleanup {name} exit "
+                                f"{result_cleanup.returncode}: "
+                                f"{result_cleanup.stderr[-1000:]}"
+                            )
                 except Exception as ex:
                     cleanup_errors.append(f"container cleanup {name}: {ex}")
         if volume_attempted:
@@ -707,10 +797,14 @@ def run_governed_sandbox(
                     watchdog=None,
                 )
                 if volume_cleanup.returncode != 0:
-                    cleanup_errors.append(
-                        f"volume cleanup exit {volume_cleanup.returncode}: "
-                        f"{volume_cleanup.stderr[-1000:]}"
+                    missing = "no such volume" in (
+                        (volume_cleanup.stdout + "\n" + volume_cleanup.stderr).casefold()
                     )
+                    if not (volume_cleanup.returncode == 1 and missing):
+                        cleanup_errors.append(
+                            f"volume cleanup exit {volume_cleanup.returncode}: "
+                            f"{volume_cleanup.stderr[-1000:]}"
+                        )
             except Exception as ex:
                 cleanup_errors.append(f"volume cleanup: {ex}")
         if cleanup_errors:
