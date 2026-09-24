@@ -27,6 +27,8 @@ jobs:
           python-version: '3.13'
       - name: Stage1 package hostile regressions
         run: python -m unittest discover -s packaging/stage1 -p "test_*.py" -v
+      - name: Trusted host tool regressions
+        run: python -m unittest forgeboss.security.test_host_tool_identity -v
 
   windows-lock:
     runs-on: windows-latest
