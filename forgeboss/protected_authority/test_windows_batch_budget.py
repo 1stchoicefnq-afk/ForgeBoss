@@ -9,12 +9,12 @@ from forgeboss.protected_authority.protocol import AuthorityError
 
 
 class WindowsBatchBudgetPortableTests(unittest.TestCase):
-    def _server(self):
+    def _server(self,handles=None,*,preauth_timeout_ms=100,handler_timeout_ms=500):
         srv=object.__new__(WindowsNamedPipeServer)
-        srv.handles=[101,102]
-        srv.handle=101
-        srv.preauth_timeout_ms=100
-        srv.handler_timeout_ms=500
+        srv.handles=list(handles or [101,102])
+        srv.handle=srv.handles[0]
+        srv.preauth_timeout_ms=preauth_timeout_ms
+        srv.handler_timeout_ms=handler_timeout_ms
         srv.poll_interval=0.001
         srv._stop=threading.Event()
         srv._stuck=[]
@@ -34,6 +34,32 @@ class WindowsBatchBudgetPortableTests(unittest.TestCase):
         self.assertEqual(out[0],b"ok")
         self.assertEqual(out[1].code,"IPC_PREAUTH_TIMEOUT")
         self.assertEqual(srv.handles,[101,102])
+
+    def test_one_stuck_instance_does_not_kill_the_host(self):
+        srv=self._server([101,102,103,104],preauth_timeout_ms=10,handler_timeout_ms=40)
+        def serve(h):
+            if h==101:
+                time.sleep(0.20)
+                return b"late"
+            return ("ok-"+str(h)).encode()
+        srv._serve_handle=serve
+        out=srv.serve_batch()
+        self.assertEqual([x for x in srv.handles],[102,103,104])
+        self.assertIsInstance(out[0],AuthorityError)
+        self.assertEqual(out[0].code,"IPC_HANDLER_QUARANTINED")
+        self.assertEqual(out[1:], [b"ok-102",b"ok-103",b"ok-104"])
+
+    def test_all_stuck_instances_trigger_deliberate_shutdown_reason(self):
+        srv=self._server([101,102,103,104],preauth_timeout_ms=10,handler_timeout_ms=40)
+        def serve(_h):
+            time.sleep(0.20)
+            return b"late"
+        srv._serve_handle=serve
+        with self.assertRaises(AuthorityError) as cm:
+            srv.serve_batch()
+        self.assertEqual(cm.exception.code,"IPC_ALL_INSTANCES_QUARANTINED")
+        self.assertEqual(srv.handles,[])
+        self.assertIsNone(srv.handle)
 
     def test_windows_server_source_flushes_before_disconnect(self):
         import inspect

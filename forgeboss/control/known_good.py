@@ -46,8 +46,10 @@ def _canonical_json(value) -> bytes:
 
 def _run_git(root: Path, *args: str, binary: bool = False):
     try:
+        from forgeboss.security.executor_guard import _resolve_git_executable
+        git_exe=_resolve_git_executable()
         cp = subprocess.run(
-            ["git", "-C", str(root), *args],
+            [str(git_exe), "-C", str(root), *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,

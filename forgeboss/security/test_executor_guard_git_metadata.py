@@ -397,10 +397,19 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
                 with self.assertRaisesRegex(guard.SecurityError,"identity changed during metadata snapshot"):guard.git_metadata_snapshot(work)
         finally:td.cleanup()
 
-    def test_windows_resolver_requests_git_exe(self):
-        with patch.object(guard.os,"name","nt"),patch.object(guard.shutil,"which",return_value=None) as which:
-            with self.assertRaisesRegex(guard.SecurityError,"Git executable unavailable: git.exe"):guard._resolve_git_executable()
-            which.assert_called_once_with("git.exe")
+    def test_windows_resolver_ignores_path_decoy_and_uses_registry_root(self):
+        td=tempfile.TemporaryDirectory()
+        try:
+            root=Path(td.name)/"Git";exe=root/"cmd"/"git.exe";exe.parent.mkdir(parents=True);exe.write_text("trusted",encoding="utf-8")
+            decoy=Path(td.name)/"decoy"/"git.exe";decoy.parent.mkdir();decoy.write_text("fake",encoding="utf-8")
+            with patch.object(guard,"_windows_trusted_roots",return_value=[root.resolve()]),\
+                 patch.object(guard,"_assert_windows_git_trust") as trust,\
+                 patch.object(guard.shutil,"which",return_value=str(decoy)) as which:
+                resolved=guard._resolve_windows_git_executable()
+            self.assertEqual(resolved,exe.resolve())
+            trust.assert_called_once_with(exe.resolve())
+            which.assert_not_called()
+        finally:td.cleanup()
 
     def test_non_regular_or_linklike_git_executable_fails_closed(self):
         td=tempfile.TemporaryDirectory()

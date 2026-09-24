@@ -1,0 +1,6 @@
+# Stage 1 desktop/runtime dependencies. Exact versions and hashes are generated
+# on Windows Python 3.13 and copied into the release pack as requirements.lock.
+pywebview>=5.4,<7
+mini-swe-agent==2.4.6
+litellm>=1.93.0,<2
+cryptography>=45,<48

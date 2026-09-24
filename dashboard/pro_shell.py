@@ -176,7 +176,7 @@ def friendly_activity(text):
 
 import re
 
-DASH_STATE_ROOT=Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (ROOT/"state")).expanduser().resolve()
+DASH_STATE_ROOT=Path(os.environ.get("FORGEBOSS_STATE_ROOT") or (Path.home()/".forgeboss"/"state")).expanduser().resolve()
 SETTINGS_PATH=DASH_STATE_ROOT/"dashboard"/"owner-settings.json"
 def load_settings():
  d={"merge_enabled":False,"deploy_enabled":False,"daily_budget_usd":10.0,"risk_mode":"conservative","require_review":True}

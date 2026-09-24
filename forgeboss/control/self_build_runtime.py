@@ -918,6 +918,7 @@ class SelfBuildRuntime:
             "revision":identity.get("revision"),"code_root":identity.get("codeRoot"),
             "manifest_path":identity.get("manifestPath"),"manifest_sha256":identity.get("manifestSha256"),
             "identity_sha256":identity.get("identitySha256"),"tree_sha256":identity.get("treeSha256"),
+            "trustGrade":"OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP",
         }
 
     def status(self,payload:dict)->dict:

@@ -1,0 +1,56 @@
+name: R7 Stage1 supply-chain resolve
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/stage1/**'
+      - '.github/workflows/r7-stage1-supply-chain.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-lock:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Generate fully hashed Windows runtime lock
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check "pip==24.3.1" "pip-tools==7.5.1"
+          python -m piptools compile --resolver=backtracking --generate-hashes --strip-extras --output-file stage1-requirements.lock packaging/stage1/requirements.in
+          Get-Content stage1-requirements.lock
+          python -m venv stage1-lock-smoke
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps -r stage1-requirements.lock
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -c "import cryptography, litellm, webview; from minisweagent.agents.default import DefaultAgent; print('LOCK_IMPORT_OK')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage1-requirements-lock
+          path: stage1-requirements.lock
+          if-no-files-found: error
+
+  image-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve immutable Python builder digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull python:3.13-bookworm
+          docker image inspect python:3.13-bookworm --format '{{json .RepoDigests}}' | tee python-image-repodigests.txt
+          grep -Eo 'python@sha256:[0-9a-f]{64}' python-image-repodigests.txt | head -1 | tee python-image-digest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage1-python-image-digest
+          path: |
+            python-image-repodigests.txt
+            python-image-digest.txt
+          if-no-files-found: error
