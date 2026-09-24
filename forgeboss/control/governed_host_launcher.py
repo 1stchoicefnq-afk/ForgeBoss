@@ -60,11 +60,11 @@ def _write_private_packet(state_dir: Path, packet: dict) -> Path:
             os.chmod(path, 0o600)
         except OSError:
             pass
-        harden_private_path(path)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump(packet, f, sort_keys=True, separators=(",", ":"))
             f.flush()
             os.fsync(f.fileno())
+        harden_private_path(path)
     except Exception:
         try:
             os.close(fd)
