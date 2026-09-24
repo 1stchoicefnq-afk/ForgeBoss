@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, json, os, sys, time, ctypes
+import argparse, inspect, json, os, sys, time, ctypes
 from ctypes import wintypes
 from pathlib import Path
 
@@ -27,12 +27,29 @@ def main():
     installed=Path(ns.installed).resolve(strict=True);state=jload(installed)
     engine=Path(state["engineRoot"]).resolve(strict=True)
     sys.path.insert(0,str(engine))
-    from forgeboss.protected_authority.protocol import AuthorityError
+    from forgeboss.protected_authority.protocol import AuthorityError, OPERATIONS
     from forgeboss.protected_authority.service import create_production_service
     from forgeboss.protected_authority.lifecycle import WindowsNamedPipeServer
     root=Path(state["protectedRoot"]).resolve(strict=True);cfg=jload(root/"authority-config.json")
     if str(cfg.get("engineSha","")).lower()!=str(state.get("engineSha","")).lower() or Path(cfg["engineRoot"]).resolve(strict=True)!=engine:
         raise RuntimeError("AUTHORITY_ENGINE_IDENTITY_MISMATCH")
+    if cfg.get("authorityApi")!="self_build_runtime_receipts_v1":
+        raise RuntimeError("AUTHORITY_API_CONFIG_MISMATCH")
+    required={
+        "authorize_self_build_launch","prepare_self_build","prepare_self_build_replacement",
+        "compose_self_build_successor","activate_self_build_successor",
+        "prove_self_build_activation_rollback","self_build_current_known_good",
+        "self_build_status","revoke_self_build_worker","record_self_build_handoff",
+        "review_self_build_candidate","accept_self_build_candidate",
+    }
+    operations=set(OPERATIONS)
+    missing=sorted(required-operations)
+    legacy=sorted(x for x in operations if x.startswith("issue_stage1_"))
+    service_params=set(inspect.signature(create_production_service).parameters)
+    obsolete=sorted(x for x in service_params if x.startswith("stage1_"))
+    if missing:raise RuntimeError("CURRENT_STAGE1_OPERATIONS_MISSING:"+",".join(missing))
+    if legacy:raise RuntimeError("LEGACY_ISSUE_STAGE1_OPERATIONS_PRESENT:"+",".join(legacy))
+    if obsolete:raise RuntimeError("OBSOLETE_STAGE1_SERVICE_PARAMETERS_PRESENT:"+",".join(obsolete))
     log_path=root/"authority-user.log"
     def log(msg):
         line=time.strftime("%Y-%m-%d %H:%M:%S")+" "+str(msg)+"\n"
