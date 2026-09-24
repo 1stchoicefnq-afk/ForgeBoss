@@ -13,7 +13,10 @@ SCHEMA = 1
 KIND = "forgeboss-governed-launch"
 MAX_TTL_SECONDS = 600
 _RUNTIME_RUNNERS = {
-    "mini-swe": "forgeboss/executors/mini_swe_runner.py",
+    "mini-swe": {
+        "path": "forgeboss/executors/mini_swe_runner.py",
+        "sha256": "9d12ff58d87f370892ceaebaab18e1ba89af7546e676643de87327fb77ce35a1",
+    },
 }
 _REQUIRED = {
     "schema",
@@ -43,9 +46,10 @@ class GovernedLaunchAttestationError(ValueError):
 
 
 def _runner_path(root: Path, runtime_id: str) -> tuple[str, Path]:
-    rel = _RUNTIME_RUNNERS.get(str(runtime_id or ""))
-    if not rel:
+    entry = _RUNTIME_RUNNERS.get(str(runtime_id or ""))
+    if not entry:
         raise GovernedLaunchAttestationError("runtime is not approved for governed launch attestation")
+    rel = entry["path"]
     root = Path(root).resolve()
     candidate = root / rel
     current = root
@@ -68,6 +72,9 @@ def _runner_path(root: Path, runtime_id: str) -> tuple[str, Path]:
 def runner_identity(root: Path, runtime_id: str) -> tuple[str, str]:
     rel, path = _runner_path(root, runtime_id)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    expected = _RUNTIME_RUNNERS[str(runtime_id)]["sha256"]
+    if not hmac.compare_digest(digest, expected):
+        raise GovernedLaunchAttestationError("governed runner does not match reviewed SHA-256")
     return rel, digest
 
 
