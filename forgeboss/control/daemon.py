@@ -134,8 +134,6 @@ class ForgeBossDaemon:
                 if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
                 if task.get("governance_mode")!="reuse-v1":
                     raise ProtocolError("GOVERNED_TASK_REQUIRED","trusted governed launch requires a governed task")
-                if task.get("cancel_requested_at") is not None:
-                    raise ProtocolError("TASK_CANCELLED","task cancellation has revoked launch authority")
                 run_id=p.get("runId")
                 if not isinstance(run_id,str) or not run_id.strip() or run_id!=run_id.strip() or len(run_id)>128 or any(ord(ch)<32 or ord(ch)==127 for ch in run_id):
                     raise ProtocolError("RUN_ID_REQUIRED","governed launch requires a stable safe runId")
@@ -152,6 +150,8 @@ class ForgeBossDaemon:
                         "outcome":str(existing_run.get("status") or "unknown"),
                         "replayed":True,
                     }
+                if task.get("cancel_requested_at") is not None:
+                    raise ProtocolError("TASK_CANCELLED","task cancellation has revoked new launch authority")
                 runtime_id=str(p.get("runtimeId") or "")
                 if runtime_id!="mini-swe":
                     raise ProtocolError("RUNTIME_NOT_APPROVED","governed host launch r0 permits mini-swe only")
@@ -259,7 +259,14 @@ class ForgeBossDaemon:
                         outcome="cancelled"
                 except ProtocolError as ex:
                     if ex.code=="TASK_CANCELLED":outcome="cancelled"
-                    else:failure=str(ex)
+                    else:
+                        latest=self.store.get_task(task["task_id"])
+                        if cancel_event.is_set() or (latest and latest.get("cancel_requested_at") is not None):outcome="cancelled"
+                        else:failure=str(ex)
+                except Exception as ex:
+                    latest=self.store.get_task(task["task_id"])
+                    if cancel_event.is_set() or (latest and latest.get("cancel_requested_at") is not None):outcome="cancelled"
+                    else:failure=f"{type(ex).__name__}: {ex}"
                 finally:
                     try:
                         self.store.release(
