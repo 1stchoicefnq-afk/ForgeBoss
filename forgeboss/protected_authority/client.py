@@ -66,10 +66,11 @@ class ProtectedAuthorityClient:
             endpoint=env.get("FORGEBOSS_AUTHORITY_ENDPOINT_DIR")
             if not endpoint:raise AuthorityError("IPC_ENDPOINT_MISSING")
             unix_socket=str(Path(endpoint)/FIXED_SOCKET_NAME)
+        pipe_name=env.get("FORGEBOSS_AUTHORITY_PIPE_NAME") or FIXED_PIPE_NAME
         return cls.from_files(
             peer_id=peer_id,repository=repository,control_revision=revision,
             peer_private_key_file=peer_key,receipt_public_key_file=receipt_pin,
-            unix_socket_path=unix_socket,timeout=timeout,
+            unix_socket_path=unix_socket,pipe_name=pipe_name,timeout=timeout,
         )
 
     def _request(self,operation:str,payload:Mapping[str,Any])->tuple[dict,str]:

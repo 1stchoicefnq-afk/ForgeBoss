@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64, tempfile, unittest
+import base64, os, tempfile, unittest
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -89,6 +89,26 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
         self.assertIn("CreateFileW",source)
         self.assertIn("time.sleep",source)
         self.assertIn('raise AuthorityError("IPC_CONNECT_FAILED")',source)
+
+    def test_from_environment_binds_versioned_pipe_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);keyfile=root/"peer.key";pinfile=root/"receipt.pub"
+            raw=self.peer.private_bytes(serialization.Encoding.Raw,serialization.PrivateFormat.Raw,serialization.NoEncryption())
+            keyfile.write_bytes(raw);pinfile.write_text(self.pin,encoding="ascii")
+            pipe=r"\\.\pipe\ForgeBossAuthorityStage1-v28"
+            env={
+                "FORGEBOSS_AUTHORITY_PEER_KEY":str(keyfile),
+                "FORGEBOSS_AUTHORITY_RECEIPT_PUBLIC_KEY":str(pinfile),
+                "FORGEBOSS_AUTHORITY_PEER_ID":"controller-a",
+                "FORGEBOSS_CONTROL_REVISION":"1",
+                "FORGEBOSS_AUTHORITY_PIPE_NAME":pipe,
+                # Non-Windows also needs its Unix endpoint; Windows ignores it.
+                # Do not monkeypatch os.name here because pathlib selects its
+                # concrete path class from that global value.
+                "FORGEBOSS_AUTHORITY_ENDPOINT_DIR":str(root),
+            }
+            client=ProtectedAuthorityClient.from_environment(env)
+            self.assertEqual(client.pipe_name,pipe)
 
     def test_from_files_loads_raw_ed25519_key_and_pin(self):
         with tempfile.TemporaryDirectory() as td:

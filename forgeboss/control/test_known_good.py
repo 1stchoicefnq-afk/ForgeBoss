@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.control.known_good import IdentityError, runtime_identity_from_env, verify_build_manifest
+from forgeboss.control.known_good import IdentityError, create_build_manifest, runtime_identity_from_env, verify_build_manifest
 
 
 def _sha(path: Path):
@@ -34,6 +34,20 @@ class KnownGoodIdentityTests(unittest.TestCase):
         files={"forgeboss/daemon.py":_sha(pkg/"daemon.py"),"forgeboss/helper.py":_sha(pkg/"helper.py")}
         manifest=Path(td.name)/"manifest.json";manifest.write_text(json.dumps({"schema":1,"inventoryMode":"forgeboss-package-v2-git-bound","revision":revision,"codeRoot":str(root.resolve()),"entrypoint":"forgeboss/daemon.py","treeSha256":_tree(files),"files":files},sort_keys=True),encoding="utf-8")
         return td,root,manifest,revision
+
+    def test_create_build_manifest_derives_exact_git_bound_identity(self):
+        td,root,manifest,revision=self._fixture()
+        try:
+            generated=create_build_manifest(root,revision,"forgeboss/daemon.py")
+            self.assertEqual(generated["revision"],revision)
+            self.assertEqual(generated["codeRoot"],str(root.resolve()))
+            self.assertEqual(generated["entrypoint"],"forgeboss/daemon.py")
+            self.assertEqual(set(generated["files"]),{"forgeboss/daemon.py","forgeboss/helper.py"})
+            out=Path(td.name)/"generated.json"
+            out.write_text(json.dumps(generated,sort_keys=True),encoding="utf-8")
+            verified=verify_build_manifest(out,root,revision)
+            self.assertTrue(verified["verified"])
+        finally:td.cleanup()
 
     def test_manifest_is_bound_to_real_git_head_and_complete_tree(self):
         td,root,manifest,revision=self._fixture()

@@ -93,7 +93,7 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
 <aside class="sidebar">
  <div class="brand"><img src="assets/siteboss-logo.png"><div><h1>ForgeBoss</h1><small>SELF-BUILD MODE</small></div></div>
  <div class="nav">
-  <button class="active" onclick="page('dashboard',this)">▦ &nbsp; Dashboard</button><button onclick="page('tasks',this)">◈ &nbsp; Tasks</button><button onclick="page('workers',this)">⚙ &nbsp; Workers</button><button onclick="page('costs',this)">$ &nbsp; Costs</button><button onclick="page('activity',this)">↻ &nbsp; Activity</button><button onclick="page('settings',this)">◌ &nbsp; Settings</button>
+  <button class="active" onclick="page('dashboard',this)">▦ &nbsp; Dashboard</button><button onclick="page('projects',this)">◆ &nbsp; Projects</button><button onclick="page('forgechat',this)">✦ &nbsp; Forge Chat</button><button onclick="page('bible',this)">▤ &nbsp; Bible</button><button onclick="page('evidence',this)">✓ &nbsp; Evidence</button><button onclick="page('vault',this)">▣ &nbsp; Forge Vault</button><button onclick="page('tasks',this)">◈ &nbsp; Tasks</button><button onclick="page('workers',this)">⚙ &nbsp; Workers</button><button onclick="page('costs',this)">$ &nbsp; Costs</button><button onclick="page('activity',this)">↻ &nbsp; Activity</button><button onclick="page('settings',this)">◌ &nbsp; Settings</button>
  </div>
  <div class="sys"><div><span class="dot"></span>LOCAL CONTROL ONLINE</div><div style="margin-top:12px;display:grid;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center">MERGE <div id="sideMerge" class="toggle" onclick="toggleAuth('merge_enabled')"></div></div><div style="display:flex;justify-content:space-between;align-items:center">DEPLOY <div id="sideDeploy" class="toggle" onclick="toggleAuth('deploy_enabled')"></div></div></div></div>
 </aside>
@@ -101,7 +101,7 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
 <main class="main">
  <section id="dashboard" class="page active"><div class="top">
   <div class="title"><h2>Engineering Control Center</h2><p>Autonomous diagnose, repair, test and review control for ForgeBoss &nbsp; <span class="intel-chip">UNIFIED EXECUTOR SECURITY</span></p></div>
-  <div class="badges"><div class="badge">STATUS <strong id="statusBadge">IDLE</strong></div><div class="badge">SPEND <strong id="topSpend">$0.00</strong></div></div>
+  <div class="badges"><div class="badge">STATUS <strong id="statusBadge">IDLE</strong></div><div class="badge">TRUST <strong id="trustGrade">CHECKING</strong></div><div class="badge">SPEND <strong id="topSpend">$0.00</strong></div></div>
  </div>
 
  <div class="insight-grid">
@@ -177,6 +177,26 @@ body{background:radial-gradient(circle at 15% -10%,rgba(110,242,207,.07),transpa
  </div>
  <div class="footer"><span>ForgeBoss <span class="orange">P0 SELF-BUILD</span> · known-good self-build shell</span><span>POWER TO THE TRADIES. NO BULL.</span></div>
 </section>
+<section id="projects" class="page"><div class="pagehead"><div><h2>Projects</h2><p>Start with an idea. ForgeBoss builds the authoritative project Bible and keeps unresolved questions visible.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Entry</small><b>IDEA FIRST</b></div><div class="hero-metric"><small>Bible</small><b id="projectBibleHero">QUESTIONS FIRST</b></div><div class="hero-metric"><small>Memory</small><b>PERSISTENT</b></div><div class="hero-metric"><small>Repo</small><b>VALIDATED URL</b></div></div>
+<div class="grid"><div class="card"><h3>Create Project</h3><div class="field"><label>PROJECT NAME</label><input id="productName" placeholder="e.g. SiteBoss Mobile"></div><div class="field" style="margin-top:10px"><label>IDEA</label><textarea id="productIdea" rows="4" placeholder="Describe the idea in ordinary language."></textarea></div><div class="field" style="margin-top:10px"><label>WHO IS IT FOR?</label><input id="productWho" placeholder="Owner, tradie, customer..."></div><div class="field" style="margin-top:10px"><label>OUTCOME</label><input id="productOutcome" placeholder="What must it achieve?"></div><div class="field" style="margin-top:10px"><label>LIMITS / RULES</label><textarea id="productLimits" rows="3" placeholder="Security, cost, platform, do-not-do rules..."></textarea></div><button class="primary" style="margin-top:14px" onclick="createProductProject()">CREATE PROJECT BIBLE</button></div>
+<div class="card"><h3>Projects</h3><table class="table"><thead><tr><th>PROJECT</th><th>BIBLE</th><th>QUESTIONS</th><th>REPOSITORY</th></tr></thead><tbody id="productProjectRows"></tbody></table><div class="field" style="margin-top:14px"><label>REGISTER REPOSITORY URL</label><select id="repoProject"></select><input id="repoUrl" style="margin-top:8px" placeholder="https://github.com/owner/repo"><button class="secondary" style="margin-top:8px" onclick="registerRepo()">VALIDATE & SAVE URL</button><p id="repoStatus" class="muted"></p></div></div></div></section>
+
+<section id="forgechat" class="page"><div class="pagehead"><div><h2>Forge Chat</h2><p>Project conversation memory stored locally with the project instead of relying on separate prompt history.</p></div></div>
+<div class="grid"><div class="card"><h3>Conversation</h3><div class="field"><label>PROJECT</label><select id="chatProject" onchange="loadProjectChat()"></select></div><div id="chatMessages" style="margin-top:14px;max-height:480px;overflow:auto;display:grid;gap:9px"></div></div><div class="card"><h3>Add to Project Memory</h3><textarea id="chatInput" rows="10" placeholder="Describe a decision, requirement, problem or idea..."></textarea><button class="primary" style="margin-top:12px" onclick="sendProjectChat()">SAVE MESSAGE</button><p class="muted">This page stores conversation history. Autonomous model replies are not claimed until the governed project-chat worker is wired.</p></div></div></section>
+
+<section id="bible" class="page"><div class="pagehead"><div><h2>Project Bible</h2><p>Authoritative project documents. Missing owner decisions stay explicit instead of being silently invented.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Authority</small><b>PROJECT FILES</b></div><div class="hero-metric"><small>Open Questions</small><b id="bibleQuestions">-</b></div><div class="hero-metric"><small>Status</small><b id="bibleState">SELECT PROJECT</b></div><div class="hero-metric"><small>Mutation</small><b>OWNER CONTROLLED</b></div></div>
+<div class="card"><div class="field"><label>PROJECT</label><select id="bibleProject" onchange="loadBible()"></select></div><div id="bibleFiles" style="margin-top:16px;display:grid;gap:12px"></div></div></section>
+
+<section id="evidence" class="page"><div class="pagehead"><div><h2>Evidence</h2><p>Proof, authority identity, test evidence and the last self-build report.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Authority</small><b id="evidenceAuthority">CHECKING</b></div><div class="hero-metric"><small>Known Good</small><b id="evidenceRevision">-</b></div><div class="hero-metric"><small>Phase</small><b id="evidencePhase">-</b></div><div class="hero-metric"><small>Reports</small><b>LOCAL FIRST</b></div></div>
+<div class="grid"><div class="card"><h3>Stage 1 Authority</h3><p id="authorityDetail" class="muted">Loading protected authority evidence…</p></div><div class="card"><h3>Run Evidence</h3><button class="secondary" onclick="showRunReport()">OPEN LAST RUN REPORT</button><button class="secondary" style="margin-left:8px" onclick="publishRunReport()">PUBLISH SANITISED FINDINGS</button><p class="muted">Publishing is owner-confirmed and does not merge or deploy.</p></div></div></section>
+
+<section id="vault" class="page"><div class="pagehead"><div><h2>Forge Vault</h2><p>Credential surface reserved for the protected secret broker.</p></div></div>
+<div class="hero-strip"><div class="hero-metric"><small>Status</small><b id="vaultHero">BROKER REQUIRED</b></div><div class="hero-metric"><small>Raw Secrets</small><b>NOT STORED HERE</b></div><div class="hero-metric"><small>Worker Exposure</small><b>DENIED</b></div><div class="hero-metric"><small>Lease Model</small><b>REQUIRED</b></div></div>
+<div class="card"><h3>Vault intentionally locked</h3><p id="vaultMessage" class="muted">ForgeBoss will not collect provider API keys in this UI until the protected broker can issue scoped, expiring use without exposing raw secrets to workers.</p></div></section>
+
 <section id="tasks" class="page"><div class="pagehead"><div><h2>Tasks</h2><p>Current SiteBoss work packets, locked scope and authoritative Git state.</p></div></div>
 <div class="hero-strip"><div class="hero-metric"><small>Queue</small><b id="taskCount">0</b></div><div class="hero-metric"><small>Write Policy</small><b>BOUNDED</b></div><div class="hero-metric"><small>Git State</small><b>EXACT HEAD</b></div><div class="hero-metric"><small>Publish</small><b>DRAFT ONLY</b></div></div>
 <div class="card"><h3>Authoritative Work Queue</h3><table class="table"><thead><tr><th>TASK</th><th>STATUS</th><th>WRITE SCOPE</th><th>HEAD</th></tr></thead><tbody id="taskRows"></tbody></table></div></section>
@@ -201,7 +221,7 @@ function page(id,b){document.querySelectorAll('.page').forEach(x=>x.classList.re
 function tog(id,on){let e=document.getElementById(id);if(e)e.classList.toggle('on',!!on)}
 async function toggleAuth(n){let cur=!!last.owner_settings?.[n],next=!cur;if(next&&!confirm(`Arm ${n.startsWith('merge')?'MERGE':'DEPLOY'} permission?\n\nThis does not bypass tests/review and automatic execution is not wired yet.`))return;await window.pywebview.api.set_safety_toggle(n,next);await snapshot()}
 async function savePolicy(){await window.pywebview.api.save_settings({daily_budget_usd:Number(dailyBudget.value),risk_mode:riskMode.value,require_review:true});alert('Settings saved')}
-function extended(s){let st=s.owner_settings||{};tog('sideMerge',st.merge_enabled);tog('sideDeploy',st.deploy_enabled);tog('setMerge',st.merge_enabled);tog('setDeploy',st.deploy_enabled);dailyBudget.value=st.daily_budget_usd??10;riskMode.value=st.risk_mode||'conservative';
+function extended(s){let st=s.owner_settings||{};tog('sideMerge',st.merge_enabled);tog('sideDeploy',st.deploy_enabled);tog('setMerge',st.merge_enabled);tog('setDeploy',st.deploy_enabled);dailyBudget.value=st.daily_budget_usd??10;riskMode.value=st.risk_mode||'conservative';renderProduct(s);
 const selected=s.selected_project||null,ps=document.getElementById('projectSelected'),pt=document.getElementById('projectDropTitle');
 if(ps&&pt){if(selected){pt.textContent='FORGEBOSS SELECTED';ps.textContent=(selected.source_kind||'folder').toUpperCase()+' · '+(selected.source_path||'');}else{pt.textContent='DROP FORGEBOSS HERE';ps.textContent='No project selected.';}}
 taskRows.innerHTML=(s.tasks||[]).map(x=>`<tr><td>${esc(x.id)}<br><span class="muted">${esc(x.title||'')}</span></td><td>${esc(x.status)}</td><td>${esc(x.scope??'-')}</td><td>${esc(x.head||'-')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No task packet saved yet.</td></tr>';
@@ -213,6 +233,53 @@ fullTimeline.innerHTML=(s.activity||[]).map(e=>{
  return `<div class="event ${esc(e.kind||'')}${clickable?' clickable':''}" ${clickable?'data-event-key="retest"':''}><div class="icon">${icon(e.kind)}</div><div><h4>${esc(e.message)}<span class="time">${esc(e.time||'')}</span></h4><p>${esc(e.detail||'')}${clickable?' - Click to see code/tests':''}</p></div></div>`
 }).join('');
  fullTimeline.querySelectorAll('[data-event-key="retest"]').forEach(el=>el.addEventListener('click',()=>showEventDetails('retest','Candidate re-test')));
+}
+function productOptions(rows){
+ const html=(rows||[]).map(p=>`<option value="${esc(p.project_id)}">${esc(p.name)}</option>`).join('');
+ ['repoProject','chatProject','bibleProject'].forEach(id=>{const el=document.getElementById(id);if(!el)return;const old=el.value;el.innerHTML=html;if(old&&[...el.options].some(o=>o.value===old))el.value=old;});
+}
+function renderProduct(s){
+ const rows=s.product_projects||[];productOptions(rows);
+ const tbody=document.getElementById('productProjectRows');
+ if(tbody)tbody.innerHTML=rows.map(p=>`<tr><td><b>${esc(p.name)}</b><br><span class="muted">${esc(p.idea||'').slice(0,90)}</span></td><td>${p.bible_complete?'<span class="pass">COMPLETE</span>':'<span class="fail">OPEN</span>'}</td><td>${esc(p.open_questions??0)}</td><td>${esc(p.repository?.provider||'NOT CONNECTED')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No product projects yet.</td></tr>';
+ const a=s.authority||{};const grade=a.trust_grade||'UNVERIFIED';
+ if(document.getElementById('trustGrade'))trustGrade.textContent=grade.replace('OWNER_DECLARED_TRUSTED_LOCAL_BOOTSTRAP','LOCAL BOOTSTRAP');
+ if(document.getElementById('evidenceAuthority'))evidenceAuthority.textContent=a.ok?'VERIFIED':'OFFLINE';
+ if(document.getElementById('evidenceRevision'))evidenceRevision.textContent=(a.revision||'-').slice(0,12);
+ if(document.getElementById('evidencePhase'))evidencePhase.textContent=a.phase||'-';
+ if(document.getElementById('authorityDetail'))authorityDetail.textContent=a.ok?`Protected authority returned trust=${grade}; generation=${a.generation??0}; identity=${(a.identity_sha256||'').slice(0,16)}…`:(a.detail||'Authority unavailable');
+ window.pywebview?.api?.vault_status?.().then(v=>{if(v){vaultHero.textContent=v.enabled?'READY':'BROKER REQUIRED';vaultMessage.textContent=v.message||'';}}).catch(()=>{});
+}
+async function createProductProject(){
+ const r=await window.pywebview.api.create_product_project({name:productName.value,idea:productIdea.value,who:productWho.value,outcome:productOutcome.value,limits:productLimits.value});
+ if(!r?.ok){alert(r?.message||'Project creation failed.');return}
+ if(r.project?.open_questions)alert(`Project created with ${r.project.open_questions} open question(s). ForgeBoss will not mark the Bible complete until they are answered.`);
+ productName.value=productIdea.value=productWho.value=productOutcome.value=productLimits.value='';await snapshot();
+}
+async function registerRepo(){
+ if(!repoProject.value){alert('Create/select a project first.');return}
+ const r=await window.pywebview.api.register_project_repository(repoProject.value,repoUrl.value);
+ repoStatus.textContent=r?.ok?`${r.repository.provider} · ${r.repository.host} · ${r.repository.status}`:(r?.message||'Repository URL rejected');
+ if(r?.ok)await snapshot();
+}
+async function loadProjectChat(){
+ if(!chatProject.value){chatMessages.innerHTML='<div class="empty-state">Create a project first.</div>';return}
+ const r=await window.pywebview.api.get_project_chat(chatProject.value);
+ chatMessages.innerHTML=(r.messages||[]).map(m=>`<div class="card" style="padding:11px"><b>${m.role==='owner'?'OWNER':'FORGEBOSS'}</b><p class="muted" style="white-space:pre-wrap">${esc(m.text)}</p></div>`).join('')||'<div class="empty-state">No project conversation yet.</div>';
+ chatMessages.scrollTop=chatMessages.scrollHeight;
+}
+async function sendProjectChat(){
+ if(!chatProject.value){alert('Create/select a project first.');return}
+ const r=await window.pywebview.api.add_project_chat(chatProject.value,'owner',chatInput.value);
+ if(!r?.ok){alert(r?.message||'Message not saved.');return}
+ chatInput.value='';await loadProjectChat();
+}
+async function loadBible(){
+ if(!bibleProject.value){bibleFiles.innerHTML='<div class="empty-state">Create a project first.</div>';return}
+ const r=await window.pywebview.api.get_product_bible(bibleProject.value);
+ if(!r?.ok){bibleFiles.innerHTML=`<div class="empty-state">${esc(r?.message||'Bible unavailable')}</div>`;return}
+ const p=r.project||{};bibleQuestions.textContent=String(p.open_questions??0);bibleState.textContent=p.bible_complete?'COMPLETE':'OPEN QUESTIONS';
+ bibleFiles.innerHTML=Object.entries(r.files||{}).map(([name,text])=>`<div class="card" style="padding:14px"><h3>${esc(name)}</h3><textarea readonly rows="8" style="width:100%">${esc(text)}</textarea></div>`).join('');
 }
 async function snapshot(){
  try{
@@ -323,7 +390,7 @@ async function showEventDetails(key,title){
 function closeCodeModal(){document.getElementById('codeModal').classList.remove('show')}
 async function copyCode(){const t=document.getElementById('codeText');try{await navigator.clipboard.writeText(t.value)}catch(e){t.focus();t.select();document.execCommand('copy')}}
 function saveCode(){const t=document.getElementById('codeText').value,b=new Blob([t],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='forgeboss-candidate-details.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-window.addEventListener('pywebviewready',()=>{const b=document.getElementById('bootGuard');if(b)b.remove();installProjectDrop();snapshot();setInterval(snapshot,1200)});
+window.addEventListener('pywebviewready',()=>{const b=document.getElementById('bootGuard');if(b)b.remove();installProjectDrop();snapshot().then(()=>{loadProjectChat();loadBible()});setInterval(snapshot,1200)});
 </script>
 
 <div id="codeModal" class="code-modal" onclick="if(event.target.id==='codeModal')closeCodeModal()">

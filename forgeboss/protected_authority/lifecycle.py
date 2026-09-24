@@ -128,13 +128,14 @@ def assert_windows_scm_registration(*,service_name:str=FIXED_SERVICE_NAME,expect
         if scm and not is_invalid_handle(scm):api.advapi32.CloseServiceHandle(scm)
 class SA(ctypes.Structure):_fields_=[('nLength',wintypes.DWORD),('lpSecurityDescriptor',wintypes.LPVOID),('bInheritHandle',wintypes.BOOL)]
 class WindowsNamedPipeServer:
-    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str],max_instances:int=4,preauth_timeout_ms:int=1000,handler_timeout_ms:int=300000,poll_interval:float=0.01):
+    def __init__(self,*,service,boundary,protected_root:Path,allowed_peer_sids:set[str],max_instances:int=4,preauth_timeout_ms:int=1000,handler_timeout_ms:int=300000,poll_interval:float=0.01,pipe_name:str=FIXED_PIPE_NAME):
         if os.name!='nt':raise AuthorityError('IPC_PLATFORM_INVALID')
         if not isinstance(max_instances,int) or not 2<=max_instances<=16:raise AuthorityError('IPC_CONCURRENCY_INVALID')
         if not isinstance(preauth_timeout_ms,int) or not 100<=preauth_timeout_ms<=30000:raise AuthorityError('IPC_TIMEOUT_INVALID')
         if not isinstance(handler_timeout_ms,int) or not 1000<=handler_timeout_ms<=600000:raise AuthorityError('IPC_TIMEOUT_INVALID')
         if not isinstance(poll_interval,(int,float)) or not 0.001<=float(poll_interval)<=0.1:raise AuthorityError('IPC_TIMEOUT_INVALID')
-        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.max_instances=max_instances;self.preauth_timeout_ms=preauth_timeout_ms;self.handler_timeout_ms=handler_timeout_ms;self.poll_interval=float(poll_interval);self.handles=[];self.handle=None;self._sd=None;self._stop=threading.Event();self._stuck=[];self._quarantined=set();self._worker_lock=threading.Lock()
+        if not isinstance(pipe_name,str) or not pipe_name.startswith(r'\\.\pipe\ForgeBossAuthority') or len(pipe_name)>200 or any(ch in pipe_name for ch in '\r\n\x00'):raise AuthorityError('IPC_ENDPOINT_INVALID')
+        self.service=service;self.boundary=boundary;self.root=assert_machine_anchored_root(boundary,protected_root);self.allowed_peer_sids=set(allowed_peer_sids);self.max_instances=max_instances;self.preauth_timeout_ms=preauth_timeout_ms;self.handler_timeout_ms=handler_timeout_ms;self.poll_interval=float(poll_interval);self.pipe_name=pipe_name;self.handles=[];self.handle=None;self._sd=None;self._stop=threading.Event();self._stuck=[];self._quarantined=set();self._worker_lock=threading.Lock()
     def start(self):
         if self.handles:raise AuthorityError('SERVICE_ALREADY_STARTED')
         with self._worker_lock:
@@ -148,7 +149,7 @@ class WindowsNamedPipeServer:
             for i in range(self.max_instances):
                 open_mode=_PIPE_ACCESS_DUPLEX|(_FILE_FLAG_FIRST_PIPE_INSTANCE if i==0 else 0)
                 pipe_mode=_PIPE_TYPE_MESSAGE|_PIPE_READMODE_MESSAGE|_PIPE_NOWAIT
-                h=api.kernel32.CreateNamedPipeW(FIXED_PIPE_NAME,open_mode,pipe_mode,self.max_instances,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,self.preauth_timeout_ms,ctypes.byref(SA(ctypes.sizeof(SA),sd,False)))
+                h=api.kernel32.CreateNamedPipeW(self.pipe_name,open_mode,pipe_mode,self.max_instances,MAX_REQUEST_BYTES,MAX_REQUEST_BYTES,self.preauth_timeout_ms,ctypes.byref(SA(ctypes.sizeof(SA),sd,False)))
                 if is_invalid_handle(h):raise AuthorityError('IPC_CREATE_FAILED')
                 mode=wintypes.DWORD(_PIPE_READMODE_MESSAGE|_PIPE_NOWAIT)
                 if not api.kernel32.SetNamedPipeHandleState(h,ctypes.byref(mode),None,None):api.kernel32.CloseHandle(h);raise AuthorityError('IPC_MODE_FAILED')

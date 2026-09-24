@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, _windows_hidden_children, CREATE_NO_WINDOW
+from forgeboss.executors.mini_swe_runner import _initial_result, _persist_result, _persist_early_failure, _guard_subprocess, _exception_detail, _hidden_run, _trusted_docker_executable_from_env, CREATE_NO_WINDOW
 
 
 class MiniSweResultEvidenceTests(unittest.TestCase):
@@ -58,27 +58,33 @@ class MiniSweResultEvidenceTests(unittest.TestCase):
             _hidden_run(["docker","version"],capture_output=True,text=True)
         self.assertEqual(run.call_args.kwargs["creationflags"],CREATE_NO_WINDOW)
 
-    def test_third_party_subprocess_policy_adds_no_window_flag(self):
-        calls=[]
-        def fake_popen(*args,**kwargs):
-            calls.append(kwargs.copy())
-            class P: pass
-            return P()
-        with patch("forgeboss.executors.mini_swe_runner.os.name","nt"), \
-             patch("forgeboss.executors.mini_swe_runner.subprocess.Popen",fake_popen):
-            with _windows_hidden_children():
-                import forgeboss.executors.mini_swe_runner as m
-                m.subprocess.Popen(["docker.exe","version"])
-        self.assertTrue(calls)
-        self.assertIn("creationflags",calls[-1])
-        self.assertEqual(calls[-1]["creationflags"] & CREATE_NO_WINDOW, CREATE_NO_WINDOW)
+    def test_runner_has_no_processwide_subprocess_monkeypatch(self):
+        import inspect
+        import forgeboss.executors.mini_swe_runner as m
+        source=inspect.getsource(m)
+        self.assertNotIn("subprocess.Popen =",source)
+        self.assertNotIn("subprocess.Popen=",source)
 
     @unittest.skipUnless(os.name=="nt","native Windows console proof")
     def test_hidden_child_has_no_console_window_on_windows(self):
+        import sys
         code="import ctypes;print(int(bool(ctypes.windll.kernel32.GetConsoleWindow())))"
-        with _windows_hidden_children():
-            cp=__import__("subprocess").run([__import__("sys").executable,"-c",code],capture_output=True,text=True,check=True)
+        cp=_hidden_run([sys.executable,"-I","-S","-c",code],capture_output=True,text=True,check=True)
         self.assertEqual(cp.stdout.strip(),"0")
+
+    def test_installed_docker_path_and_sha_are_enforced_without_path_lookup(self):
+        import hashlib,tempfile
+        from pathlib import Path
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        exe=Path(td.name)/("docker.exe" if os.name=="nt" else "docker")
+        exe.write_bytes(b"trusted-docker")
+        digest=hashlib.sha256(exe.read_bytes()).hexdigest()
+        env={"FORGEBOSS_TRUSTED_DOCKER_PATH":str(exe.resolve()),"FORGEBOSS_TRUSTED_DOCKER_SHA256":digest}
+        with patch.dict(os.environ,env,clear=False):
+            self.assertEqual(_trusted_docker_executable_from_env(),str(exe.resolve()))
+        with patch.dict(os.environ,{**env,"FORGEBOSS_TRUSTED_DOCKER_SHA256":"0"*64},clear=False):
+            with self.assertRaisesRegex(RuntimeError,"identity changed"):
+                _trusted_docker_executable_from_env()
 
     def test_guard_module_resolves_from_exact_engine_even_with_poisoned_pythonpath(self):
         with tempfile.TemporaryDirectory() as td:

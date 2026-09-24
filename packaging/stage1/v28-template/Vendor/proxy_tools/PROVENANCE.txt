@@ -1,0 +1,5 @@
+Vendored dependency: proxy_tools 0.1.0
+Upstream: https://github.com/jtushman/proxy_tools
+Upstream tree: db43f1e35d4f90a65c5a4d56d9e9af88212ec6e6
+Source blob: ea266c8f49da949ec6199a616609637c9aab3fb8
+Reason: pywebview imports proxy_tools on startup, while the 0.1.0 PyPI release exposes only a legacy sdist. Stage 1 vendors the tiny pure-Python module so runtime installation remains hash-locked and does not execute an unpinned build backend.

@@ -1,6 +1,5 @@
 from __future__ import annotations
 import hashlib, json, os, sys, traceback, subprocess
-from contextlib import contextmanager
 from pathlib import Path
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -75,21 +74,23 @@ def _hidden_run(args:list[str], **kwargs):
     kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
     return subprocess.run(args, **kwargs)
 
-@contextmanager
-def _windows_hidden_children():
-    """Force third-party console children to stay invisible on Windows."""
-    if os.name != "nt":
-        yield
-        return
-    original = subprocess.Popen
-    def hidden_popen(*args, **kwargs):
-        kwargs["creationflags"] = int(kwargs.get("creationflags", 0) or 0) | CREATE_NO_WINDOW
-        return original(*args, **kwargs)
-    subprocess.Popen = hidden_popen
-    try:
-        yield
-    finally:
-        subprocess.Popen = original
+def _trusted_docker_executable_from_env():
+    trusted=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_PATH")
+    expected=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_SHA256","").lower()
+    if not trusted:
+        return None
+    from forgeboss.security.executor_guard import fhash, is_linklike
+    path=Path(trusted)
+    if not path.is_absolute() or is_linklike(path):
+        raise RuntimeError("trusted Docker executable path is invalid")
+    path=path.resolve(strict=True)
+    if not path.is_file() or is_linklike(path):
+        raise RuntimeError("trusted Docker executable is not a regular file")
+    if len(expected)!=64 or any(ch not in "0123456789abcdef" for ch in expected):
+        raise RuntimeError("trusted Docker executable digest is invalid")
+    if fhash(path).lower()!=expected:
+        raise RuntimeError("trusted Docker executable identity changed")
+    return str(path)
 
 def _guard_subprocess(args:list[str]):
     engine_root=Path(__file__).resolve().parents[2]
@@ -140,9 +141,48 @@ def main() -> int:
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
         from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
+        from forgeboss.security.host_tool_identity import resolve_trusted_host_executable
 
         class ForgeBossDockerEnvironment(DockerEnvironment):
-            """Windows-safe, synchronous container cleanup for protected self-build."""
+            """Windows-safe Docker environment without process-wide monkeypatches."""
+            def _start_container(self):
+                import uuid
+                container_name=f"minisweagent-{uuid.uuid4().hex[:8]}"
+                cmd=[
+                    self.config.executable,"run","-d","--name",container_name,
+                    "-w",self.config.cwd,*self.config.run_args,self.config.image,
+                    "sleep",self.config.container_timeout,
+                ]
+                result=_hidden_run(
+                    cmd,capture_output=True,text=True,timeout=self.config.pull_timeout,check=True,
+                )
+                self.container_id=result.stdout.strip()
+
+            def execute(self, action:dict, cwd:str="", *, timeout:int|None=None)->dict:
+                command=action.get("command","")
+                cwd=cwd or self.config.cwd
+                if not self.container_id:
+                    raise RuntimeError("ForgeBoss Docker container is not running")
+                cmd=[self.config.executable,"exec","-w",cwd]
+                for key in self.config.forward_env:
+                    if (value:=os.getenv(key)) is not None:cmd.extend(["-e",f"{key}={value}"])
+                for key,value in self.config.env.items():cmd.extend(["-e",f"{key}={value}"])
+                cmd.extend([self.container_id,*self.config.interpreter,command])
+                try:
+                    result=_hidden_run(
+                        cmd,text=True,timeout=timeout or self.config.timeout,encoding="utf-8",
+                        errors="replace",stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                    )
+                    output={"output":result.stdout,"returncode":result.returncode,"exception_info":""}
+                except Exception as ex:
+                    raw=getattr(ex,"output",None)
+                    if isinstance(raw,bytes):raw=raw.decode("utf-8","replace")
+                    output={"output":raw or "","returncode":-1,
+                            "exception_info":f"An error occurred while executing the command: {ex}",
+                            "extra":{"exception_type":type(ex).__name__,"exception":str(ex)}}
+                self._check_finished(output)
+                return output
+
             def cleanup(self):
                 cid=getattr(self,"container_id",None)
                 if not cid:return
@@ -159,7 +199,9 @@ def main() -> int:
         mount=f"type=bind,src={workspace},dst=/workspace"
         run_id=str(packet.get("run_id") or "")
         builder_id=str(packet.get("builder_id") or "")
+        docker_executable=_trusted_docker_executable_from_env() or resolve_trusted_host_executable("docker").path
         env_obj=ForgeBossDockerEnvironment(
+            executable=docker_executable,
             image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
             env={"PYTHONDONTWRITEBYTECODE":"1","PYTHONUTF8":"1"},
@@ -213,11 +255,7 @@ IMMUTABLE RULES:
 Required acceptance intent:
 {json.dumps(packet.get('acceptance_criteria',[]))}
 """
-        # mini-SWE's Docker environment owns some subprocess calls internally.
-        # Enforce CREATE_NO_WINDOW at the subprocess.Popen boundary for the
-        # complete third-party execution window so docker.exe/cmd.exe cannot flash.
-        with _windows_hidden_children():
-            agent.run(task)
+        agent.run(task)
         result["cost_usd"]=float(getattr(agent,"cost",0.0) or 0.0)
         result["calls"]=int(getattr(agent,"n_calls",0) or 0)
         post=_guard_subprocess([

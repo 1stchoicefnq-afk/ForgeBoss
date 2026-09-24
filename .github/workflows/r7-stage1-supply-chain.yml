@@ -11,6 +11,25 @@ permissions:
   contents: read
 
 jobs:
+  package-security:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Stage1 package hostile regressions
+        run: python -m unittest discover -s packaging/stage1 -p "test_*.py" -v
+      - name: Trusted host tool regressions
+        run: python -m unittest forgeboss.security.test_host_tool_identity -v
+
   windows-lock:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -26,10 +45,14 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check "pip==24.3.1" "pip-tools==7.5.1"
           python -m piptools compile --resolver=backtracking --generate-hashes --strip-extras --output-file stage1-requirements.lock packaging/stage1/requirements.in
+          python packaging/stage1/strip_vendored_requirements.py stage1-requirements.lock proxy-tools
+          if(Select-String -LiteralPath stage1-requirements.lock -Pattern '^proxy[-_]tools==' -Quiet){throw 'vendored proxy_tools leaked into lock'}
           Get-Content stage1-requirements.lock
           python -m venv stage1-lock-smoke
-          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps -r stage1-requirements.lock
-          & .\\stage1-lock-smoke\\Scripts\\python.exe -c "import cryptography, litellm, webview; from minisweagent.agents.default import DefaultAgent; print('LOCK_IMPORT_OK')"
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -m pip install --disable-pip-version-check --require-hashes --no-deps --only-binary :all: -r stage1-requirements.lock
+          $site=(& .\\stage1-lock-smoke\\Scripts\\python.exe -I -c "import site;print(site.getsitepackages()[0])").Trim()
+          Copy-Item -LiteralPath packaging/stage1/v28-template/Vendor/proxy_tools -Destination (Join-Path $site 'proxy_tools') -Recurse -Force
+          & .\\stage1-lock-smoke\\Scripts\\python.exe -I -c "import cryptography, litellm, webview, proxy_tools; from minisweagent.agents.default import DefaultAgent; print('LOCK_IMPORT_OK')"
       - uses: actions/upload-artifact@v4
         with:
           name: stage1-requirements-lock
@@ -53,4 +76,91 @@ jobs:
           path: |
             python-image-repodigests.txt
             python-image-digest.txt
+          if-no-files-found: error
+
+
+  package-v28:
+    needs: [package-security, windows-lock, image-digest]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      ENGINE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ENGINE_REF: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-requirements-lock
+          path: stage1-input/lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-python-image-digest
+          path: stage1-input/image
+      - name: Build exact self-verifying v28 candidate
+        shell: pwsh
+        run: python packaging/stage1/build_v28_package.py --template packaging/stage1/v28-template --verifier packaging/stage1/verify_package.py --lock stage1-input/lock/stage1-requirements.lock --image-digest stage1-input/image/python-image-digest.txt --engine-sha "$env:ENGINE_SHA" --engine-ref "$env:ENGINE_REF" --out-dir dist-v28
+      - name: Prove protected root identity refuses system directories before UAC
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          $helper=Join-Path $root 'Authority\Prepare-MachineAuthorityRoot.ps1'
+          $manifest=Join-Path $root 'PACKAGE-MANIFEST.json'
+          $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & $ps -NoLogo -NoProfile -ExecutionPolicy Bypass -File $helper -Root 'C:\ForgeBossAuthorityStage1-v28' -UserSid $sid -PackageManifest $manifest -ValidateOnly
+          if($LASTEXITCODE -ne 0){throw 'Expected protected root was rejected'}
+          $drive=[IO.Path]::GetPathRoot($env:SystemRoot)
+          $bad=@($env:SystemRoot,(Join-Path $drive 'Users'),$env:ProgramFiles,$env:ProgramData)
+          foreach($candidate in $bad){
+            & $ps -NoLogo -NoProfile -ExecutionPolicy Bypass -File $helper -Root $candidate -UserSid $sid -PackageManifest $manifest -ValidateOnly *> $null
+            if($LASTEXITCODE -eq 0){throw ("Dangerous protected root accepted: "+$candidate)}
+            Write-Host ("[PASS] refused dangerous root: "+$candidate)
+          }
+          # The last child is expected to return non-zero. Do not leak that
+          # expected child exit code as this successful workflow step's status.
+          exit 0
+      - name: Prove engine self-build budget policy
+        shell: pwsh
+        run: python packaging/stage1/v28-template/Tools/prove_budget_policy.py --engine-root .
+      - name: Prove ForgeBoss hidden-child mechanism on Windows
+        shell: pwsh
+        run: python packaging/stage1/v28-template/Tools/prove_no_console.py --engine-root .
+      - name: Parse every PowerShell file
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          foreach($f in Get-ChildItem -LiteralPath $root -Recurse -Filter *.ps1){
+            $tokens=$null;$errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$tokens,[ref]$errors)|Out-Null
+            if($errors.Count){$errors|Format-List|Out-String|Write-Host;throw "PowerShell parse failed: $($f.FullName)"}
+          }
+      - name: Execute package PowerShell verifier
+        shell: pwsh
+        run: |
+          $root=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          & (Join-Path $root 'Tools\Verify-Package.ps1') -Root $root
+      - name: Prove TURN-ON refuses a tampered package before install
+        shell: pwsh
+        run: |
+          $src=Join-Path (Resolve-Path dist-v28).Path 'ForgeBoss-Stage1-Turn-On-Pack'
+          $dst=Join-Path $env:RUNNER_TEMP 'forgeboss-v28-tamper'
+          if(Test-Path $dst){Remove-Item $dst -Recurse -Force}
+          Copy-Item $src $dst -Recurse
+          Add-Content -LiteralPath (Join-Path $dst 'README-FIRST.txt') -Value '# tamper'
+          $p=Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dst 'Turn-On-ForgeBoss.ps1'),'-PackageRoot',$dst) -Wait -PassThru -WindowStyle Hidden
+          if($p.ExitCode -eq 0){throw 'Tampered TURN-ON unexpectedly succeeded'}
+          if(Test-Path (Join-Path $env:LOCALAPPDATA 'ForgeBoss\stage1-installed.json')){throw 'Tampered TURN-ON reached installation'}
+          Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ForgeBoss-Stage1-v28.4-R8.4-root-identity-candidate
+          path: |
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.4-R8.4-ROOT-IDENTITY-CANDIDATE.zip
+            dist-v28/V28-PACKAGE-BUILD-REPORT.json
           if-no-files-found: error
