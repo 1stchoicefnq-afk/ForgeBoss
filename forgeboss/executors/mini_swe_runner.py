@@ -140,7 +140,8 @@ def main() -> int:
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.environments.docker import DockerEnvironment
         from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
-        from forgeboss.security.host_tool_identity import resolve_trusted_host_executable, assert_trusted_host_executable
+        from forgeboss.security.host_tool_identity import resolve_trusted_host_executable
+        from forgeboss.security.executor_guard import fhash, is_linklike
 
         class ForgeBossDockerEnvironment(DockerEnvironment):
             """Windows-safe, synchronous container cleanup for protected self-build."""
@@ -160,10 +161,22 @@ def main() -> int:
         mount=f"type=bind,src={workspace},dst=/workspace"
         run_id=str(packet.get("run_id") or "")
         builder_id=str(packet.get("builder_id") or "")
-        docker_identity=resolve_trusted_host_executable("docker")
-        assert_trusted_host_executable(docker_identity)
+        trusted_docker=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_PATH")
+        trusted_docker_sha=os.environ.get("FORGEBOSS_TRUSTED_DOCKER_SHA256","").lower()
+        if trusted_docker:
+            docker_path=Path(trusted_docker)
+            if not docker_path.is_absolute() or is_linklike(docker_path):
+                raise RuntimeError("trusted Docker executable path is invalid")
+            docker_path=docker_path.resolve(strict=True)
+            if not docker_path.is_file() or is_linklike(docker_path):
+                raise RuntimeError("trusted Docker executable is not a regular file")
+            if len(trusted_docker_sha)!=64 or fhash(docker_path).lower()!=trusted_docker_sha:
+                raise RuntimeError("trusted Docker executable identity changed")
+            docker_executable=str(docker_path)
+        else:
+            docker_executable=resolve_trusted_host_executable("docker").path
         env_obj=ForgeBossDockerEnvironment(
-            executable=docker_identity.path,
+            executable=docker_executable,
             image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
             env={"PYTHONDONTWRITEBYTECODE":"1","PYTHONUTF8":"1"},
