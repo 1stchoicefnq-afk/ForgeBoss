@@ -170,7 +170,6 @@ def run_governed_worker(
             "PATH","PATHEXT","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP",
             "USERPROFILE","HOME","APPDATA","LOCALAPPDATA","PROGRAMDATA",
             "DOCKER_HOST","DOCKER_CONTEXT","OPENAI_API_KEY","LLM_API_KEY",
-            "FORGEBOSS_MINISWE_IMAGE",
         }
         child_env = {k:v for k,v in os.environ.items() if k in allowed_host_env}
         for key in SENSITIVE_CHILD_ENV:
