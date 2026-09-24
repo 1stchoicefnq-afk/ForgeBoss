@@ -36,6 +36,20 @@ class PrivateAclPlan:
     inheritance_protected: bool
 
 
+@dataclass(frozen=True)
+class PrivateAce:
+    sid: str
+    ace_type: int
+    ace_flags: int
+    access_mask: int
+
+
+@dataclass(frozen=True)
+class PrivateAclInspection:
+    protected: bool
+    entries: tuple[PrivateAce, ...]
+
+
 def _normalize_sid(value: str, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ServicePrivateStateError(f"{label} must be a SID string")
@@ -122,10 +136,11 @@ def _require_pywin32():
         )
     try:
         import ntsecuritycon
+        import win32con
         import win32security
     except ImportError as ex:
         raise ServicePrivateStateError("required pywin32 security APIs are unavailable") from ex
-    return ntsecuritycon, win32security
+    return ntsecuritycon, win32con, win32security
 
 
 def apply_private_directory_acl(
@@ -139,16 +154,18 @@ def apply_private_directory_acl(
         desktop_sid=desktop_sid,
         root=root,
     )
-    ntsecuritycon, win32security = _require_pywin32()
+    ntsecuritycon, win32con, win32security = _require_pywin32()
 
     target = Path(plan.root)
     target.mkdir(parents=True, exist_ok=True)
 
     acl = win32security.ACL()
+    inherit_flags = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE
     for sid_text in plan.allowed_sids:
         sid = win32security.ConvertStringSidToSid(sid_text)
-        acl.AddAccessAllowedAce(
+        acl.AddAccessAllowedAceEx(
             win32security.ACL_REVISION,
+            inherit_flags,
             ntsecuritycon.FILE_ALL_ACCESS,
             sid,
         )
@@ -169,8 +186,8 @@ def apply_private_directory_acl(
     return plan
 
 
-def inspect_private_directory_acl(path: str | Path) -> tuple[str, ...]:
-    _, win32security = _require_pywin32()
+def inspect_private_directory_acl(path: str | Path) -> PrivateAclInspection:
+    ntsecuritycon, win32con, win32security = _require_pywin32()
     target = Path(path).resolve(strict=True)
     descriptor = win32security.GetNamedSecurityInfo(
         str(target),
@@ -181,26 +198,53 @@ def inspect_private_directory_acl(path: str | Path) -> tuple[str, ...]:
     if dacl is None:
         raise ServicePrivateStateError("service-private directory has a NULL DACL")
 
-    out: list[str] = []
+    control, _revision = descriptor.GetSecurityDescriptorControl()
+    protected = bool(control & win32security.SE_DACL_PROTECTED)
+
+    entries: list[PrivateAce] = []
     for index in range(dacl.GetAceCount()):
         ace = dacl.GetAce(index)
-        sid = ace[2]
-        out.append(win32security.ConvertSidToStringSid(sid).upper())
-    return tuple(sorted(out))
+        header, mask, sid = ace[0], ace[1], ace[2]
+        ace_type = int(header[0])
+        ace_flags = int(header[1])
+        entries.append(
+            PrivateAce(
+                sid=win32security.ConvertSidToStringSid(sid).upper(),
+                ace_type=ace_type,
+                ace_flags=ace_flags,
+                access_mask=int(mask),
+            )
+        )
+    entries.sort(key=lambda item: (item.sid, item.ace_type, item.ace_flags, item.access_mask))
+    return PrivateAclInspection(protected=protected, entries=tuple(entries))
 
 
 def verify_private_acl_exact(
     plan: PrivateAclPlan,
-    actual_sids: Iterable[str],
+    inspection: PrivateAclInspection,
 ) -> bool:
     if not isinstance(plan, PrivateAclPlan):
         raise ServicePrivateStateError("plan must be a PrivateAclPlan")
-    normalized = tuple(sorted(_normalize_sid(v, "actual SID") for v in actual_sids))
-    expected = tuple(sorted(plan.allowed_sids))
-    if normalized != expected:
+    if not isinstance(inspection, PrivateAclInspection):
+        raise ServicePrivateStateError("inspection must be a PrivateAclInspection")
+    if not inspection.protected:
+        raise ServicePrivateStateError("service-private DACL inheritance is not protected")
+
+    expected_sids = tuple(sorted(plan.allowed_sids))
+    actual_sids = tuple(sorted(item.sid for item in inspection.entries))
+    if actual_sids != expected_sids:
         raise ServicePrivateStateError(
-            f"service-private DACL mismatch: expected={expected!r} actual={normalized!r}"
+            f"service-private DACL mismatch: expected={expected_sids!r} actual={actual_sids!r}"
         )
-    if any(sid in normalized for sid in plan.denied_broad_sids):
+    if any(sid in actual_sids for sid in plan.denied_broad_sids):
         raise ServicePrivateStateError("broad principal present in private DACL")
+
+    expected_flags = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE
+    for entry in inspection.entries:
+        if entry.ace_type != win32con.ACCESS_ALLOWED_ACE_TYPE:
+            raise ServicePrivateStateError("service-private DACL contains non-allow ACE")
+        if entry.access_mask != ntsecuritycon.FILE_ALL_ACCESS:
+            raise ServicePrivateStateError("service-private DACL ACE is not full control")
+        if entry.ace_flags & expected_flags != expected_flags:
+            raise ServicePrivateStateError("service-private DACL ACE is not inheritable")
     return True
