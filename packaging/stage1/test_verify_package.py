@@ -153,7 +153,13 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         root = self.make_pack({
             "Authority/Prepare-MachineAuthorityRoot.ps1":
                 b"param([string]$Root,[string]$PackageManifest)\n"
-                b"if($Root -notmatch '^[A-Za-z]:\\\\[^\\\\]+    def test_cmd_trailing_root_normalization_required(self):
+                b"if($Root -notmatch '^[A-Za-z]:\\\\[^\\\\]+$'){throw 'PROTECTED_ROOT_INVALID'}\n"
+        })
+        with self.assertRaises(PackageVerificationError) as cm:
+            verify_package(root)
+        self.assertIn("PROTECTED_ROOT_IDENTITY_GUARD_MISSING", str(cm.exception))
+
+    def test_cmd_trailing_root_normalization_required(self):
         root = self.make_pack({"VERIFY-FORGEBOSS.cmd": b"@echo off\r\nset \"ROOT=%~dp0\"\r\n"})
         with self.assertRaises(PackageVerificationError) as cm:
             verify_package(root)
