@@ -4,6 +4,7 @@ import os
 import unittest
 from unittest import mock
 
+import forgeboss.control.windows_service_sid as service_sid_module
 from forgeboss.control.windows_service_sid import (
     ServiceSidConfigError,
     _close_service_handles,
@@ -58,8 +59,32 @@ class FakeServiceApi:
 class ServiceSidConfigUnitTests(unittest.TestCase):
     def test_close_handles_closes_service_then_scm(self):
         api = FakeServiceApi()
-        _close_service_handles(api, api.scm, api.service)
+        errors = _close_service_handles(api, api.scm, api.service)
+        self.assertEqual(errors, ())
         self.assertEqual(api.closed, [api.service, api.scm])
+
+    def test_configure_and_query_use_minimum_service_api_contract(self):
+        api = FakeServiceApi()
+        with mock.patch.object(
+            service_sid_module,
+            "_require_pywin32_service",
+            return_value=(api, object()),
+        ):
+            configure_unrestricted_service_sid()
+            self.assertEqual(
+                api.changed,
+                [(
+                    api.service,
+                    api.SERVICE_CONFIG_SERVICE_SID_INFO,
+                    api.SERVICE_SID_TYPE_UNRESTRICTED,
+                )],
+            )
+            api.closed.clear()
+            self.assertEqual(
+                query_service_sid_type(),
+                api.SERVICE_SID_TYPE_UNRESTRICTED,
+            )
+            self.assertEqual(api.closed, [api.service, api.scm])
 
     @unittest.skipIf(os.name == "nt", "non-Windows fail-closed test")
     def test_public_windows_functions_fail_closed_off_windows(self):
