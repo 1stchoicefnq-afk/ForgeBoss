@@ -248,7 +248,7 @@ def run_governed_worker(
             _signal_cancel(cancel_path)
             raise GovernedHostLaunchCancelled("governed run cancelled before worker spawn")
 
-        with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+        with tempfile.TemporaryFile(mode="w+b",dir=str(state_dir)) as stdout_file, tempfile.TemporaryFile(mode="w+b",dir=str(state_dir)) as stderr_file:
             proc = subprocess.Popen(
                 [
                     sys.executable,
