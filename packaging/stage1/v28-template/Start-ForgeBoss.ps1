@@ -21,6 +21,8 @@ $diag=Join-Path $s.launcherRoot 'authority_diagnose.py'
 AssertFileHash $authorityHost ([string]$s.launcherFiles.host) 'authority host'
 AssertFileHash $diag ([string]$s.launcherFiles.diagnose) 'authority diagnose'
 
+# Installed state is authoritative. Replace any stale inherited value before the gate.
+$env:FORGEBOSS_ENGINE_ROOT=$EngineRoot
 & $RuntimePy -I -B (Join-Path $EngineRoot 'packaging\stage1\stage1_gate.py') $InstalledState
 if($LASTEXITCODE -ne 0){throw 'ENGINE_IDENTITY_GATE_FAILED'}
 
