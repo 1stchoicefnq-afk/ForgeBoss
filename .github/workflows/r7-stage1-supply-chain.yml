@@ -133,8 +133,8 @@ jobs:
           Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ForgeBoss-Stage1-v28.2-R8.2-exact-checkout-candidate
+          name: ForgeBoss-Stage1-v28.3-R8.3-root-verify-candidate
           path: |
-            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.2-R8.2-EXACT-CHECKOUT-CANDIDATE.zip
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.3-R8.3-ROOT-VERIFY-CANDIDATE.zip
             dist-v28/V28-PACKAGE-BUILD-REPORT.json
           if-no-files-found: error
