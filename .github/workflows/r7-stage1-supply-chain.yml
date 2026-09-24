@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  package-security:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Stage1 package hostile regressions
+        run: python -m unittest packaging.stage1.test_verify_package packaging.stage1.test_stage1_gate -v
+
   windows-lock:
     runs-on: windows-latest
     timeout-minutes: 15
