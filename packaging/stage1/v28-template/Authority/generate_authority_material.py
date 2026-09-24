@@ -54,6 +54,7 @@ def main():
     cfg={
       "schema":2,"repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":1,
       "protectedRoot":str(root),"engineRoot":str(engine),"engineSha":sha,
+      "pipeName":r"\\.\pipe\ForgeBossAuthorityStage1-v28",
       "userSid":sid,"peerId":"controller-a","peerPublicKeyB64":base64.b64encode(peer_pub).decode(),
       "receiptSigningKeyFile":str(receipt_path),"receiptPublicKeyFile":str(client/"receipt-public.b64"),
       "githubPrivateKeyFile":str(github_key),"githubEnabled":False,
@@ -63,7 +64,7 @@ def main():
     atomic(root/"authority-config.json",canonical(cfg))
     client_cfg={"schema":2,"peerId":"controller-a","repository":cfg["repository"],"controlRevision":1,
                 "peerKeyFile":str(peer_path),"receiptPublicKeyFile":cfg["receiptPublicKeyFile"],
-                "protectedRoot":str(root),"engineRoot":str(engine),"engineSha":sha}
+                "protectedRoot":str(root),"engineRoot":str(engine),"engineSha":sha,"pipeName":cfg["pipeName"]}
     atomic(client/"client-config.json",canonical(client_cfg))
     print(json.dumps({"ok":True,"engineSha":sha,"manifestSha256":identity["manifestSha256"],
                       "identitySha256":identity["identitySha256"],"treeSha256":identity["treeSha256"],
