@@ -166,6 +166,32 @@ class BootstrapActivationFlowTests(unittest.TestCase):
         verify.assert_called_once()
         self.assertEqual(result["migrationManifestSha256"], "a" * 64)
 
+    def test_cancel_before_start_refuses_without_copy_or_activation(self):
+        p = self.patches()
+        with p[0], p[1], p[2], p[3], p[4] as copy, p[5] as activate:
+            with self.assertRaisesRegex(ServiceBootstrapError, "cancelled"):
+                perform_bootstrap_activation(
+                    private_root=self.private,
+                    desktop_sid=DESKTOP_SID,
+                    cancelled=lambda: True,
+                )
+        copy.assert_not_called()
+        activate.assert_not_called()
+
+    def test_stop_after_copy_leaves_candidate_but_withholds_activation(self):
+        states = iter((False, True))
+        p = self.patches()
+        with p[0], p[1], p[2], p[3] as verify, p[4] as copy, p[5] as activate:
+            with self.assertRaisesRegex(ServiceBootstrapError, "cancelled"):
+                perform_bootstrap_activation(
+                    private_root=self.private,
+                    desktop_sid=DESKTOP_SID,
+                    cancelled=lambda: next(states),
+                )
+        copy.assert_called_once()
+        verify.assert_called_once()
+        activate.assert_not_called()
+
     def test_already_active_refuses_before_copy_or_activation(self):
         active = SimpleNamespace(status="ACTIVE_VERIFIED_STATE")
         p = self.patches(active=active)
