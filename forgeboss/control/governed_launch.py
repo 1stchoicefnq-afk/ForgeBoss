@@ -71,7 +71,8 @@ def _runner_path(root: Path, runtime_id: str) -> tuple[str, Path]:
 
 def runner_identity(root: Path, runtime_id: str) -> tuple[str, str]:
     rel, path = _runner_path(root, runtime_id)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    text = path.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     expected = _RUNTIME_RUNNERS[str(runtime_id)]["sha256"]
     if not hmac.compare_digest(digest, expected):
         raise GovernedLaunchAttestationError("governed runner does not match reviewed SHA-256")
