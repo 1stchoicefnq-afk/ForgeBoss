@@ -90,6 +90,49 @@ class WindowsControlServiceHostTests(unittest.TestCase):
             self.assertEqual(response["id"], "REQ-1")
             self.assertEqual(response["version"], 1)
 
+    def test_bootstrap_activation_runs_only_through_trusted_host_handler(self):
+        calls = []
+
+        def handler():
+            calls.append(True)
+            return {
+                "status": "ACTIVATED_RESTART_REQUIRED",
+                "candidateDir": "candidate-state-v1",
+                "migrationManifestSha256": "a" * 64,
+                "schemaVersion": 5,
+                "restartRequired": True,
+            }
+
+        response = json.loads(
+            process_service_message(
+                raw_request("bootstrap.activate"),
+                bootstrap_handler=handler,
+                active_state_present=False,
+            )
+        )
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["status"], "ACTIVATED_RESTART_REQUIRED")
+        self.assertEqual(calls, [True])
+        self.assertFalse(
+            any("secret" in key.casefold() for key in response["result"])
+        )
+
+        blocked = json.loads(
+            process_service_message(
+                raw_request("bootstrap.activate"),
+                bootstrap_handler=handler,
+                active_state_present=True,
+            )
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(calls, [True])
+
+        direct = json.loads(
+            process_service_message(raw_request("bootstrap.activate"))
+        )
+        self.assertFalse(direct["ok"])
+        self.assertEqual(calls, [True])
+
     def test_forbidden_authority_methods_return_error_not_exception(self):
         for method in (
             "sign",

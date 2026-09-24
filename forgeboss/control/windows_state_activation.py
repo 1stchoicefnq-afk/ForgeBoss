@@ -12,7 +12,7 @@ import sqlite3
 import stat
 import time
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from forgeboss.control.windows_service_sid import (
     ServiceSidConfigError,
@@ -504,6 +504,25 @@ def _verify_windows_authority(
         raise ActiveStateError(str(ex)) from ex
 
 
+def _assert_activation_not_cancelled(
+    cancelled: Callable[[], bool] | None,
+) -> None:
+    if cancelled is None:
+        return
+    try:
+        value = cancelled()
+    except Exception as ex:
+        raise ActiveStateError(
+            "active-state cancellation state could not be read"
+        ) from ex
+    if type(value) is not bool:
+        raise ActiveStateError(
+            "active-state cancellation callback returned a non-boolean value"
+        )
+    if value:
+        raise ActiveStateError("active-state activation cancelled")
+
+
 def _canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
     try:
         return json.dumps(
@@ -521,7 +540,9 @@ def activate_verified_state(
     *,
     private_root: str | Path,
     desktop_sid: str,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ActiveState:
+    _assert_activation_not_cancelled(cancelled)
     service_sid = _verify_windows_authority(
         private_root,
         desktop_sid=desktop_sid,
@@ -555,6 +576,7 @@ def activate_verified_state(
     parse_active_state_bytes(raw)
 
     # Reverify the entire copy immediately before the single activation rename.
+    _assert_activation_not_cancelled(cancelled)
     reverified = verify_candidate_copy(
         private_root,
         expected_service_sid=service_sid,
@@ -570,6 +592,7 @@ def activate_verified_state(
     ):
         raise ActiveStateError("candidate secrets changed before activation")
 
+    _assert_activation_not_cancelled(cancelled)
     temp = private / f".{ACTIVE_STATE_FILE}.{secrets.token_hex(12)}.tmp"
     fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
@@ -586,6 +609,9 @@ def activate_verified_state(
     try:
         if active_path.exists() or _linklike_or_reparse(active_path):
             raise ActiveStateError("active-state record appeared during activation")
+        # This is the activation commit point. A stop observed before it withholds
+        # ACTIVE-STATE; after it, restart will independently verify the committed state.
+        _assert_activation_not_cancelled(cancelled)
         # On Windows os.rename refuses to replace an existing destination.
         os.rename(temp, active_path)
         temp = None

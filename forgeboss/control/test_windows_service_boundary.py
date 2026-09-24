@@ -42,6 +42,23 @@ class WindowsServiceBoundarySchemaTests(unittest.TestCase):
         self.assertFalse(caps["secretExport"])
         self.assertFalse(caps["governedLaunchStart"])
 
+    def test_bootstrap_activate_is_exact_parameterless_and_not_generic_dispatch(self):
+        parsed = parse_service_request(request("bootstrap.activate"))
+        self.assertEqual(parsed.method, "bootstrap.activate")
+        with self.assertRaisesRegex(
+            WindowsServiceBoundaryError,
+            "unavailable",
+        ):
+            dispatch_service_request(parsed)
+
+        with self.assertRaises(WindowsServiceBoundaryError):
+            parse_service_request(
+                request(
+                    "bootstrap.activate",
+                    params={"sourceRoot": r"C:\\attacker\\chosen"},
+                )
+            )
+
     def test_raw_sign_mint_secret_and_launch_methods_fail_closed(self):
         methods = (
             "sign",

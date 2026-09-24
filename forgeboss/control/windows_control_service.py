@@ -6,11 +6,16 @@ from pathlib import Path
 import re
 import threading
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from forgeboss.control.windows_state_activation import (
     ActiveStateError,
     load_optional_verified_active_state,
+)
+
+from forgeboss.control.windows_service_bootstrap import (
+    ServiceBootstrapError,
+    perform_bootstrap_activation,
 )
 
 from forgeboss.control.windows_service_boundary import (
@@ -139,18 +144,38 @@ def encode_service_response(
     return raw
 
 
-def process_service_message(raw: bytes) -> bytes:
+def process_service_message(
+    raw: bytes,
+    *,
+    bootstrap_handler: Callable[[], Mapping[str, object]] | None = None,
+    active_state_present: bool = False,
+) -> bytes:
     request_id = "unknown"
     try:
         request = parse_service_request(raw)
         request_id = request.request_id
-        result = dispatch_service_request(request)
+        if request.method == "bootstrap.activate":
+            if active_state_present:
+                raise WindowsControlServiceError(
+                    "bootstrap activation is unavailable after active state exists"
+                )
+            if bootstrap_handler is None:
+                raise WindowsControlServiceError(
+                    "bootstrap activation is unavailable outside the trusted service host"
+                )
+            result = bootstrap_handler()
+        else:
+            result = dispatch_service_request(request)
         return encode_service_response(
             request_id=request_id,
             ok=True,
             result=result,
         )
-    except (WindowsServiceBoundaryError, WindowsControlServiceError) as ex:
+    except (
+        WindowsServiceBoundaryError,
+        WindowsControlServiceError,
+        ServiceBootstrapError,
+    ) as ex:
         return encode_service_response(
             request_id=request_id,
             ok=False,
@@ -179,7 +204,12 @@ def _require_pipe_api():
     return pywintypes, win32file, win32pipe, winerror
 
 
-def serve_one_connection(pipe_handle) -> None:
+def serve_one_connection(
+    pipe_handle,
+    *,
+    bootstrap_handler: Callable[[], Mapping[str, object]] | None = None,
+    active_state_present: bool = False,
+) -> None:
     pywintypes, win32file, win32pipe, winerror = _require_pipe_api()
     connected = False
     try:
@@ -201,7 +231,11 @@ def serve_one_connection(pipe_handle) -> None:
                 error="WindowsControlServiceError: service request exceeds maximum size",
             )
         else:
-            response = process_service_message(bytes(data))
+            response = process_service_message(
+                bytes(data),
+                bootstrap_handler=bootstrap_handler,
+                active_state_present=active_state_present,
+            )
 
         win32file.WriteFile(pipe_handle, response)
         try:
@@ -288,6 +322,16 @@ def build_service_class():
                     f"schema={active_state.schema_version} "
                     f"manifest={active_state.migration_manifest_sha256[:16]}"
                 )
+            bootstrap_handler = None
+            if active_state is None:
+                bootstrap_handler = lambda: perform_bootstrap_activation(
+                    private_root=private_root,
+                    desktop_sid=sid,
+                    cancelled=lambda: (
+                        win32event.WaitForSingleObject(self._stop_event, 0)
+                        == win32event.WAIT_OBJECT_0
+                    ),
+                )
             servicemanager.LogInfoMsg(
                 f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
             )
@@ -308,7 +352,11 @@ def build_service_class():
                         break
                     self._active_pipe = pipe
                 try:
-                    serve_one_connection(pipe)
+                    serve_one_connection(
+                        pipe,
+                        bootstrap_handler=bootstrap_handler,
+                        active_state_present=active_state is not None,
+                    )
                 except Exception as ex:
                     if (
                         win32event.WaitForSingleObject(self._stop_event, 0)

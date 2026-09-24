@@ -20,6 +20,8 @@ MAX_MESSAGE_BYTES = 64 * 1024
 MAX_REQUEST_ID_CHARS = 128
 
 _SAFE_METHODS = frozenset({"health", "capabilities"})
+_BOOTSTRAP_METHODS = frozenset({"bootstrap.activate"})
+_ALLOWED_METHODS = _SAFE_METHODS | _BOOTSTRAP_METHODS
 _REQUEST_KEYS = frozenset({"version", "id", "method", "params"})
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _FORBIDDEN_METHOD_MARKERS = (
@@ -114,8 +116,8 @@ def parse_service_request(raw: bytes) -> ServiceRequest:
     lowered = method.casefold()
     if any(marker in lowered for marker in _FORBIDDEN_METHOD_MARKERS):
         raise WindowsServiceBoundaryError("raw signing/minting methods are forbidden")
-    if method not in _SAFE_METHODS:
-        raise WindowsServiceBoundaryError("service method is not allowed in R0")
+    if method not in _ALLOWED_METHODS:
+        raise WindowsServiceBoundaryError("service method is not allowed")
 
     params = document.get("params")
     if not isinstance(params, dict):
