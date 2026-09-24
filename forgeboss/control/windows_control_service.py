@@ -327,6 +327,10 @@ def build_service_class():
                 bootstrap_handler = lambda: perform_bootstrap_activation(
                     private_root=private_root,
                     desktop_sid=sid,
+                    cancelled=lambda: (
+                        win32event.WaitForSingleObject(self._stop_event, 0)
+                        == win32event.WAIT_OBJECT_0
+                    ),
                 )
             servicemanager.LogInfoMsg(
                 f"{SERVICE_NAME} R0 starting on {PIPE_NAME}"
