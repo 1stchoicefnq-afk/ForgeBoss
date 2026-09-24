@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, sys, traceback, subprocess
+import hashlib, json, os, sys, traceback, subprocess
 from pathlib import Path
 
 def main() -> int:
@@ -18,9 +18,31 @@ def main() -> int:
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
-    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+
+    governed=os.environ.get("FORGEBOSS_GOVERNED_RUN")=="YES"
+    expected_runner_hash=os.environ.get("FORGEBOSS_EXPECTED_RUNNER_SHA256","")
+    control_envelope=os.environ.get("FORGEBOSS_CONTROL_ENVELOPE","")
+    if governed:
+        actual_runner_hash=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        if not expected_runner_hash or actual_runner_hash!=expected_runner_hash:
+            print("FORGEBOSS SAFE STOP: governed runner identity mismatch.",file=sys.stderr);return 13
+        if not control_envelope:
+            print("FORGEBOSS SAFE STOP: governed control envelope missing.",file=sys.stderr);return 13
+        v=subprocess.run(
+            [sys.executable,str(guard),"paid-start","--lease",lease,"--token",lease_token,
+             "--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe",
+             "--control-envelope",control_envelope,"--budget",str(budget)],
+            capture_output=True,text=True
+        )
+    else:
+        v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
     if v.returncode:
         print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
+
+    # Do not leave control authority/token material in the worker's inherited environment.
+    os.environ.pop("FORGEBOSS_CONTROL_ENVELOPE",None)
+    os.environ.pop("FORGEBOSS_EXPECTED_RUNNER_SHA256",None)
+    os.environ.pop("FORGEBOSS_EXECUTOR_LEASE_TOKEN",None)
     env_obj=None
     try:
         from minisweagent.agents.default import DefaultAgent
