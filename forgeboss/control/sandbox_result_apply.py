@@ -304,6 +304,14 @@ def apply_sandbox_result(
     if source.parent == source:
         raise SandboxApplyError("workspace root cannot be filesystem root")
     result_root = Path(sandbox.result_dir).resolve(strict=True)
+    try:
+        common = Path(os.path.commonpath((str(source), str(result_root))))
+    except ValueError as ex:
+        raise SandboxApplyError("result/workspace path identity is invalid") from ex
+    if common in (source, result_root):
+        raise SandboxApplyError(
+            "sandbox result directory must be disjoint from the real workspace"
+        )
     _assert_result_tree_safe(result_root)
 
     if sandbox.source_manifest_sha256 != manifest_sha256(sandbox.source_manifest):
@@ -466,4 +474,3 @@ def apply_sandbox_result(
                 f"rollback staging cleanup failed: {cleanup_error}"
             )
         return evidence
-
