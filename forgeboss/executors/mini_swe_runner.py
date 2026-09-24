@@ -1,6 +1,9 @@
 from __future__ import annotations
-import hashlib, json, os, sys, traceback, subprocess
+import hashlib, importlib.metadata, json, os, sys, traceback, subprocess
 from pathlib import Path
+
+GOVERNED_MINISWE_VERSION="2.4.6"
+GOVERNED_MINISWE_IMAGE="node@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
 
 def main() -> int:
     if len(sys.argv)<4:
@@ -26,6 +29,12 @@ def main() -> int:
         actual_runner_hash=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         if not expected_runner_hash or actual_runner_hash!=expected_runner_hash:
             print("FORGEBOSS SAFE STOP: governed runner identity mismatch.",file=sys.stderr);return 13
+        try:
+            actual_version=importlib.metadata.version("mini-swe-agent")
+        except Exception:
+            actual_version=""
+        if actual_version!=GOVERNED_MINISWE_VERSION:
+            print(f"FORGEBOSS SAFE STOP: mini-swe-agent identity mismatch ({actual_version!r}).",file=sys.stderr);return 13
         if not control_envelope:
             print("FORGEBOSS SAFE STOP: governed control envelope missing.",file=sys.stderr);return 13
         try:
@@ -57,7 +66,7 @@ def main() -> int:
         # The container receives the disposable repo only, not API/GitHub credentials.
         mount=f"type=bind,src={workspace},dst=/workspace"
         env_obj=DockerEnvironment(
-            image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
+            image=GOVERNED_MINISWE_IMAGE if governed else os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
             run_args=["--rm","--network","none","--mount",mount],
             timeout=180,
