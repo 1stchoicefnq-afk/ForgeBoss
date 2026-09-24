@@ -7,11 +7,62 @@ $git=FirstExisting @(
   (Join-Path $env:ProgramFiles 'Git\bin\git.exe')
 )
 if(!$git){throw 'TRUSTED_GIT_NOT_FOUND'}
-$docker=FirstExisting @(
-  (Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe'),
-  (Join-Path $env:ProgramFiles 'Docker\Docker\resources\docker.exe')
-)
-if(!$docker){throw 'TRUSTED_DOCKER_NOT_FOUND'}
+function IsUnder([string]$Path,[string]$Root){
+  if([string]::IsNullOrWhiteSpace($Root)){return $false}
+  $p=[IO.Path]::GetFullPath($Path).TrimEnd('\\')+'\\'
+  $r=[IO.Path]::GetFullPath($Root).TrimEnd('\\')+'\\'
+  return $p.StartsWith($r,[StringComparison]::OrdinalIgnoreCase)
+}
+function AddDockerCandidate([System.Collections.Generic.List[string]]$list,[string]$raw){
+  if([string]::IsNullOrWhiteSpace($raw)){return}
+  $p=$raw.Trim().Trim('"') -replace ',\d+$',''
+  if((Split-Path -Leaf $p) -ieq 'Docker Desktop.exe'){$p=Join-Path (Split-Path -Parent $p) 'resources\bin\docker.exe'}
+  elseif((Split-Path -Leaf $p) -ine 'docker.exe'){$p=Join-Path $p 'resources\bin\docker.exe'}
+  if(!$list.Contains($p)){[void]$list.Add($p)}
+}
+$dockerCandidates=New-Object 'System.Collections.Generic.List[string]'
+AddDockerCandidate $dockerCandidates (Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe')
+if(${env:ProgramFiles(x86)}){AddDockerCandidate $dockerCandidates (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\resources\bin\docker.exe')}
+AddDockerCandidate $dockerCandidates (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\resources\bin\docker.exe')
+AddDockerCandidate $dockerCandidates (Join-Path $env:LOCALAPPDATA 'Docker\resources\bin\docker.exe')
+foreach($base in @(
+  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+)){
+  try{
+    Get-ChildItem $base -ErrorAction Stop|ForEach-Object{
+      try{
+        $v=Get-ItemProperty $_.PSPath -ErrorAction Stop
+        if(([string]$v.DisplayName) -like 'Docker Desktop*'){
+          AddDockerCandidate $dockerCandidates ([string]$v.InstallLocation)
+          AddDockerCandidate $dockerCandidates ([string]$v.DisplayIcon)
+        }
+      }catch{}
+    }
+  }catch{}
+}
+foreach($appKey in @(
+  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Docker Desktop.exe',
+  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Docker Desktop.exe'
+)){
+  try{AddDockerCandidate $dockerCandidates ([string](Get-ItemProperty $appKey -ErrorAction Stop).'(default)')}catch{}
+}
+try{AddDockerCandidate $dockerCandidates ([string](Get-Command docker.exe -CommandType Application -ErrorAction Stop).Source)}catch{}
+$docker=$null
+foreach($candidate in $dockerCandidates){
+  if(!(Test-Path -LiteralPath $candidate -PathType Leaf)){continue}
+  $resolved=(Resolve-Path -LiteralPath $candidate).Path
+  $trustedMachine=(IsUnder $resolved $env:ProgramFiles) -or (IsUnder $resolved ${env:ProgramFiles(x86)})
+  if(!$trustedMachine){
+    $sig=Get-AuthenticodeSignature -FilePath $resolved
+    $subject=if($sig.SignerCertificate){[string]$sig.SignerCertificate.Subject}else{''}
+    if($sig.Status -ne 'Valid' -or $subject -notmatch '(?i)Docker'){continue}
+  }
+  $docker=$resolved
+  break
+}
+if(!$docker){throw ('TRUSTED_DOCKER_NOT_FOUND checked='+($dockerCandidates -join '; '))}
 $pythonCandidates=@()
 foreach($base in @('HKLM:\SOFTWARE\Python\PythonCore\3.13\InstallPath','HKCU:\SOFTWARE\Python\PythonCore\3.13\InstallPath')){
   try{
