@@ -18,11 +18,51 @@ class GovernedHostLauncherTests(unittest.TestCase):
         self.state = self.root / "state" / "launch-packets"
         self.workspace = self.root / "worktree"
         self.workspace.mkdir(parents=True)
+        metadata = mock.patch.object(launcher, "git_metadata_snapshot", return_value={})
+        remotes = mock.patch.object(launcher, "no_remotes", return_value=None)
+        metadata.start()
+        remotes.start()
+        self.addCleanup(metadata.stop)
+        self.addCleanup(remotes.stop)
 
     def test_pristine_workspace_is_accepted(self):
         with mock.patch.object(launcher, "guarded_git", return_value=""):
             out = launcher.assert_governed_workspace_ready(self.state, self.workspace)
         self.assertEqual(out, self.workspace.resolve())
+
+    def test_git_metadata_is_validated_before_pristine_status_probe(self):
+        with (
+            mock.patch.object(
+                launcher,
+                "git_metadata_snapshot",
+                side_effect=launcher.SecurityError("hostile fsmonitor config"),
+            ),
+            mock.patch.object(launcher, "guarded_git") as git,
+        ):
+            with self.assertRaisesRegex(
+                launcher.GovernedHostLaunchError,
+                "unable to prove governed workspace is pristine",
+            ):
+                launcher.assert_governed_workspace_ready(self.state, self.workspace)
+        git.assert_not_called()
+
+    def test_docker_cleanup_environment_excludes_model_and_control_secrets(self):
+        safe = launcher._docker_env(
+            {
+                "PATH": "safe-path",
+                "DOCKER_HOST": "endpoint",
+                "OPENAI_API_KEY": "secret",
+                "LLM_API_KEY": "secret2",
+                "FORGEBOSS_CONTROL_ENVELOPE": "authority",
+                "FORGEBOSS_EXECUTOR_LEASE_TOKEN": "token",
+            }
+        )
+        self.assertEqual(safe["PATH"], "safe-path")
+        self.assertEqual(safe["DOCKER_HOST"], "endpoint")
+        self.assertNotIn("OPENAI_API_KEY", safe)
+        self.assertNotIn("LLM_API_KEY", safe)
+        self.assertNotIn("FORGEBOSS_CONTROL_ENVELOPE", safe)
+        self.assertNotIn("FORGEBOSS_EXECUTOR_LEASE_TOKEN", safe)
 
     def test_dirty_workspace_is_rejected_before_paid_launch(self):
         with mock.patch.object(
