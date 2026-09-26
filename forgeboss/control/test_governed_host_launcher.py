@@ -87,6 +87,21 @@ class GovernedHostLauncherTests(unittest.TestCase):
         self.assertFalse(ctx.exception.release_safe)
         self.assertTrue(ctx.exception.quarantine)
 
+    def test_quarantine_persistence_failure_is_not_safe_to_release(self):
+        with mock.patch.object(
+            launcher,
+            "quarantine_workspace",
+            side_effect=OSError("acl/write failure"),
+        ):
+            with self.assertRaises(launcher.GovernedHostLaunchError) as ctx:
+                launcher._quarantine_or_fail_closed(
+                    self.state,
+                    self.workspace,
+                    "worker failed",
+                )
+        self.assertFalse(ctx.exception.release_safe)
+        self.assertTrue(ctx.exception.quarantine)
+
     def test_timeout_quarantines_workspace_and_requires_cleanup_proof(self):
         runner = self.root / "forgeboss" / "executors" / "mini_swe_runner.py"
         runner.parent.mkdir(parents=True)
