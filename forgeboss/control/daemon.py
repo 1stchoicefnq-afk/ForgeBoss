@@ -353,11 +353,36 @@ class ForgeBossDaemon:
                 return {"admitted":True,"taskId":env["taskId"],"runId":env["runId"],"ownerEpoch":env["ownerEpoch"]}
             return self._idem(req,do)
         if m=="workspace.heartbeat":
-            return self._idem(req,lambda:self.store.heartbeat(p["taskId"],p["runId"],int(p["ownerEpoch"]),int(p.get("ttlSeconds",1200)),p.get("currentHead")))
+            def do():
+                task=self.store.get_task(p["taskId"])
+                if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("governance_mode")=="reuse-v1":
+                    raise ProtocolError(
+                        "GOVERNED_DIRECT_LEASE_MUTATION_DENIED",
+                        "governed lease heartbeat is daemon-internal",
+                    )
+                return self.store.heartbeat(
+                    p["taskId"],p["runId"],int(p["ownerEpoch"]),
+                    int(p.get("ttlSeconds",1200)),p.get("currentHead"),
+                )
+            return self._idem(req,do)
         if m=="workspace.assert":
             return self.store.assert_writer(p["taskId"],p["runId"],int(p["ownerEpoch"]),p.get("expectedHead"))
         if m=="workspace.release":
-            return self._idem(req,lambda:(self.store.release(p["taskId"],p["runId"],int(p["ownerEpoch"]),p.get("resultHead"),p.get("outcome","released")) or {"released":True}))
+            def do():
+                task=self.store.get_task(p["taskId"])
+                if not task:raise ProtocolError("TASK_NOT_FOUND","task not found")
+                if task.get("governance_mode")=="reuse-v1":
+                    raise ProtocolError(
+                        "GOVERNED_DIRECT_LEASE_MUTATION_DENIED",
+                        "governed lease release is daemon-internal",
+                    )
+                self.store.release(
+                    p["taskId"],p["runId"],int(p["ownerEpoch"]),
+                    p.get("resultHead"),p.get("outcome","released"),
+                )
+                return {"released":True}
+            return self._idem(req,do)
         if m=="state.snapshot":
             out=self.store.snapshot(); out["projects"]=list_profiles(); return out
         if m=="project.list": return {"projects":list_profiles()}
