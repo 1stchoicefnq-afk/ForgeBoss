@@ -66,6 +66,12 @@ class GovernedLaunchAuthorityTests(unittest.TestCase):
         self.assertEqual(out["runtimeId"], "mini-swe")
         self.assertRegex(out["runnerSha256"], r"^[0-9a-f]{64}$")
 
+    def test_governed_container_timeout_stays_below_control_lease(self):
+        text = self.runner.read_text(encoding="utf-8")
+        self.assertIn('container_timeout="18m"', text)
+        self.assertLess(18 * 60, 1800)
+        self.assertLess(18 * 60, 1200)
+
     def test_runner_content_change_invalidates_existing_attestation(self):
         token = self.issue()
         self.runner.write_text("print('replaced')\n", encoding="utf-8")
