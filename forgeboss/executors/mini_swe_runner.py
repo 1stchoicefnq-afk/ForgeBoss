@@ -1,6 +1,9 @@
 from __future__ import annotations
-import json, os, sys, traceback, subprocess
+import hashlib, importlib.metadata, json, os, sys, traceback, subprocess
 from pathlib import Path
+
+GOVERNED_MINISWE_VERSION="2.4.6"
+GOVERNED_MINISWE_IMAGE="node@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
 
 def main() -> int:
     if len(sys.argv)<4:
@@ -18,9 +21,42 @@ def main() -> int:
     lease=os.environ.get("FORGEBOSS_EXECUTOR_LEASE","");lease_token=os.environ.get("FORGEBOSS_EXECUTOR_LEASE_TOKEN","")
     if not lease or not lease_token:
         print("FORGEBOSS SAFE STOP: unified executor lease missing.",file=sys.stderr);return 13
-    v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
-    if v.returncode:
-        print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
+
+    governed=os.environ.get("FORGEBOSS_GOVERNED_RUN")=="YES"
+    expected_runner_hash=os.environ.get("FORGEBOSS_EXPECTED_RUNNER_SHA256","")
+    control_envelope=os.environ.get("FORGEBOSS_CONTROL_ENVELOPE","")
+    if governed:
+        runner_text=Path(__file__).read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n")
+        actual_runner_hash=hashlib.sha256(runner_text.encode("utf-8")).hexdigest()
+        if not expected_runner_hash or actual_runner_hash!=expected_runner_hash:
+            print("FORGEBOSS SAFE STOP: governed runner identity mismatch.",file=sys.stderr);return 13
+        try:
+            actual_version=importlib.metadata.version("mini-swe-agent")
+        except Exception:
+            actual_version=""
+        if actual_version!=GOVERNED_MINISWE_VERSION:
+            print(f"FORGEBOSS SAFE STOP: mini-swe-agent identity mismatch ({actual_version!r}).",file=sys.stderr);return 13
+        if not control_envelope:
+            print("FORGEBOSS SAFE STOP: governed control envelope missing.",file=sys.stderr);return 13
+        try:
+            root=Path(__file__).resolve().parents[2]
+            if str(root) not in sys.path:sys.path.insert(0,str(root))
+            from forgeboss.security.executor_guard import paid_start_authority
+            with paid_start_authority(
+                lease,lease_token,sys.argv[1],workspace,"mini-swe",control_envelope,budget
+            ):
+                pass
+        except Exception as ex:
+            print("FORGEBOSS SAFE STOP: governed paid-start denied: "+str(ex),file=sys.stderr);return 13
+    else:
+        v=subprocess.run([sys.executable,str(guard),"verify","--lease",lease,"--token",lease_token,"--packet",sys.argv[1],"--workspace",workspace,"--executor","mini-swe"],capture_output=True,text=True)
+        if v.returncode:
+            print("FORGEBOSS SAFE STOP: "+(v.stdout or v.stderr),file=sys.stderr);return 13
+
+    # Do not leave control authority/token material in the worker's inherited environment.
+    os.environ.pop("FORGEBOSS_CONTROL_ENVELOPE",None)
+    os.environ.pop("FORGEBOSS_EXPECTED_RUNNER_SHA256",None)
+    os.environ.pop("FORGEBOSS_EXECUTOR_LEASE_TOKEN",None)
     env_obj=None
     try:
         from minisweagent.agents.default import DefaultAgent
@@ -31,11 +67,11 @@ def main() -> int:
         # The container receives the disposable repo only, not API/GitHub credentials.
         mount=f"type=bind,src={workspace},dst=/workspace"
         env_obj=DockerEnvironment(
-            image=os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
+            image=GOVERNED_MINISWE_IMAGE if governed else os.environ.get("FORGEBOSS_MINISWE_IMAGE","node:22-bookworm"),
             cwd="/workspace",
             run_args=["--rm","--network","none","--mount",mount],
             timeout=180,
-            container_timeout="45m",
+            container_timeout="18m",
         )
         model=LitellmModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.

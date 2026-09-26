@@ -6,8 +6,8 @@ from forgeboss.security.local_acl import harden_private_dir,harden_private_path
 def canonical(obj):
     return json.dumps(obj,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8")
 
-def secret_file(root:Path):
-    p=Path(root)/"state"/"forgebossd"/"daemon-secret.bin"
+def _secret_file(root:Path,filename:str,label:str):
+    p=Path(root)/"state"/"forgebossd"/filename
     harden_private_dir(p.parent)
     if not p.exists():
         try:
@@ -17,8 +17,17 @@ def secret_file(root:Path):
         except FileExistsError:pass
     harden_private_path(p)
     data=p.read_bytes()
-    if len(data)<32:raise RuntimeError("forgebossd secret is invalid")
+    if len(data)<32:raise RuntimeError(f"{label} secret is invalid")
     return p,data
+
+def secret_file(root:Path):
+    return _secret_file(root,"daemon-secret.bin","forgebossd")
+
+def policy_secret_file(root:Path):
+    return _secret_file(root,"policy-approval-secret.bin","forgeboss policy approval")
+
+def launch_secret_file(root:Path):
+    return _secret_file(root,"governed-launch-secret.bin","forgeboss governed launch")
 
 def sign_envelope(payload,secret:bytes):
     body=dict(payload)

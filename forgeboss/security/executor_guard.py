@@ -17,7 +17,7 @@ TRUSTED_SYSTEM_EXEC_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
-    ("ls-files","--stage","-z"),("remote",),
+    ("ls-files","--stage","-z"),("status","--porcelain=v1","-z","--untracked-files=all"),("remote",),
 }
 _WIN_GIT_REGISTRY_KEY=r"SOFTWARE\GitForWindows"
 _WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}
@@ -506,11 +506,18 @@ def issue(packet_path,workspace,executor,ttl=1200):
     pp=Path(packet_path);work=Path(workspace).resolve();packet=json.loads(pp.read_text(encoding="utf-8"));allowed,context=validate_packet(packet)
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} write-capable execution is quarantined until OS/network isolation is verified")
     with _WorkspaceFence(work):
-        assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work);token=secrets.token_urlsafe(32)
-        lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":snapshot(work),"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
+        assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work)
+        before=snapshot(work)
+        dirty=git(work,"status","--porcelain=v1","-z","--untracked-files=all")
+        if dirty:raise SecurityError("workspace is not pristine before executor lease")
+        baseline=snapshot(work)
+        raced=changed(before,baseline)
+        if raced:raise SecurityError("workspace changed during pristine executor baseline: "+json.dumps(raced))
+        token=secrets.token_urlsafe(32)
+        lease={"schema":3,"executor":executor,"workspace":str(work),"packet_sha256":phash(pp),"allowed_files":allowed,"allowed_keys":[x.casefold() for x in allowed],"issued_at":time.time(),"expires_at":time.time()+ttl,"token_sha256":hashlib.sha256(token.encode()).hexdigest(),"baseline":baseline,"git_metadata":git_metadata_snapshot(work),"isolation_verified":isolation_ok(executor),"paid_consumed":False,"paid_authority":None}
         lp=STATE/f"lease-{int(time.time()*1000)}-{secrets.token_hex(4)}.json";_atomic_write_json(lp,lease)
     print(json.dumps({"ok":True,"lease":str(lp),"token":token}));return 0
-def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
+def _verify_unlocked(lease_path,token,packet_path,workspace,executor,allow_source_changes=False):
     lease=json.loads(Path(lease_path).read_text(encoding="utf-8"));work=Path(workspace).resolve();pp=Path(packet_path)
     if time.time()>float(lease.get("expires_at",0)):raise SecurityError("executor lease expired")
     if lease.get("executor")!=executor:raise SecurityError("executor identity mismatch")
@@ -518,14 +525,19 @@ def _verify_unlocked(lease_path,token,packet_path,workspace,executor):
     if lease.get("packet_sha256")!=phash(pp):raise SecurityError("packet changed after lease")
     if not secrets.compare_digest(lease.get("token_sha256",""),hashlib.sha256(token.encode()).hexdigest()):raise SecurityError("lease token mismatch")
     packet=json.loads(pp.read_text(encoding="utf-8"));allowed,context=validate_packet(packet);assert_no_link_escape(work);assert_paths_contained(work,allowed+context);exact_head(work,packet);no_remotes(work)
+    baseline=lease.get("baseline")
+    if not isinstance(baseline,dict):raise SecurityError("executor lease missing source baseline")
+    if not allow_source_changes:
+        source_changes=changed(baseline,snapshot(work))
+        if source_changes:raise SecurityError("workspace changed after lease before execution: "+json.dumps(source_changes))
     if executor in ("openhands","opencode") and not isolation_ok(executor):raise SecurityError(f"{executor} isolation proof disappeared after lease")
     before=lease.get("git_metadata")
     if not isinstance(before,dict):raise SecurityError("executor lease missing Git metadata baseline")
     ch=changed(before,git_metadata_snapshot(work))
     if ch:raise SecurityError("Git metadata changed after lease before execution: "+json.dumps(ch))
     return lease
-def verify(lease_path,token,packet_path,workspace,executor):
-    with _WorkspaceFence(workspace):return _verify_unlocked(lease_path,token,packet_path,workspace,executor)
+def verify(lease_path,token,packet_path,workspace,executor,allow_source_changes=False):
+    with _WorkspaceFence(workspace):return _verify_unlocked(lease_path,token,packet_path,workspace,executor,allow_source_changes=allow_source_changes)
 @contextmanager
 def paid_start_authority(lease_path,token,packet_path,workspace,executor,control_envelope,cli_budget=None):
     lease_path=Path(lease_path)
@@ -539,7 +551,7 @@ def paid_start_authority(lease_path,token,packet_path,workspace,executor,control
         lease["paid_consumed"]=True;lease["paid_consumed_at"]=time.time();lease["paid_authority"]=authority;_atomic_write_json(lease_path,lease)
         yield authority
 def postflight(lease_path,token,packet_path,workspace,executor):
-    lease=verify(lease_path,token,packet_path,workspace,executor)
+    lease=verify(lease_path,token,packet_path,workspace,executor,allow_source_changes=True)
     with _WorkspaceFence(workspace):
         before=lease.get("git_metadata")
         if not isinstance(before,dict):raise SecurityError("executor lease missing Git metadata baseline")

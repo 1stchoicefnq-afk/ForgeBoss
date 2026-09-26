@@ -1,0 +1,283 @@
+{
+  "schema": 1,
+  "ruleset_id": "FORGEBOSS_PERMANENT_PRODUCT_RULES",
+  "ruleset_version": "1.1.0",
+  "status": "PERMANENT_PRODUCT_CONTRACT",
+  "applies_to": [
+    "forgeboss",
+    "projects_built_by_forgeboss"
+  ],
+  "precedence": [
+    "runtime_authority",
+    "permanent_rules",
+    "project_authority",
+    "project_decisions",
+    "worker_contracts",
+    "model_or_tool_output"
+  ],
+  "rules": [
+    {
+      "id": "FB-PERM-001",
+      "name": "single_user_facing_product",
+      "law": "ForgeBoss is the normal user-facing engineering application; separate AI chats, Git/PowerShell/test-runner/coding-agent UIs are not required for the normal path."
+    },
+    {
+      "id": "FB-PERM-002",
+      "name": "product_form",
+      "law": "Desktop is the primary workshop; mobile is a companion remote; web is the account/cloud dashboard; all surfaces consume one canonical project/run truth."
+    },
+    {
+      "id": "FB-PERM-003",
+      "name": "canonical_authority",
+      "law": "ForgeBoss owns authoritative project state, workflow, permissions, evidence, decisions, spend and release state; external engines never become canonical authority."
+    },
+    {
+      "id": "FB-PERM-004",
+      "name": "reuse_before_build",
+      "law": "Substantial work requires an upstream reuse review before custom implementation; build from scratch only with a recorded reason."
+    },
+    {
+      "id": "FB-PERM-005",
+      "name": "worker_reviewer_separation",
+      "law": "A material builder cannot independently accept, approve or review its own work."
+    },
+    {
+      "id": "FB-PERM-006",
+      "name": "chief_of_staff_observer_only",
+      "law": "Chief of Staff reconciles and reports authoritative state but has no mutation, approval, merge, deploy, spend or permission authority."
+    },
+    {
+      "id": "FB-PERM-007",
+      "name": "worker_pack_contract",
+      "law": "Reusable workers are versioned descriptive packs; packs cannot grant themselves authority and upgrades preserve provenance and local modifications."
+    },
+    {
+      "id": "FB-PERM-008",
+      "name": "self_improvement_subordinate",
+      "law": "Learned state may improve execution but cannot rewrite permanent rules, permissions, canonical evidence, acceptance state or approval requirements."
+    },
+    {
+      "id": "FB-PERM-009",
+      "name": "proven_learning_only",
+      "law": "Only independently proven repair lessons may be replayed automatically, and only when authoritative preconditions still match."
+    },
+    {
+      "id": "FB-PERM-010",
+      "name": "no_blind_paid_retries",
+      "law": "A failed paid/model attempt cannot be repeated without new evidence, corrected preconditions, narrower scope or a materially different recorded strategy."
+    },
+    {
+      "id": "FB-PERM-011",
+      "name": "deterministic_first",
+      "law": "Use reliable deterministic/local/free validation before another paid model call when it can answer the question."
+    },
+    {
+      "id": "FB-PERM-012",
+      "name": "durable_run_identity",
+      "law": "Every material task/run has durable identity and provenance covering project, role, worker, route, authority, inputs, snapshots, outputs and evidence lineage."
+    },
+    {
+      "id": "FB-PERM-013",
+      "name": "silent_and_unexpected_work",
+      "law": "Expected work without evidence is SILENT; unscheduled or paused-but-running work is UNEXPECTED_RUN and must be surfaced."
+    },
+    {
+      "id": "FB-PERM-014",
+      "name": "durable_resume",
+      "law": "Long-running work resumes or reconciles from authoritative persisted state after ordinary interruption; ambiguous recovery fails closed."
+    },
+    {
+      "id": "FB-PERM-015",
+      "name": "exact_evidence_binding",
+      "law": "Evidence proves only the exact artifact/snapshot/run it names; older proof cannot automatically prove a newer candidate."
+    },
+    {
+      "id": "FB-PERM-016",
+      "name": "release_prover",
+      "law": "Final proof is bound to the exact final artifact/evidence set and produces READY, NEEDS_REPAIR, BLOCKED or PROOF_INCOMPLETE."
+    },
+    {
+      "id": "FB-PERM-017",
+      "name": "evidence_derived_status",
+      "law": "UI PASS/FIXED/READY/SECURE/COMPLETE states derive from canonical stored evidence, never model prose alone."
+    },
+    {
+      "id": "FB-PERM-018",
+      "name": "replaceable_commodity_components",
+      "law": "Models, worker engines, gateways, workflow engines, sandboxes, browsers, memory engines and integrations remain replaceable behind ForgeBoss-owned interfaces where practical."
+    },
+    {
+      "id": "FB-PERM-019",
+      "name": "no_capability_self_escalation",
+      "law": "Workers, packs, plugins, skills and dependencies cannot widen their own tools, write scope, spend or permissions."
+    },
+    {
+      "id": "FB-PERM-020",
+      "name": "native_proof_distinction",
+      "law": "Portable/source-level proof is not native-platform/runtime proof; platform-specific claims require matching evidence."
+    },
+    {
+      "id": "FB-PERM-021",
+      "name": "hostile_review",
+      "law": "Green tests are provisional; important changes require independent hostile review of alternate/bypass/historical paths."
+    },
+    {
+      "id": "FB-PERM-022",
+      "name": "mutation_regression_proof",
+      "law": "Important protections should be weakened/removed in a controlled test where practical to prove their regression test actually fails."
+    },
+    {
+      "id": "FB-PERM-023",
+      "name": "owner_interruption_policy",
+      "law": "Routine worker updates are consolidated into an owner/Chief-of-Staff brief where practical; urgent safety/authority failures may interrupt immediately."
+    },
+    {
+      "id": "FB-PERM-024",
+      "name": "fail_closed",
+      "law": "Unknown or unverifiable authority, identity, evidence or safety state blocks the affected action rather than being guessed."
+    },
+    {
+      "id": "FB-PERM-025",
+      "name": "secrets_boundary",
+      "law": "Secrets and credentials stay out of source control, prompts, ordinary logs and evidence exports unless an explicit secure mechanism owns them."
+    },
+    {
+      "id": "FB-PERM-026",
+      "name": "user_project_ownership",
+      "law": "User project/source belongs to the user and must have a practical export/import path that does not depend on continued use of one provider or ForgeBoss cloud."
+    },
+    {
+      "id": "FB-PERM-027",
+      "name": "safe_uninstall_and_delete",
+      "law": "Removing ForgeBoss or changing account state must not silently delete user projects/data; destructive deletion requires explicit owner intent."
+    },
+    {
+      "id": "FB-PERM-028",
+      "name": "backup_restore",
+      "law": "Authoritative project/runtime state must have a tested backup/restore and disaster-recovery strategy appropriate to its deployment mode."
+    },
+    {
+      "id": "FB-PERM-029",
+      "name": "explicit_data_policy",
+      "law": "Retention, deletion and telemetry behavior must be explicit; hidden collection of project/code data is forbidden."
+    },
+    {
+      "id": "FB-PERM-030",
+      "name": "controlled_network_egress",
+      "law": "Worker/tool network egress is policy-controlled and least-necessary; code execution does not imply unrestricted internet access."
+    },
+    {
+      "id": "FB-PERM-031",
+      "name": "secure_secret_store",
+      "law": "Secrets use an appropriate secure store, least-privilege scoping and masking from ordinary logs/evidence."
+    },
+    {
+      "id": "FB-PERM-032",
+      "name": "supply_chain_inventory",
+      "law": "ForgeBoss maintains sufficient third-party provenance to produce an SBOM or equivalent inventory of executable components and licenses."
+    },
+    {
+      "id": "FB-PERM-033",
+      "name": "critical_dependency_pinning",
+      "law": "Authority/security-critical dependencies are pinned to reviewed versions or exact identities."
+    },
+    {
+      "id": "FB-PERM-034",
+      "name": "dependency_upgrade_gate",
+      "law": "Dependency upgrades require reviewed identity/version changes and relevant tests; unreviewed latest-version drift is not accepted."
+    },
+    {
+      "id": "FB-PERM-035",
+      "name": "extension_identity_verification",
+      "law": "Executable Worker Packs/plugins/extensions are pinned to an exact version/identity and integrity-verified with a cryptographic hash at minimum; signatures are additionally verified where the distribution mechanism supports them."
+    },
+    {
+      "id": "FB-PERM-036",
+      "name": "extension_capability_boundary",
+      "law": "Installing a pack/plugin/extension grants no runtime authority; declared capabilities remain subject to ForgeBoss permissions and policy."
+    },
+    {
+      "id": "FB-PERM-037",
+      "name": "authenticated_updates",
+      "law": "ForgeBoss application updates are authenticated/versioned and preserve a safe known-good rollback or recovery path."
+    },
+    {
+      "id": "FB-PERM-038",
+      "name": "project_isolation",
+      "law": "Separate projects do not silently share private context, secrets, workspaces or evidence without explicit authorised sharing."
+    },
+    {
+      "id": "FB-PERM-039",
+      "name": "tenant_isolation",
+      "law": "Cloud/team deployments enforce tenant/account/team boundaries server-side rather than relying on client/UI filtering."
+    },
+    {
+      "id": "FB-PERM-040",
+      "name": "cost_transparency_and_ceiling",
+      "law": "Material spend is bounded/visible where practical and hard owner/project/run ceilings cannot be widened by models, workers, tools or providers."
+    },
+    {
+      "id": "FB-PERM-041",
+      "name": "canonical_audit_trail",
+      "law": "Material actions, approvals, authority changes, releases and destructive operations are recorded in a canonical attributable audit trail."
+    },
+    {
+      "id": "FB-PERM-042",
+      "name": "cancellation_revokes_authority",
+      "law": "Cancellation, pause or supersession invalidates stale future mutation authority; resumed work requires fresh authoritative validation."
+    },
+    {
+      "id": "FB-PERM-043",
+      "name": "migration_recovery",
+      "law": "Schema/state migrations require forward validation and a rollback/recovery strategy appropriate to the risk, with recovery points before destructive changes where practical."
+    },
+    {
+      "id": "FB-PERM-044",
+      "name": "accessibility_baseline",
+      "law": "ForgeBoss normal user workflows maintain an accessibility baseline including keyboard-operable material controls and readable status/approval information."
+    },
+    {
+      "id": "FB-PERM-045",
+      "name": "degraded_operation",
+      "law": "Local/degraded operation continues where practical when optional provider/cloud services are unavailable; canonical project truth is not lost with one service."
+    },
+    {
+      "id": "FB-PERM-046",
+      "name": "destructive_change_recovery_point",
+      "law": "Before destructive project-state transformations, ForgeBoss creates or verifies an appropriate backup/export/recovery point where practical."
+    },
+    {
+      "id": "FB-PERM-047",
+      "name": "compatibility_contract",
+      "law": "Rulesets, projects, Worker Packs, adapters and state schemas declare compatibility/version expectations rather than silently assuming compatibility."
+    },
+    {
+      "id": "FB-PERM-048",
+      "name": "no_single_service_lock_in",
+      "law": "Loss or replacement of one external model/provider/tool/service must not make user-owned project truth unrecoverable."
+    }
+  ],
+  "required_structured_records": [
+    "PROJECT_IDEA",
+    "REQUIREMENTS",
+    "UPSTREAM_REUSE_REVIEW",
+    "ARCHITECTURE",
+    "AUTHORITY_MODEL",
+    "SAFETY_RULES",
+    "TEST_MATRIX",
+    "DECISIONS",
+    "COMPONENT_REGISTRY",
+    "WORKER_REGISTRY",
+    "ACTIVE_RUNS",
+    "EVIDENCE_MANIFEST",
+    "KNOWN_ISSUES",
+    "STATUS",
+    "RELEASE_PROOF",
+    "DATA_POLICY",
+    "NETWORK_POLICY",
+    "BACKUP_MANIFEST",
+    "AUDIT_TRAIL",
+    "COMPATIBILITY_MATRIX"
+  ],
+  "note": "Permanent product contract v1.1. Runtime enforcement is tracked separately; models, workers, plugins and dependencies must not treat this manifest as permission to mutate or execute."
+}

@@ -3,6 +3,7 @@ import json,socket,uuid,time,secrets
 from pathlib import Path
 from .envelope import secret_file
 from .auth import make_connect_proof
+from .protocol import MUTATIONS
 ROOT=Path(__file__).resolve().parents[2]
 HOST="127.0.0.1";PORT=18765
 
@@ -15,7 +16,7 @@ class Client:
         cp["authProof"]=make_connect_proof(cp,secret)
         self.call("connect",cp,mutation=False)
     def call(self,method,params=None,mutation=None):
-        if mutation is None:mutation=method in {"task.create","workspace.claim","workspace.heartbeat","workspace.release","worker.admit"}
+        if mutation is None:mutation=method in MUTATIONS
         obj={"type":"req","id":uuid.uuid4().hex,"method":method,"params":params or {}}
         if mutation:obj["idempotencyKey"]=uuid.uuid4().hex
         self.f.write((json.dumps(obj,separators=(",",":"))+"\n").encode("utf-8"));self.f.flush()

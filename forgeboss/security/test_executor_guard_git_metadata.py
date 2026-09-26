@@ -48,6 +48,36 @@ class ExecutorGuardGitMetadataTests(unittest.TestCase):
         finally:
             packet.unlink(missing_ok=True);lease_path.unlink(missing_ok=True)
 
+    def test_issue_rejects_dirty_workspace_before_executor_lease(self):
+        td,work=self._ordinary()
+        try:
+            state=work.parent/"guard-state";state.mkdir()
+            packet=work.parent/"dirty-packet.json"
+            packet.write_text(
+                json.dumps({
+                    "allowed_files":["allowed.txt"],
+                    "context_files":[],
+                    "expected_head_revision":self._git(work,"rev-parse","HEAD"),
+                }),
+                encoding="utf-8",
+            )
+            (work/"allowed.txt").write_text("dirty-before-lease",encoding="utf-8")
+            with patch.object(guard,"STATE",state),patch.object(guard,"git",side_effect=self._real_guard_git):
+                with self.assertRaisesRegex(guard.SecurityError,"not pristine"):
+                    guard.issue(packet,work,"mini-swe",60)
+        finally:
+            td.cleanup()
+
+    def test_verify_rejects_source_change_after_lease_before_execution(self):
+        td,work=self._ordinary()
+        try:
+            lease=self._lease(work)
+            (work/"allowed.txt").write_text("changed-after-lease",encoding="utf-8")
+            with self.assertRaisesRegex(guard.SecurityError,"changed after lease before execution"):
+                self._verify(work,lease)
+        finally:
+            td.cleanup()
+
     def test_safe_allowed_source_change_passes_with_unchanged_git_metadata(self):
         td,work=self._ordinary()
         try:
