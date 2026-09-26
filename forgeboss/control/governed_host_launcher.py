@@ -123,6 +123,17 @@ def quarantine_workspace(state_dir: Path, workspace: Path, reason: str) -> Path:
     return marker
 
 
+def _quarantine_or_fail_closed(state_dir: Path, workspace: Path, reason: str) -> Path:
+    try:
+        return quarantine_workspace(state_dir, workspace, reason)
+    except Exception as ex:
+        raise GovernedHostLaunchError(
+            "workspace quarantine could not be persisted",
+            release_safe=False,
+            quarantine=True,
+        ) from ex
+
+
 def assert_governed_workspace_ready(state_dir: Path, workspace: Path) -> Path:
     try:
         work = Path(workspace).resolve(strict=True)
@@ -404,7 +415,7 @@ def run_governed_worker(
                 _ensure_workspace_containers_absent(workspace_path, child_env, force=True)
             except GovernedHostLaunchError as cleanup:
                 cleanup_error = cleanup
-            quarantine_workspace(
+            _quarantine_or_fail_closed(
                 Path(state_dir),
                 workspace_path,
                 "governed worker timeout; workspace requires owner reconciliation",
@@ -427,7 +438,7 @@ def run_governed_worker(
             except GovernedHostLaunchError as cleanup:
                 cleanup_error = cleanup
             if cleanup_error is not None:
-                quarantine_workspace(
+                _quarantine_or_fail_closed(
                     Path(state_dir),
                     workspace_path,
                     "worker spawn failed and Docker cleanup could not be proven",
@@ -442,7 +453,7 @@ def run_governed_worker(
         try:
             _ensure_workspace_containers_absent(workspace_path, child_env, force=True)
         except GovernedHostLaunchError as ex:
-            quarantine_workspace(
+            _quarantine_or_fail_closed(
                 Path(state_dir),
                 workspace_path,
                 "worker exited but Docker descendant cleanup could not be proven",
@@ -454,7 +465,7 @@ def run_governed_worker(
             ) from ex
 
         if int(proc.returncode) != 0:
-            quarantine_workspace(
+            _quarantine_or_fail_closed(
                 Path(state_dir),
                 workspace_path,
                 f"governed worker failed with return code {int(proc.returncode)}",
@@ -469,4 +480,9 @@ def run_governed_worker(
             "runner_sha256": final_runner_sha,
         }
     finally:
-        packet_path.unlink(missing_ok=True)
+        try:
+            packet_path.unlink(missing_ok=True)
+        except OSError:
+            # The packet is private and contains no provider secret. Do not let
+            # cleanup failure mask a stronger worker/quarantine safety result.
+            pass
