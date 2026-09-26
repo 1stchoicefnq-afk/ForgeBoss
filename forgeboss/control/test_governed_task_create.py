@@ -670,6 +670,62 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.assertEqual(replay_ctx.exception.code, "RUN_ALREADY_ACTIVE")
 
 
+    def test_direct_governed_lease_heartbeat_and_release_are_denied(self):
+        p, _ = self._create_governed_substantial("T-LEASE-DIRECT")
+        req = self._launch_request(p["taskId"], run_id="RUN-LEASE-DIRECT")
+        err = self.mod.GovernedHostLaunchError(
+            "cleanup uncertain",
+            release_safe=False,
+            quarantine=True,
+        )
+        with mock.patch.object(self.mod, "run_governed_worker", side_effect=err):
+            with self.assertRaises(self.mod.ProtocolError):
+                self.daemon.dispatch(req, True)
+
+        lease = self.store.get_lease(p["taskId"])
+        self.assertIsNotNone(lease)
+        self.assertIsNone(lease["released_at"])
+
+        for method, params in (
+            (
+                "workspace.heartbeat",
+                {
+                    "taskId": p["taskId"],
+                    "runId": "RUN-LEASE-DIRECT",
+                    "ownerEpoch": int(lease["owner_epoch"]),
+                    "ttlSeconds": 3600,
+                },
+            ),
+            (
+                "workspace.release",
+                {
+                    "taskId": p["taskId"],
+                    "runId": "RUN-LEASE-DIRECT",
+                    "ownerEpoch": int(lease["owner_epoch"]),
+                    "outcome": "released",
+                },
+            ),
+        ):
+            with self.subTest(method=method):
+                request = {
+                    "method": method,
+                    "idempotencyKey": uuid.uuid4().hex,
+                    "params": params,
+                }
+                with self.assertRaises(self.mod.ProtocolError) as ctx:
+                    self.daemon.dispatch(request, True)
+                self.assertEqual(
+                    ctx.exception.code,
+                    "GOVERNED_DIRECT_LEASE_MUTATION_DENIED",
+                )
+
+        lease_after = self.store.get_lease(p["taskId"])
+        self.assertIsNone(lease_after["released_at"])
+        self.assertEqual(
+            self.store.get_run("RUN-LEASE-DIRECT")["status"],
+            "running",
+        )
+
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
         p["workKind"] = "small-repair"
