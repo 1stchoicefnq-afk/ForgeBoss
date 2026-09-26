@@ -120,7 +120,10 @@ def main(argv=None) -> int:
         rows=[]
         seen=set()
         for operation,payload,expected_refusal in probe_matrix(state):
-            response=client.call_evidence(operation,payload)
+            try:
+                response=client.call_evidence(operation,payload)
+            except Exception as ex:
+                raise RuntimeError("STAGE1_OPERATION_CALL_FAILED:"+operation+":"+str(getattr(ex,"code",type(ex).__name__))) from ex
             receipt=response.get("receipt") or {}
             result=response.get("result") or {}
             if receipt.get("operation")!=operation:
