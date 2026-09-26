@@ -62,22 +62,18 @@ def _text(value: object, label: str) -> str:
 
 def _repository(value: object) -> str:
     raw = _text(value, "repository")
-    if "://" in raw or raw.startswith(("git@", "\\\\", "//")) or ":" in raw or "\\" in raw:
-        raise SmallRepairAuthorityError("repository must be owner/name")
-    parts = raw.split("/")
-    if len(parts) != 2:
-        raise SmallRepairAuthorityError("repository must be owner/name")
-    owner, name = parts
-    if not _OWNER.fullmatch(owner) or not _REPO.fullmatch(name):
-        raise SmallRepairAuthorityError("repository must be owner/name")
-    return f"{owner.casefold()}/{name.casefold()}"
+    try:
+        return _repository_identity(raw)
+    except WorkspaceCollisionError as ex:
+        raise SmallRepairAuthorityError("repository must be owner/name") from ex
 
 
 def _base_sha(value: object) -> str:
     raw = _text(value, "baseSha")
-    if not _GIT_OBJECT_ID.fullmatch(raw):
-        raise SmallRepairAuthorityError("baseSha must be a 40- or 64-hex object id")
-    return raw.lower()
+    try:
+        return _git_object_id(raw)
+    except WorkspaceCollisionError as ex:
+        raise SmallRepairAuthorityError("baseSha must be a 40- or 64-hex object id") from ex
 
 
 def _objective_sha256(objective: object) -> str:

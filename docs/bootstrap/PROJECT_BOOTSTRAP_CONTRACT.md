@@ -106,6 +106,11 @@ ForgeBoss should maintain authoritative records equivalent to:
 - KNOWN_ISSUES
 - STATUS
 - RELEASE_PROOF
+- DATA_POLICY
+- NETWORK_POLICY
+- BACKUP_MANIFEST
+- AUDIT_TRAIL
+- COMPATIBILITY_MATRIX
 
 Exact filenames and storage formats may evolve.
 
@@ -178,6 +183,70 @@ A pack:
 - must preserve provenance/license/version identity;
 - should self-test before activation;
 - must preserve owner/project modifications during upgrade and surface conflicts.
+
+## User ownership / export contract
+
+A project must have a practical export path for user-owned source and authoritative project records required for continued work.
+
+ForgeBoss must not make one provider/cloud service the only path to recover project truth.
+
+Uninstall/delete flows must distinguish removing the application from deleting user projects/data. Destructive data deletion requires explicit owner intent.
+
+## Data/privacy contract
+
+Authoritative project policy must define relevant retention/deletion behavior and whether any telemetry is collected.
+
+Hidden project/code telemetry is forbidden.
+
+External model/tool calls must be treated as data egress and must be governed by the approved provider/tool/network policy.
+
+## Secrets/network contract
+
+Secrets belong in an appropriate secure credential store, not ordinary project truth files.
+
+Secret access must be scoped to the smallest worker/tool/action that requires it, and ordinary logs/evidence must redact or omit secret values.
+
+Network access for workers/tools must be policy-controlled. A worker does not gain unrestricted egress merely because it can execute code.
+
+## Supply-chain contract
+
+Adopted executable dependencies/components/packs/plugins must have recorded provenance sufficient to identify what code/version/license was trusted.
+
+Authority/security-critical dependencies must be pinned.
+
+Upgrades require a reviewed identity/version change and relevant regression/security tests.
+
+Executable extension distribution must pin an exact identity/version and verify a cryptographic hash at minimum; signatures are additionally verified where supported. Installation is not an authority grant.
+
+## Backup/recovery/update contract
+
+Authoritative state must have a backup/restore strategy appropriate to deployment.
+
+Risky/destructive migrations should verify a usable recovery point before mutation.
+
+Application update flows must authenticate/identify the update and preserve a safe known-good recovery/rollback path.
+
+## Isolation/audit contract
+
+Projects are isolated by default for workspace, private context, credentials and evidence.
+
+Cloud/team deployments must enforce tenant/account/team boundaries on the server side.
+
+Material actions/approvals/authority changes/releases/destructive operations must be representable in a canonical audit trail.
+
+Cancellation/supersession invalidates stale future authority and must be revalidated at the true mutation boundary.
+
+## Cost contract
+
+ForgeBoss should provide useful cost estimates/bounds before materially expensive work where practical and record actual spend afterward.
+
+Hard owner/project/run ceilings are authority and cannot be widened by a provider/model/tool request.
+
+## Compatibility/accessibility contract
+
+Rulesets, projects, Worker Packs, adapters and state schemas must declare compatibility/version expectations.
+
+ForgeBoss normal user workflows must maintain an accessibility baseline, including keyboard-operable material controls and readable status/approval information.
 
 ## Core engineering rules
 

@@ -53,11 +53,13 @@ class PermanentRulesTests(unittest.TestCase):
         rules = load_default_rules(ROOT)
         self.assertEqual(rules.ruleset_id, EXPECTED_RULESET_ID)
         self.assertEqual(rules.ruleset_version, EXPECTED_RULESET_VERSION)
-        self.assertEqual(len(rules.rules), 25)
-        self.assertEqual(len(rules.required_structured_records), 15)
+        self.assertEqual(len(rules.rules), 48)
+        self.assertEqual(len(rules.required_structured_records), 20)
         self.assertEqual(rules.sha256, hashlib.sha256(CANONICAL.read_bytes()).hexdigest())
         self.assertEqual(rules.canonical_sha256, PINNED_CANONICAL_SHA256)
         self.assertIn("Chief of Staff", require_rule(rules, "FB-PERM-006")["law"])
+        self.assertIn("cryptographic hash at minimum", require_rule(rules, "FB-PERM-035")["law"])
+        self.assertIn("COMPATIBILITY_MATRIX", rules.required_structured_records)
         with self.assertRaises(TypeError):
             rules.rules["FB-PERM-001"]["law"] = "override"
         with self.assertRaises(TypeError):
@@ -76,6 +78,14 @@ class PermanentRulesTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 with self.assertRaises(PermanentRulesError):
                     load_permanent_rules(self.write(raw=raw))
+
+    def test_v1_0_contract_is_rejected_by_v1_1_loader(self):
+        doc = json.loads(json.dumps(self.document))
+        doc["ruleset_version"] = "1.0.0"
+        doc["rules"] = doc["rules"][:25]
+        doc["required_structured_records"] = doc["required_structured_records"][:15]
+        with self.assertRaises(PermanentRulesError):
+            load_permanent_rules(self.write(doc))
 
     def test_wrong_schema_id_version_or_status_fails_closed(self):
         for key, value in (

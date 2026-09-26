@@ -237,6 +237,9 @@ class ControlStore:
                     except Exception:pass
                 raise
 
+    def get_run(self,run_id):
+        row=self.db.execute("SELECT * FROM task_runs WHERE run_id=?",(run_id,)).fetchone();return dict(row) if row else None
+
     def get_lease(self,task_id):
         row=self.db.execute("SELECT * FROM workspace_leases WHERE task_id=?",(task_id,)).fetchone();return dict(row) if row else None
 
