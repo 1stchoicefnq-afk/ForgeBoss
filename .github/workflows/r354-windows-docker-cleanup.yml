@@ -1,0 +1,84 @@
+name: R354 Windows live Docker cleanup proof
+
+on:
+  push:
+    branches:
+      - test/pr351-51ceac9-docker-win-native
+
+permissions:
+  contents: read
+
+jobs:
+  windows-docker-cleanup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prove source delta is workflow-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only 51ceac97bb5dbb2ce3b2522a105db630e4616e8a HEAD)"
+          printf '%s\n' "$files"
+          test "$files" = ".github/workflows/r354-windows-docker-cleanup.yml"
+
+      - name: Native Windows Docker bind-mount cleanup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          docker version
+
+          $build = [Environment]::OSVersion.Version.Build
+          if ($build -ge 26000) {
+            $tag = 'ltsc2025'
+          } elseif ($build -ge 20348) {
+            $tag = 'ltsc2022'
+          } else {
+            $tag = 'ltsc2019'
+          }
+
+          $image = docker images --format '{{.Repository}}:{{.Tag}}' |
+            Where-Object { $_ -and $_ -notmatch '<none>' } |
+            Select-Object -First 1
+
+          if (-not $image) {
+            $image = "mcr.microsoft.com/windows/nanoserver:$tag"
+            docker pull $image
+          }
+
+          Write-Host "WINDOWS_BUILD=$build"
+          Write-Host "WINDOWS_TEST_IMAGE=$image"
+
+          $work = Join-Path $env:RUNNER_TEMP 'forgeboss-r354-win-workspace'
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $name = "forgeboss-r354-win-$env:GITHUB_RUN_ID"
+
+          $container = docker run -d --name $name --mount "type=bind,src=$work,dst=C:\workspace" $image ping -t 127.0.0.1
+          if (-not $container) { throw 'Windows test container did not start' }
+
+          $env:WORK = $work
+          @'
+          import os
+          from pathlib import Path
+          from forgeboss.control.governed_host_launcher import (
+              _docker_workspace_containers,
+              _ensure_workspace_containers_absent,
+          )
+
+          work = Path(os.environ["WORK"]).resolve()
+          env = dict(os.environ)
+          before = _docker_workspace_containers(work, env)
+          print("WINDOWS_DOCKER_BEFORE=" + repr(before))
+          assert before, before
+          _ensure_workspace_containers_absent(work, env, force=True)
+          after = _docker_workspace_containers(work, env)
+          print("WINDOWS_DOCKER_AFTER=" + repr(after))
+          assert after == [], after
+          print("WINDOWS_LIVE_DOCKER_CLEANUP=PASS")
+          '@ | python -
+
+          $remaining = docker ps -aq --filter "name=^/$name$"
+          if ($remaining) { throw "Container remained after cleanup: $remaining" }
