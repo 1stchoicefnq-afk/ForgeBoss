@@ -209,6 +209,14 @@ class Stage1PackageVerifierTests(unittest.TestCase):
         with self.assertRaises(PackageVerificationError) as cm:verify_package(root)
         self.assertIn("DYNAMIC_PROCESSWIDE_MONKEYPATCH_DENIED",str(cm.exception))
 
+    def test_verifier_reports_windows_runtime_coverage_boundary(self):
+        root=self.make_pack({"README.txt":b"ok\n"})
+        out=verify_package(root)
+        self.assertFalse(out["coverage"]["protectedRootRuntime"]["coveredByThisVerifier"])
+        self.assertEqual(out["coverage"]["protectedRootRuntime"]["authoritativeTool"],"Tools/Test-ProtectedRootIdentity.ps1")
+        self.assertFalse(out["coverage"]["authorityOperationRuntime"]["coveredByThisVerifier"])
+        self.assertEqual(out["coverage"]["authorityOperationRuntime"]["authoritativeTool"],"Tools/prove_authority_operations.py")
+
     def test_powershell_automatic_variables_are_case_insensitive(self):
         for name in ("host","args","input","error","psitem","true","false","null","pwd","pid","home"):
             with self.subTest(name=name):
