@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 from .governed_launch import runner_identity
-from forgeboss.security.local_acl import harden_private_dir,harden_private_path
+from forgeboss.security.executor_guard import SecurityError, git as guarded_git
+from forgeboss.security.local_acl import harden_private_dir, harden_private_path
 
 
 class GovernedHostLaunchError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, release_safe: bool = True, quarantine: bool = False):
+        super().__init__(message)
+        self.release_safe = bool(release_safe)
+        self.quarantine = bool(quarantine)
 
 
 SENSITIVE_CHILD_ENV = {
@@ -60,10 +66,10 @@ def _write_private_packet(state_dir: Path, packet: dict) -> Path:
             os.chmod(path, 0o600)
         except OSError:
             pass
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(packet, f, sort_keys=True, separators=(",", ":"))
-            f.flush()
-            os.fsync(f.fileno())
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(packet, stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
         harden_private_path(path)
     except Exception:
         try:
@@ -73,6 +79,79 @@ def _write_private_packet(state_dir: Path, packet: dict) -> Path:
         path.unlink(missing_ok=True)
         raise
     return path
+
+
+def _workspace_identity(workspace: Path) -> str:
+    resolved = Path(workspace).resolve(strict=False)
+    return os.path.normcase(os.path.normpath(str(resolved)))
+
+
+def _quarantine_marker(state_dir: Path, workspace: Path) -> Path:
+    root = Path(state_dir).parent / "workspace-quarantine"
+    identity = _workspace_identity(workspace)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return root / f"{digest}.json"
+
+
+def quarantine_workspace(state_dir: Path, workspace: Path, reason: str) -> Path:
+    marker = _quarantine_marker(state_dir, workspace)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    harden_private_dir(marker.parent)
+    payload = {
+        "schema": 1,
+        "workspace": _workspace_identity(workspace),
+        "reason": str(reason)[:2000],
+        "quarantinedAt": time.time(),
+    }
+    fd, raw = tempfile.mkstemp(prefix=marker.name + ".tmp-", dir=str(marker.parent))
+    temp = Path(raw)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        harden_private_path(temp)
+        os.replace(temp, marker)
+        harden_private_path(marker)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temp.unlink(missing_ok=True)
+        raise
+    return marker
+
+
+def assert_governed_workspace_ready(state_dir: Path, workspace: Path) -> Path:
+    try:
+        work = Path(workspace).resolve(strict=True)
+    except Exception as ex:
+        raise GovernedHostLaunchError("governed workspace is missing or unresolved") from ex
+    if not work.is_dir():
+        raise GovernedHostLaunchError("governed workspace is not a directory")
+    marker = _quarantine_marker(state_dir, work)
+    if marker.exists():
+        raise GovernedHostLaunchError(
+            "governed workspace is quarantined after an earlier failed/uncertain run"
+        )
+    try:
+        dirty = guarded_git(
+            work,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        )
+    except SecurityError as ex:
+        raise GovernedHostLaunchError(
+            "unable to prove governed workspace is pristine: " + str(ex)
+        ) from ex
+    if dirty:
+        raise GovernedHostLaunchError(
+            "governed workspace must be pristine before paid launch"
+        )
+    return work
 
 
 def _issue_executor_guard_lease(
@@ -89,7 +168,7 @@ def _issue_executor_guard_lease(
         guard = guard.resolve(strict=True)
     except FileNotFoundError as ex:
         raise GovernedHostLaunchError("executor guard is missing") from ex
-    p = subprocess.run(
+    proc = subprocess.run(
         [
             sys.executable,
             str(guard),
@@ -109,12 +188,13 @@ def _issue_executor_guard_lease(
         text=True,
         timeout=timeout_seconds,
     )
-    if p.returncode:
+    if proc.returncode:
         raise GovernedHostLaunchError(
-            "executor guard refused governed launch: " + ((p.stdout or p.stderr) or "")[-2000:]
+            "executor guard refused governed launch: "
+            + ((proc.stdout or proc.stderr) or "")[-2000:]
         )
     try:
-        line = [x for x in p.stdout.splitlines() if x.strip()][-1]
+        line = [x for x in proc.stdout.splitlines() if x.strip()][-1]
         issued = json.loads(line)
     except Exception as ex:
         raise GovernedHostLaunchError("executor guard returned invalid lease output") from ex
@@ -124,19 +204,118 @@ def _issue_executor_guard_lease(
 
 
 def resolve_workspace_head(workspace: Path) -> str:
-    p = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if p.returncode:
-        raise GovernedHostLaunchError("unable to resolve governed result HEAD")
-    value = p.stdout.strip()
+    try:
+        value = guarded_git(Path(workspace), "rev-parse", "HEAD")
+    except SecurityError as ex:
+        raise GovernedHostLaunchError("unable to resolve governed result HEAD") from ex
     if not value:
         raise GovernedHostLaunchError("governed result HEAD is empty")
     return value
+
+
+def _docker_workspace_containers(workspace: Path, env: dict) -> list[str]:
+    try:
+        listed = subprocess.run(
+            ["docker", "ps", "-aq"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as ex:
+        raise GovernedHostLaunchError(
+            "cannot prove Docker workspace isolation: docker inventory unavailable",
+            release_safe=False,
+            quarantine=True,
+        ) from ex
+    if listed.returncode:
+        raise GovernedHostLaunchError(
+            "cannot prove Docker workspace isolation: "
+            + ((listed.stderr or listed.stdout) or "")[-1200:],
+            release_safe=False,
+            quarantine=True,
+        )
+    ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if not ids:
+        return []
+    try:
+        inspected = subprocess.run(
+            ["docker", "inspect", *ids],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as ex:
+        raise GovernedHostLaunchError(
+            "cannot inspect Docker containers for governed workspace",
+            release_safe=False,
+            quarantine=True,
+        ) from ex
+    if inspected.returncode:
+        raise GovernedHostLaunchError(
+            "cannot inspect Docker containers for governed workspace: "
+            + ((inspected.stderr or inspected.stdout) or "")[-1200:],
+            release_safe=False,
+            quarantine=True,
+        )
+    try:
+        rows = json.loads(inspected.stdout or "[]")
+    except Exception as ex:
+        raise GovernedHostLaunchError(
+            "Docker inspection returned invalid JSON",
+            release_safe=False,
+            quarantine=True,
+        ) from ex
+    target = _workspace_identity(workspace)
+    hits: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        mounts = row.get("Mounts") if isinstance(row, dict) else None
+        if not isinstance(mounts, list):
+            continue
+        for mount in mounts:
+            source = mount.get("Source") if isinstance(mount, dict) else None
+            if not isinstance(source, str) or not source:
+                continue
+            if os.path.normcase(os.path.normpath(source)) == target:
+                ident = str(row.get("Id") or row.get("Name") or "").strip()
+                if ident:
+                    hits.append(ident)
+                break
+    return hits
+
+
+def _ensure_workspace_containers_absent(workspace: Path, env: dict, *, force: bool) -> None:
+    hits = _docker_workspace_containers(workspace, env)
+    if hits and force:
+        try:
+            removed = subprocess.run(
+                ["docker", "rm", "-f", *hits],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except Exception as ex:
+            raise GovernedHostLaunchError(
+                "failed to stop governed Docker descendants",
+                release_safe=False,
+                quarantine=True,
+            ) from ex
+        if removed.returncode:
+            raise GovernedHostLaunchError(
+                "failed to stop governed Docker descendants: "
+                + ((removed.stderr or removed.stdout) or "")[-1200:],
+                release_safe=False,
+                quarantine=True,
+            )
+        hits = _docker_workspace_containers(workspace, env)
+    if hits:
+        raise GovernedHostLaunchError(
+            "governed Docker descendants still hold the workspace",
+            release_safe=False,
+            quarantine=True,
+        )
 
 
 def run_governed_worker(
@@ -156,9 +335,7 @@ def run_governed_worker(
     if runtime_id != "mini-swe":
         raise GovernedHostLaunchError("only mini-swe is approved for governed host launch r0")
     root = Path(root).resolve()
-    workspace_path = Path(workspace).resolve(strict=True)
-    if not workspace_path.is_dir():
-        raise GovernedHostLaunchError("governed workspace is not a directory")
+    workspace_path = assert_governed_workspace_ready(Path(state_dir), Path(workspace))
 
     rel, actual_runner_sha = runner_identity(root, runtime_id)
     if actual_runner_sha != expected_runner_sha256:
@@ -169,11 +346,11 @@ def run_governed_worker(
     packet_path = _write_private_packet(Path(state_dir), packet)
     try:
         allowed_host_env = {
-            "PATH","PATHEXT","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP",
-            "USERPROFILE","HOME","APPDATA","LOCALAPPDATA","PROGRAMDATA",
-            "DOCKER_HOST","DOCKER_CONTEXT","OPENAI_API_KEY","LLM_API_KEY",
+            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+            "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+            "DOCKER_HOST", "DOCKER_CONTEXT", "OPENAI_API_KEY", "LLM_API_KEY",
         }
-        child_env = {k:v for k,v in os.environ.items() if k in allowed_host_env}
+        child_env = {k: v for k, v in os.environ.items() if k in allowed_host_env}
         for key in SENSITIVE_CHILD_ENV:
             child_env.pop(key, None)
         child_env["FORGEBOSS_ALLOW_PAID_EXECUTOR"] = "YES"
@@ -186,6 +363,9 @@ def run_governed_worker(
             child_env["FORGEBOSS_MINISWE_MODEL"] = str(model)
         for key in ("GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT"):
             child_env.pop(key, None)
+
+        # A governed workspace must not already be held by any Docker container.
+        _ensure_workspace_containers_absent(workspace_path, child_env, force=False)
 
         issued = _issue_executor_guard_lease(
             root=root,
@@ -203,20 +383,83 @@ def run_governed_worker(
         if final_runner_sha != expected_runner_sha256:
             raise GovernedHostLaunchError("approved runner identity changed at spawn boundary")
 
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(runner),
-                str(packet_path),
-                str(workspace_path),
-                str(float(budget_usd)),
-            ],
-            cwd=str(root),
-            env=child_env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(runner),
+                    str(packet_path),
+                    str(workspace_path),
+                    str(float(budget_usd)),
+                ],
+                cwd=str(root),
+                env=child_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as ex:
+            cleanup_error = None
+            try:
+                _ensure_workspace_containers_absent(workspace_path, child_env, force=True)
+            except GovernedHostLaunchError as cleanup:
+                cleanup_error = cleanup
+            quarantine_workspace(
+                Path(state_dir),
+                workspace_path,
+                "governed worker timeout; workspace requires owner reconciliation",
+            )
+            if cleanup_error is not None:
+                raise GovernedHostLaunchError(
+                    "governed worker timed out and Docker descendant cleanup could not be proven",
+                    release_safe=False,
+                    quarantine=True,
+                ) from cleanup_error
+            raise GovernedHostLaunchError(
+                "governed worker exceeded host launch timeout",
+                release_safe=True,
+                quarantine=True,
+            ) from ex
+        except Exception as ex:
+            cleanup_error = None
+            try:
+                _ensure_workspace_containers_absent(workspace_path, child_env, force=True)
+            except GovernedHostLaunchError as cleanup:
+                cleanup_error = cleanup
+            if cleanup_error is not None:
+                quarantine_workspace(
+                    Path(state_dir),
+                    workspace_path,
+                    "worker spawn failed and Docker cleanup could not be proven",
+                )
+                raise GovernedHostLaunchError(
+                    "governed worker spawn failed and Docker descendant cleanup could not be proven",
+                    release_safe=False,
+                    quarantine=True,
+                ) from cleanup_error
+            raise GovernedHostLaunchError("governed worker spawn failed: " + str(ex)) from ex
+
+        try:
+            _ensure_workspace_containers_absent(workspace_path, child_env, force=True)
+        except GovernedHostLaunchError as ex:
+            quarantine_workspace(
+                Path(state_dir),
+                workspace_path,
+                "worker exited but Docker descendant cleanup could not be proven",
+            )
+            raise GovernedHostLaunchError(
+                str(ex),
+                release_safe=False,
+                quarantine=True,
+            ) from ex
+
+        if int(proc.returncode) != 0:
+            quarantine_workspace(
+                Path(state_dir),
+                workspace_path,
+                f"governed worker failed with return code {int(proc.returncode)}",
+            )
+
         return {
             "returncode": int(proc.returncode),
             "stdout_tail": (proc.stdout or "")[-4000:],
@@ -225,7 +468,5 @@ def run_governed_worker(
             "runner_relpath": rel,
             "runner_sha256": final_runner_sha,
         }
-    except subprocess.TimeoutExpired as ex:
-        raise GovernedHostLaunchError("governed worker exceeded host launch timeout") from ex
     finally:
         packet_path.unlink(missing_ok=True)
