@@ -9,6 +9,7 @@ from forgeboss.protected_authority.boundary import PeerContext
 from forgeboss.protected_authority.protocol import AuthorityError,build_request,canonical_digest,canonical_json,strict_loads
 from forgeboss.protected_authority.client import ProtectedAuthorityClient
 from forgeboss.protected_authority.service import ProtectedAuthorityService
+from forgeboss.control.self_build_runtime import SelfBuildRuntimeError
 from forgeboss.protected_authority.signing import ReceiptSigner,verify_signed_receipt
 
 class Boundary:
@@ -186,6 +187,18 @@ class ProtectedAuthorityServiceV3Tests(unittest.TestCase):
             svc.handle(req('prepare_self_build',payload),peer_context=CTX)
         self.assertEqual(cm.exception.code,'SECRET_FIELD_DENIED')
         self.assertEqual(self.secrets.github_reads,0)
+
+    def test_self_build_runtime_refusal_is_signed_with_exact_operation(self):
+        class RefusingRuntime(Runtime):
+            def status(self,payload):
+                self.calls.append(('status',dict(payload)))
+                raise SelfBuildRuntimeError("RUN_NOT_FOUND","probe run does not exist")
+        runtime=RefusingRuntime()
+        svc=TestService(protected_root=self.root,boundary=self.boundary,secrets_provider=self.secrets,backend=self.backend,receipt_signer=self.signer,self_build_runtime=runtime)
+        out=svc.handle(req('self_build_status',{'runId':'probe-missing'}),peer_context=CTX)
+        self.assertTrue(verify_signed_receipt(out,self.public_b64))
+        self.assertEqual(out['receipt']['operation'],'self_build_status')
+        self.assertEqual(out['result'],{'authorityRefused':True,'errorCode':'RUN_NOT_FOUND'})
 
     def test_self_build_operation_fails_closed_without_runtime(self):
         payload={'sourceRoot':'C:\\ForgeBoss' if __import__('os').name=='nt' else '/opt/ForgeBoss','baseSha':'a'*40,'runId':'fl1-none'}
