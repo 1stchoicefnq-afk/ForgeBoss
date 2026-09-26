@@ -71,7 +71,7 @@ def main() -> int:
             cwd="/workspace",
             run_args=["--rm","--network","none","--mount",mount],
             timeout=180,
-            container_timeout="45m",
+            container_timeout="18m",
         )
         model=LitellmModel(model_name=model_name)
         system_template=r"""You are a bounded software-engineering worker operating through a shell.
