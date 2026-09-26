@@ -10,7 +10,7 @@ import tempfile
 import time
 
 from .governed_launch import runner_identity
-from forgeboss.security.executor_guard import SecurityError, git as guarded_git
+from forgeboss.security.executor_guard import SecurityError, git as guarded_git, git_metadata_snapshot, no_remotes
 from forgeboss.security.local_acl import harden_private_dir, harden_private_path
 
 
@@ -147,6 +147,11 @@ def assert_governed_workspace_ready(state_dir: Path, workspace: Path) -> Path:
             "governed workspace is quarantined after an earlier failed/uncertain run"
         )
     try:
+        # Validate execution-capable Git metadata/config before invoking status.
+        # This prevents the pristine probe itself from becoming a hook/fsmonitor
+        # execution path.
+        git_metadata_snapshot(work)
+        no_remotes(work)
         dirty = guarded_git(
             work,
             "status",
@@ -224,11 +229,23 @@ def resolve_workspace_head(workspace: Path) -> str:
     return value
 
 
+DOCKER_ENV_KEYS = {
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+    "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "DOCKER_HOST", "DOCKER_CONTEXT",
+}
+
+
+def _docker_env(env: dict) -> dict:
+    return {key: value for key, value in env.items() if key in DOCKER_ENV_KEYS}
+
+
 def _docker_workspace_containers(workspace: Path, env: dict) -> list[str]:
+    safe_env = _docker_env(env)
     try:
         listed = subprocess.run(
             ["docker", "ps", "-aq"],
-            env=env,
+            env=safe_env,
             capture_output=True,
             text=True,
             timeout=30,
@@ -252,7 +269,7 @@ def _docker_workspace_containers(workspace: Path, env: dict) -> list[str]:
     try:
         inspected = subprocess.run(
             ["docker", "inspect", *ids],
-            env=env,
+            env=safe_env,
             capture_output=True,
             text=True,
             timeout=60,
@@ -302,7 +319,7 @@ def _ensure_workspace_containers_absent(workspace: Path, env: dict, *, force: bo
         try:
             removed = subprocess.run(
                 ["docker", "rm", "-f", *hits],
-                env=env,
+                env=_docker_env(env),
                 capture_output=True,
                 text=True,
                 timeout=60,
