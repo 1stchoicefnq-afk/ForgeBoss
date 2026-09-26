@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -101,6 +102,19 @@ class GovernedHostLauncherTests(unittest.TestCase):
             "subsystem": "x",
         }
         envelope = {"runId": "R1"}
+        real_run = subprocess.run
+
+        def timeout_worker_only(command, *args, **kwargs):
+            if (
+                isinstance(command, list)
+                and command
+                and command[0] == sys.executable
+                and len(command) > 1
+                and str(command[1]).endswith("mini_swe_runner.py")
+            ):
+                raise subprocess.TimeoutExpired("runner", 1200)
+            return real_run(command, *args, **kwargs)
+
         with (
             mock.patch.object(
                 launcher,
@@ -130,7 +144,7 @@ class GovernedHostLauncherTests(unittest.TestCase):
             mock.patch.object(
                 launcher.subprocess,
                 "run",
-                side_effect=subprocess.TimeoutExpired("runner", 1200),
+                side_effect=timeout_worker_only,
             ),
         ):
             with self.assertRaises(launcher.GovernedHostLaunchError) as ctx:
