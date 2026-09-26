@@ -1,0 +1,88 @@
+name: R352 final2 release test
+
+on:
+  push:
+    branches:
+      - test/pr351-51ceac9-r352-final2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact repaired source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prove source delta is workflow-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only 51ceac97bb5dbb2ce3b2522a105db630e4616e8a HEAD)"
+          printf '%s\n' "$files"
+          test "$files" = ".github/workflows/r352-final2-release-test.yml"
+
+      - name: Compile authority code
+        run: python -m compileall -q forgeboss/control forgeboss/policy forgeboss/security forgeboss/executors
+
+      - name: Prove permanent rules v1.1
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from forgeboss.policy.permanent_rules import load_default_rules
+          r=load_default_rules(Path("."))
+          assert r.ruleset_version=="1.1.0"
+          assert len(r.rules)==48
+          assert len(r.required_structured_records)==20
+          assert r.canonical_sha256=="ca18162a9a284d01ee3fe6c30839912f34de61c2ef2cc408bc8eec5e2ee0eebd"
+          print("PERMANENT_RULES_V11=PASS")
+          PY
+
+      - name: Focused governed authority tests
+        run: |
+          python -m unittest -v forgeboss.control.test_governed_launch
+          python -m unittest -v forgeboss.control.test_governed_host_launcher
+          python -m unittest -v forgeboss.control.test_governed_task_create
+
+      - name: Policy tests
+        if: always()
+        run: python -m unittest discover -v -s forgeboss/policy -p "test_*.py"
+
+      - name: Control tests
+        if: always()
+        run: python -m unittest discover -v -s forgeboss/control -p "test_*.py"
+
+      - name: Security tests
+        if: always()
+        run: python -m unittest discover -v -s forgeboss/security -p "test_*.py"
+
+      - name: Executor selftest
+        if: always()
+        run: node forgeboss/tests/selftest.js
+
+      - name: Remove test runtime state
+        if: always()
+        shell: bash
+        run: rm -rf state
+
+      - name: Final clean-source check
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain
+          test -z "$(git status --porcelain)"
