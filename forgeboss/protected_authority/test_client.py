@@ -79,6 +79,25 @@ class ProtectedAuthorityClientTests(unittest.TestCase):
             self.client().attest_launch_payload(self.launch())
         self.assertEqual(cm.exception.code,"LEGACY_SELF_SIGNED_LAUNCH_DISABLED")
 
+    def test_signed_refusal_is_available_as_evidence_and_normal_call_raises_code(self):
+        def refusal(raw):
+            req=strict_loads(raw)
+            result={"authorityRefused":True,"errorCode":"RUN_NOT_FOUND"}
+            receipt={"schema":3,"operation":req["operation"],"requestId":req["requestId"],"peerId":req["peerId"],
+                     "peerPrincipal":"test","repository":"1stchoicefnq-afk/ForgeBoss","controlRevision":req["controlRevision"],
+                     "requestDigest":req["requestDigest"],"resultDigest":canonical_digest(result),
+                     "servicePrincipal":"service"}
+            return __import__("forgeboss.protected_authority.protocol",fromlist=["canonical_json"]).canonical_json(
+                {**self.signer.sign(receipt),"result":result})
+        client=self.client(refusal)
+        evidence=client.call_evidence("self_build_status",{"runId":"probe-missing"})
+        self.assertTrue(evidence["result"]["authorityRefused"])
+        self.assertEqual(evidence["result"]["errorCode"],"RUN_NOT_FOUND")
+        self.assertEqual(evidence["receipt"]["operation"],"self_build_status")
+        with self.assertRaises(AuthorityError) as cm:
+            client.call("self_build_status",{"runId":"probe-missing"})
+        self.assertEqual(cm.exception.code,"RUN_NOT_FOUND")
+
     def test_windows_exchange_source_has_bounded_listener_turnover_retry(self):
         import inspect
         from forgeboss.protected_authority import client as client_module
