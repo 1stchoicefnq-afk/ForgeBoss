@@ -61,7 +61,18 @@ try{
  if(-not $authorityContractObj.ok -or $authorityContractObj.legacyIssueStage1Operations -or $authorityContractObj.obsoleteStage1ServiceParameters){
    throw 'STAGE1_AUTHORITY_CONTRACT_FAILED'
  }
- Write-Host '[PASS] Current Stage 1 authority contract loaded; obsolete issue_stage1 interface absent'
+ Write-Host '[PASS] Current Stage 1 authority contract loaded; exact operation inventory matched'
+
+ $authorityExercise=& $RuntimePy -I -B (Join-Path $PackageRoot 'Tools\prove_authority_operations.py') --installed $Installed 2>&1
+ $authorityExerciseRc=$LASTEXITCODE
+ $authorityExerciseObj=($authorityExercise|Out-String).Trim()|ConvertFrom-Json
+ if($authorityExerciseRc -ne 0 -or -not $authorityExerciseObj.ok){
+   throw ("STAGE1_AUTHORITY_OPERATION_EXERCISE_FAILED rc="+$authorityExerciseRc+": "+($authorityExercise|Out-String))
+ }
+ if([int]$authorityExerciseObj.stage1Required -ne 12 -or [int]$authorityExerciseObj.stage1Exercised -ne 12){
+   throw 'STAGE1_AUTHORITY_OPERATION_EXERCISE_COUNT_MISMATCH'
+ }
+ Write-Host ("[PASS] Stage 1 authority operations exercised="+$authorityExerciseObj.stage1Exercised+"/"+$authorityExerciseObj.stage1Required+" with signed success/refusal receipts")
 
  & $s.docker.path image inspect $s.builderImage *> $null
  if($LASTEXITCODE -ne 0){throw 'PINNED_BUILDER_IMAGE_MISSING'}

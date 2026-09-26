@@ -288,6 +288,21 @@ def verify_package(root: Path) -> dict:
         "filesVerified": len(checked),
         "pythonFilesBehaviorScanned": python_files,
         "staticVerificationFilePresent": False,
+        "coverage": {
+            "packageIntegrity": "covered",
+            "pythonMonkeypatchBehavior": "covered",
+            "powershellSemanticGuards": "covered",
+            "protectedRootRuntime": {
+                "coveredByThisVerifier": False,
+                "authoritativeTool": "Tools/Test-ProtectedRootIdentity.ps1",
+                "requiredContexts": ["TURN-ON-pre-UAC","Install-pre-UAC","VERIFY-Windows"],
+            },
+            "authorityOperationRuntime": {
+                "coveredByThisVerifier": False,
+                "authoritativeTool": "Tools/prove_authority_operations.py",
+                "requiredContext": "VERIFY-live-authority",
+            },
+        },
     }
 
 

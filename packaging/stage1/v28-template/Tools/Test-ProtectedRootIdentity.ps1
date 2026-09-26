@@ -14,11 +14,11 @@ $expected=Join-Path ($systemDrive+'\') ('ForgeBossAuthorityStage1-v'+$major)
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $systemPS=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
-function Invoke-RootCase([string]$Root,[int]$WantRc,[string]$WantCode){
+function Invoke-RootCase([string]$Root,[bool]$ShouldPass,[string]$WantCode){
   $out=& $systemPS -NoLogo -NoProfile -ExecutionPolicy Bypass -File $helper -Root $Root -UserSid $sid -PackageManifest $manifest -ValidateOnly 2>&1
   $rc=$LASTEXITCODE
   $text=($out|Out-String)
-  if($WantRc -eq 0){
+  if($ShouldPass){
     if($rc -ne 0){throw ("PROTECTED_ROOT_VALIDATION_EXPECTED_PASS rc="+$rc+" root="+$Root+" output="+$text)}
   }else{
     if($rc -eq 0){throw ("PROTECTED_ROOT_VALIDATION_EXPECTED_FAIL root="+$Root)}
@@ -30,15 +30,15 @@ function Invoke-RootCase([string]$Root,[int]$WantRc,[string]$WantCode){
 }
 
 $rows=@()
-$rows += Invoke-RootCase $expected 0 'PASS'
+$rows += Invoke-RootCase $expected $true 'PASS'
 $systemUsers=Join-Path ($systemDrive+'\') 'Users'
-$rows += Invoke-RootCase $env:SystemRoot 13 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
-$rows += Invoke-RootCase $systemUsers 13 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
-$rows += Invoke-RootCase $env:ProgramFiles 13 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
-$rows += Invoke-RootCase $env:ProgramData 13 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
-$rows += Invoke-RootCase (Join-Path ($systemDrive+'\') 'anything') 13 'PROTECTED_ROOT_IDENTITY_MISMATCH'
+$rows += Invoke-RootCase $env:SystemRoot $false 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
+$rows += Invoke-RootCase $systemUsers $false 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
+$rows += Invoke-RootCase $env:ProgramFiles $false 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
+$rows += Invoke-RootCase $env:ProgramData $false 'PROTECTED_ROOT_SYSTEM_DIRECTORY_DENIED'
+$rows += Invoke-RootCase (Join-Path ($systemDrive+'\') 'anything') $false 'PROTECTED_ROOT_IDENTITY_MISMATCH'
 $otherDrive=if($systemDrive -ieq 'C:'){'D:'}else{'C:'}
-$rows += Invoke-RootCase (Join-Path ($otherDrive+'\') ('ForgeBossAuthorityStage1-v'+$major)) 13 'PROTECTED_ROOT_IDENTITY_MISMATCH'
+$rows += Invoke-RootCase (Join-Path ($otherDrive+'\') ('ForgeBossAuthorityStage1-v'+$major)) $false 'PROTECTED_ROOT_IDENTITY_MISMATCH'
 
 $result=[pscustomobject]@{
   ok=$true

@@ -2,6 +2,11 @@ from __future__ import annotations
 import argparse, inspect, json, sys
 from pathlib import Path
 
+EXPECTED_GITHUB = {
+    "read_github_control",
+    "publish_report_comment",
+    "publish_reviewed_draft_pr",
+}
 CURRENT_REQUIRED = {
     "authorize_self_build_launch",
     "prepare_self_build",
@@ -16,6 +21,7 @@ CURRENT_REQUIRED = {
     "review_self_build_candidate",
     "accept_self_build_candidate",
 }
+EXPECTED_ALL = EXPECTED_GITHUB | CURRENT_REQUIRED
 
 def main()->int:
     ap=argparse.ArgumentParser();ap.add_argument("--engine-root",required=True);ns=ap.parse_args()
@@ -23,13 +29,14 @@ def main()->int:
     sys.path.insert(0,str(engine))
     from forgeboss.protected_authority import protocol, service
     operations=set(protocol.OPERATIONS)
-    missing=sorted(CURRENT_REQUIRED-operations)
+    missing=sorted(EXPECTED_ALL-operations)
+    unexpected=sorted(operations-EXPECTED_ALL)
     legacy=sorted(x for x in operations if x.startswith("issue_stage1_"))
     sig=inspect.signature(service.create_production_service)
     params=list(sig.parameters)
     stage1_params=sorted(x for x in params if x.startswith("stage1_"))
-    if missing:
-        raise RuntimeError("CURRENT_STAGE1_OPERATIONS_MISSING:"+",".join(missing))
+    if missing or unexpected:
+        raise RuntimeError("AUTHORITY_OPERATION_INVENTORY_MISMATCH missing="+json.dumps(missing)+" unexpected="+json.dumps(unexpected))
     if legacy:
         raise RuntimeError("LEGACY_ISSUE_STAGE1_OPERATIONS_PRESENT:"+",".join(legacy))
     if stage1_params:
@@ -37,6 +44,8 @@ def main()->int:
     print(json.dumps({
         "ok":True,
         "currentOperations":sorted(CURRENT_REQUIRED),
+        "expectedAllOperations":sorted(EXPECTED_ALL),
+        "unexpectedOperations":unexpected,
         "legacyIssueStage1Operations":False,
         "obsoleteStage1ServiceParameters":False,
         "serviceParameters":params,

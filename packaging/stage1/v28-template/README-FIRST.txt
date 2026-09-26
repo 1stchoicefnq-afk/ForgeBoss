@@ -2,7 +2,7 @@ FORGEBOSS STAGE 1 V28 - SELF-VERIFYING CANDIDATE
 
 1. Extract this ZIP to a fresh folder.
 2. Run TURN-ON-FORGEBOSS.cmd.
-3. Approve the one UAC prompt. It is only for the protected C:\ForgeBossAuthorityStage1-v28 root/ACL step.
+3. Approve the one UAC prompt. It is only for the protected %SystemDrive%\ForgeBossAuthorityStage1-v28 root/ACL step.
 4. Run VERIFY-FORGEBOSS.cmd.
 5. Do NOT press START BUILD until this exact ZIP has passed independent hostile review.
 
@@ -13,7 +13,10 @@ Security changes:
 - exact engine selection comes from stage1-installed.json and a mismatched FORGEBOSS_ENGINE_ROOT is rejected;
 - runtime dependencies install from a fully hashed Windows lock with --require-hashes --no-deps --only-binary :all:;
 - VERIFY exercises the engine's own self-build budget policy and hidden-child no-console mechanism;
-- VERIFY executes the protected-root identity/denylist table before readiness and TURN-ON executes it before UAC;\n- VERIFY proves the current self_build_* authority API and requires a signed self_build_current_known_good receipt;\n- builder image is digest-pinned;
+- VERIFY executes the protected-root identity/denylist table before readiness and TURN-ON executes it before UAC;
+- VERIFY proves the exact authority-operation inventory;
+- VERIFY exercises all 12 Stage 1 authority operations to a signed success or signed expected refusal;
+- builder image is digest-pinned;
 - only the protected machine-root/ACL step is elevated;
 - VERIFY does not clean or delete engine evidence;
 - the protected authority returns the trust grade shown by the dashboard;

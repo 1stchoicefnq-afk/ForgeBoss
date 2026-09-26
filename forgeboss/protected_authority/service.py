@@ -62,7 +62,8 @@ class ProtectedAuthorityService:
         self.journal.consume(r['requestId'],r['requestDigest']);private=[]
         try:
             op=r['operation']
-            if op in {'authorize_self_build_launch','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}:
+            self_build_ops={'authorize_self_build_launch','prepare_self_build','prepare_self_build_replacement','compose_self_build_successor','activate_self_build_successor','prove_self_build_activation_rollback','self_build_current_known_good','self_build_status','revoke_self_build_worker','record_self_build_handoff','review_self_build_candidate','accept_self_build_candidate'}
+            if op in self_build_ops:
                 if self.self_build_runtime is None:raise AuthorityError('SELF_BUILD_RUNTIME_UNAVAILABLE')
                 try:
                     if op=='authorize_self_build_launch':result=self.self_build_runtime.authorize_launch(r['payload']['launch'],repository=r['repository'],control_revision=r['controlRevision'])
@@ -77,8 +78,12 @@ class ProtectedAuthorityService:
                     elif op=='review_self_build_candidate':result=self.self_build_runtime.record_review(r['payload'])
                     elif op=='accept_self_build_candidate':result=self.self_build_runtime.accept_candidate(r['payload'],controller_id=r['peerId'])
                     else:result=self.self_build_runtime.status(r['payload'])
+                    public=assert_public_result(result,tuple(private))
                 except SelfBuildRuntimeError as ex:
-                    raise AuthorityError(ex.code,str(ex)) from ex
+                    # Authenticated, protocol-valid self-build refusals are public,
+                    # signed evidence. This lets VERIFY prove each operation reached
+                    # the production dispatch/runtime boundary without mutating state.
+                    public={'authorityRefused':True,'errorCode':str(ex.code)}
             else:
                 if not getattr(self,'github_enabled',True):raise AuthorityError('GITHUB_NOT_CONFIGURED')
                 key=self.secrets_provider.github_app_private_key();private.append(key);kw={'repository':r['repository'],'control_revision':r['controlRevision'],'payload':r['payload'],'private_key':key}
@@ -86,7 +91,7 @@ class ProtectedAuthorityService:
                 elif op=='publish_report_comment':result=self.backend.publish_report_comment(**kw)
                 elif op=='publish_reviewed_draft_pr':result=self.backend.publish_reviewed_draft_pr(**kw)
                 else:raise AuthorityError('OPERATION_DENIED')
-            public=assert_public_result(result,tuple(private))
+                public=assert_public_result(result,tuple(private))
         except AuthorityError:raise
         except Exception:raise AuthorityError('BACKEND_OPERATION_FAILED')
         receipt={'schema':3,'operation':r['operation'],'requestId':r['requestId'],'peerId':r['peerId'],'peerPrincipal':peer_context.principal,'repository':r['repository'],'controlRevision':r['controlRevision'],'requestDigest':r['requestDigest'],'resultDigest':canonical_digest(public),'servicePrincipal':self.service_principal}

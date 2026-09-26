@@ -98,7 +98,7 @@ class ProtectedAuthorityClient:
             raise AuthorityError("REQUEST_DIGEST_MISMATCH")
         return request,digest
 
-    def call(self,operation:str,payload:Mapping[str,Any])->dict:
+    def call_evidence(self,operation:str,payload:Mapping[str,Any])->dict:
         request,request_digest=self._request(operation,payload)
         raw=canonical_json(request)
         response_raw=self.transport(raw) if self.transport is not None else self._exchange(raw)
@@ -119,6 +119,16 @@ class ProtectedAuthorityClient:
             if name=="repository":
                 if str(got).casefold()!=str(want).casefold(): raise AuthorityError("SERVICE_RECEIPT_BINDING_MISMATCH")
             elif got!=want: raise AuthorityError("SERVICE_RECEIPT_BINDING_MISMATCH")
+        return response
+
+    def call(self,operation:str,payload:Mapping[str,Any])->dict:
+        response=self.call_evidence(operation,payload)
+        result=response.get("result") or {}
+        if result.get("authorityRefused") is True:
+            code=result.get("errorCode")
+            if not isinstance(code,str) or not code:
+                raise AuthorityError("SERVICE_REFUSAL_INVALID")
+            raise AuthorityError(code,"protected authority signed refusal")
         return response
 
     def authorize_self_build_launch(self,launch:Mapping[str,Any])->dict:

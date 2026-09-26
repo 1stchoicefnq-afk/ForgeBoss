@@ -42,6 +42,33 @@ class V28TemplateSecurityTests(unittest.TestCase):
         self.assertIn("AUTHORITY_API_CONFIG_MISMATCH",text("Authority/authority_user_host.py"))
         self.assertIn("AUTHORITY_API_CONFIG_MISMATCH",diag)
 
+    def test_authority_inventory_is_exact_and_all_twelve_are_exercised(self):
+        contract=text("Tools/prove_authority_contract.py")
+        exercise=text("Tools/prove_authority_operations.py")
+        verify=text("Verify-Stage1.ps1")
+        self.assertIn("EXPECTED_ALL",contract)
+        self.assertIn("unexpected=sorted(operations-EXPECTED_ALL)",contract)
+        self.assertIn("EXPECTED_STAGE1",exercise)
+        self.assertIn("call_evidence",exercise)
+        self.assertIn("STAGE1_RECEIPT_OPERATION_MISMATCH",exercise)
+        self.assertIn("stage1Exercised",exercise)
+        self.assertIn("prove_authority_operations.py",verify)
+        self.assertIn("stage1Required -ne 12",verify)
+        self.assertIn("stage1Exercised -ne 12",verify)
+
+    def test_python_verifier_declares_runtime_coverage_split(self):
+        repo=TEMPLATE.parents[2]
+        verifier=(repo/"packaging/stage1/verify_package.py").read_text(encoding="utf-8")
+        self.assertIn('"protectedRootRuntime"',verifier)
+        self.assertIn('"coveredByThisVerifier": False',verifier)
+        self.assertIn("Test-ProtectedRootIdentity.ps1",verifier)
+        self.assertIn("prove_authority_operations.py",verifier)
+
+    def test_readme_has_no_literal_newline_escape(self):
+        s=text("README-FIRST.txt")
+        self.assertNotIn(r"\n-",s)
+        self.assertIn("%SystemDrive%\\ForgeBossAuthorityStage1-v28",s)
+
     def test_installed_state_rebinds_engine_env_before_gate(self):
         for rel in ("Install-Stage1.ps1","Start-ForgeBoss.ps1","Verify-Stage1.ps1"):
             with self.subTest(rel=rel):
