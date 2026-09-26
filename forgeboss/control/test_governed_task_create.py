@@ -66,9 +66,17 @@ class GovernedTaskCreateTests(unittest.TestCase):
         self.daemon.launch_secret = b"l" * 32
         self.daemon.governed_launch_capability = "cap-" + ("x" * 40)
         self.daemon.idempotency = {}
+        self.daemon.active_governed_runs = set()
         self.daemon.connect_nonces = {}
         self.daemon.lock = threading.RLock()
         self.daemon.started = time.time()
+        ready = mock.patch.object(
+            self.mod,
+            "assert_governed_workspace_ready",
+            side_effect=lambda _state, work: Path(work),
+        )
+        ready.start()
+        self.addCleanup(ready.stop)
 
     def params(self, task_id="T1"):
         return {
@@ -528,6 +536,139 @@ class GovernedTaskCreateTests(unittest.TestCase):
             self.daemon.dispatch(req, True)
         self.assertEqual(ctx.exception.code, "GOVERNED_DIRECT_CLAIM_DENIED")
         self.assertIsNone(self.store.get_lease(p["taskId"]))
+
+    def test_same_idempotency_key_concurrent_launch_spawns_one_worker(self):
+        p, _ = self._create_governed_substantial("T-IDEM-RACE")
+        req = self._launch_request(p["taskId"], run_id="RUN-IDEM-RACE")
+        entered = threading.Event()
+        release = threading.Event()
+        fake = {
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "result_head": "a" * 40,
+            "runner_relpath": "forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256": "f" * 64,
+        }
+
+        def slow_worker(**_kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return fake
+
+        results = []
+        errors = []
+
+        def invoke():
+            try:
+                results.append(self.daemon.dispatch(req, True))
+            except Exception as ex:
+                errors.append(ex)
+
+        with mock.patch.object(self.mod, "run_governed_worker", side_effect=slow_worker) as worker:
+            first = threading.Thread(target=invoke)
+            second = threading.Thread(target=invoke)
+            first.start()
+            self.assertTrue(entered.wait(5))
+            second.start()
+            time.sleep(0.05)
+            self.assertEqual(worker.call_count, 1)
+            release.set()
+            first.join(5)
+            second.join(5)
+
+        self.assertFalse(errors)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(worker.call_count, 1)
+
+    def test_different_idempotency_keys_same_run_are_single_flight_before_claim(self):
+        p, _ = self._create_governed_substantial("T-RUN-RACE")
+        first_req = self._launch_request(p["taskId"], run_id="RUN-RACE")
+        second_req = self._launch_request(p["taskId"], run_id="RUN-RACE")
+        entered = threading.Event()
+        release = threading.Event()
+        first_result = []
+        first_error = []
+        calls = {"count": 0}
+
+        def blocking_identity(_root, _runtime):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                entered.set()
+                self.assertTrue(release.wait(5))
+            return ("forgeboss/executors/mini_swe_runner.py", "f" * 64)
+
+        fake = {
+            "returncode": 0,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "result_head": "a" * 40,
+            "runner_relpath": "forgeboss/executors/mini_swe_runner.py",
+            "runner_sha256": "f" * 64,
+        }
+
+        def invoke_first():
+            try:
+                first_result.append(self.daemon.dispatch(first_req, True))
+            except Exception as ex:
+                first_error.append(ex)
+
+        with (
+            mock.patch.object(self.mod, "runner_identity", side_effect=blocking_identity),
+            mock.patch.object(self.mod, "run_governed_worker", return_value=fake) as worker,
+        ):
+            thread = threading.Thread(target=invoke_first)
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(second_req, True)
+            self.assertEqual(ctx.exception.code, "RUN_ALREADY_ACTIVE")
+            release.set()
+            thread.join(5)
+
+        self.assertFalse(first_error)
+        self.assertEqual(len(first_result), 1)
+        self.assertEqual(worker.call_count, 1)
+
+    def test_dirty_or_quarantined_workspace_fails_before_budget_reservation(self):
+        p, _ = self._create_governed_substantial("T-DIRTY")
+        req = self._launch_request(p["taskId"], run_id="RUN-DIRTY")
+        with mock.patch.object(
+            self.mod,
+            "assert_governed_workspace_ready",
+            side_effect=self.mod.GovernedHostLaunchError("workspace is dirty"),
+        ):
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_WORKSPACE_NOT_READY")
+        self.assertIsNone(self.store.get_run("RUN-DIRTY"))
+        self.assertIsNone(self.store.get_lease(p["taskId"]))
+        self.assertEqual(float(self.store.get_task(p["taskId"])["budget_spent"]), 0.0)
+
+    def test_uncertain_container_cleanup_keeps_control_lease_active(self):
+        p, _ = self._create_governed_substantial("T-UNSAFE-CLEANUP")
+        req = self._launch_request(p["taskId"], run_id="RUN-UNSAFE-CLEANUP")
+        err = self.mod.GovernedHostLaunchError(
+            "Docker descendant cleanup could not be proven",
+            release_safe=False,
+            quarantine=True,
+        )
+        with mock.patch.object(self.mod, "run_governed_worker", side_effect=err):
+            with self.assertRaises(self.mod.ProtocolError) as ctx:
+                self.daemon.dispatch(req, True)
+        self.assertEqual(ctx.exception.code, "GOVERNED_HOST_LAUNCH_FAILED")
+        run = self.store.get_run("RUN-UNSAFE-CLEANUP")
+        lease = self.store.get_lease(p["taskId"])
+        self.assertEqual(run["status"], "running")
+        self.assertIsNone(lease["released_at"])
+        with self.assertRaises(self.mod.ProtocolError) as replay_ctx:
+            self.daemon.dispatch(
+                self._launch_request(p["taskId"], run_id="RUN-UNSAFE-CLEANUP"),
+                True,
+            )
+        self.assertEqual(replay_ctx.exception.code, "RUN_ALREADY_ACTIVE")
+
 
     def test_store_rejects_governance_evidence_without_governance_mode(self):
         p = self.params(task_id="T3")
