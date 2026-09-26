@@ -1,0 +1,72 @@
+name: R354 Docker runtime proof
+
+on:
+  push:
+    branches:
+      - test/pr351-51ceac9-docker-native
+
+permissions:
+  contents: read
+
+jobs:
+  docker-proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Docker availability
+        id: docker
+        shell: bash
+        run: |
+          if docker version >/tmp/docker-version.txt 2>&1; then
+            echo "available=yes" >> "$GITHUB_OUTPUT"
+            cat /tmp/docker-version.txt
+          else
+            echo "available=no" >> "$GITHUB_OUTPUT"
+            cat /tmp/docker-version.txt || true
+          fi
+
+      - name: Live bind-mount cleanup proof
+        if: runner.os == 'Linux' && steps.docker.outputs.available == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/forgeboss-r354-workspace"
+          mkdir -p "$work"
+          image="$(docker images --format '{{.Repository}}:{{.Tag}}' | awk 'NR==1 && $1 !~ /<none>/ {print $1}')"
+          if [ -z "$image" ]; then
+            docker pull alpine:3.20
+            image="alpine:3.20"
+          fi
+          name="forgeboss-r354-$GITHUB_RUN_ID"
+          docker run -d --name "$name" --mount "type=bind,src=$work,dst=/workspace" "$image" sh -c 'while true; do sleep 30; done'
+          WORK="$work" python - <<'PY'
+          import os
+          from pathlib import Path
+          from forgeboss.control.governed_host_launcher import (
+              _docker_workspace_containers,
+              _ensure_workspace_containers_absent,
+          )
+          work=Path(os.environ["WORK"]).resolve()
+          env={k:v for k,v in os.environ.items()}
+          before=_docker_workspace_containers(work,env)
+          assert before, before
+          _ensure_workspace_containers_absent(work,env,force=True)
+          after=_docker_workspace_containers(work,env)
+          assert after==[], after
+          print("LIVE_DOCKER_CLEANUP=PASS")
+          PY
+          test -z "$(docker ps -aq --filter name=^/$name$)"
+
+      - name: Windows Docker status
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "WINDOWS_DOCKER_AVAILABLE=${{ steps.docker.outputs.available }}"
