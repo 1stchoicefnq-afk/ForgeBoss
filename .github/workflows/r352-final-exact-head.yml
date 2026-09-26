@@ -1,0 +1,78 @@
+name: R352 final exact-head release gate
+
+on:
+  push:
+    branches:
+      - test/pr351-3fd9dc-r352-final
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact repaired head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prove application source is exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only 3fd9dc0069b4c357eadc1c0efdd98ccc320caae2 HEAD)"
+          printf '%s\n' "$files"
+          test "$files" = ".github/workflows/r352-final-exact-head.yml"
+
+      - name: Compile authority code
+        run: python -m compileall -q forgeboss/control forgeboss/policy forgeboss/security forgeboss/executors
+
+      - name: Verify v1.1 permanent governance
+        run: |
+          python -c "from pathlib import Path; from forgeboss.policy.permanent_rules import load_default_rules; r=load_default_rules(Path('.')); assert r.ruleset_version=='1.1.0'; assert len(r.rules)==48; assert len(r.required_structured_records)==20; print(r.ruleset_version,len(r.rules),len(r.required_structured_records),r.canonical_sha256)"
+          python -m unittest -v forgeboss.policy.test_permanent_rules
+
+      - name: Governed launch attestation tests
+        run: python -m unittest -v forgeboss.control.test_governed_launch
+
+      - name: Governed host launcher tests
+        run: python -m unittest -v forgeboss.control.test_governed_host_launcher
+
+      - name: Governed task and concurrency tests
+        run: python -m unittest -v forgeboss.control.test_governed_task_create
+
+      - name: Full policy tests
+        run: python -m unittest discover -v -s forgeboss/policy -p "test_*.py"
+
+      - name: Full control tests
+        run: python -m unittest discover -v -s forgeboss/control -p "test_*.py"
+
+      - name: Full security tests
+        run: python -m unittest discover -v -s forgeboss/security -p "test_*.py"
+
+      - name: Executor selftest
+        run: node forgeboss/tests/selftest.js
+
+      - name: Remove runtime state
+        if: always()
+        shell: bash
+        run: rm -rf state
+
+      - name: Final source cleanliness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain
+          test -z "$(git status --porcelain)"
