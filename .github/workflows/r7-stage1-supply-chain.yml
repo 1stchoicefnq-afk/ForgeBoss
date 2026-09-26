@@ -29,6 +29,8 @@ jobs:
         run: python -m unittest discover -s packaging/stage1 -p "test_*.py" -v
       - name: Trusted host tool regressions
         run: python -m unittest forgeboss.security.test_host_tool_identity -v
+      - name: Protected authority signed-refusal regressions
+        run: python -m unittest forgeboss.protected_authority.test_service forgeboss.protected_authority.test_client -v
 
   windows-lock:
     runs-on: windows-latest
@@ -169,8 +171,8 @@ jobs:
           Write-Host "[PASS] tampered TURN-ON refused before installation exit=$($p.ExitCode)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ForgeBoss-Stage1-v28.5-R8.5-executed-root-receipt-candidate
+          name: ForgeBoss-Stage1-v28.6-R10-authority-exercise-candidate
           path: |
-            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.5-R8.5-EXECUTED-ROOT-RECEIPT-CANDIDATE.zip
+            dist-v28/ForgeBoss-Stage1-Turn-On-Pack-v28.6-R10-AUTHORITY-EXERCISE-CANDIDATE.zip
             dist-v28/V28-PACKAGE-BUILD-REPORT.json
           if-no-files-found: error
