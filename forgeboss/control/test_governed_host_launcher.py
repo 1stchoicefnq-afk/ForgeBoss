@@ -216,7 +216,7 @@ class GovernedHostLauncherTests(unittest.TestCase):
                     model="openai/gpt-5.6-luna",
                     timeout_seconds=1200,
                 )
-        self.assertTrue(ctx.exception.release_safe)
+        self.assertFalse(ctx.exception.release_safe)
         self.assertTrue(ctx.exception.quarantine)
         marker = launcher._quarantine_marker(self.state, self.workspace)
         self.assertTrue(marker.is_file())
