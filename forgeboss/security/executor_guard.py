@@ -17,7 +17,7 @@ TRUSTED_SYSTEM_EXEC_PATTERNS=(re.compile(r"^filter\..+\.(?:clean|smudge|process)
 _LOCAL_GIT_EXACT={
     ("rev-parse","--git-dir"),("rev-parse","--git-common-dir"),("rev-parse","--show-toplevel"),("rev-parse","HEAD"),("rev-parse","--git-path","hooks"),
     ("config","--includes","--name-only","--list"),("config","--includes","--show-origin","--show-scope","-z","--list"),
-    ("ls-files","--stage","-z"),("remote",),
+    ("ls-files","--stage","-z"),("status","--porcelain=v1","-z","--untracked-files=all"),("remote",),
 }
 _WIN_GIT_REGISTRY_KEY=r"SOFTWARE\GitForWindows"
 _WIN_TRUSTED_OWNER_SIDS={"s-1-5-18","s-1-5-32-544"}
