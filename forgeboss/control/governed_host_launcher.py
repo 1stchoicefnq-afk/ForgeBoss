@@ -445,7 +445,7 @@ def run_governed_worker(
                 ) from cleanup_error
             raise GovernedHostLaunchError(
                 "governed worker exceeded host launch timeout",
-                release_safe=True,
+                release_safe=False,
                 quarantine=True,
             ) from ex
         except Exception as ex:
